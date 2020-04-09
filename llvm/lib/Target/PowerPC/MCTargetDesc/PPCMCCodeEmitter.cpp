@@ -104,7 +104,7 @@ unsigned PPCMCCodeEmitter::getImm16Encoding(const MCInst &MI, unsigned OpNo,
   return 0;
 }
 
-unsigned long
+uint64_t
 PPCMCCodeEmitter::getImm34Encoding(const MCInst &MI, unsigned OpNo,
                                    SmallVectorImpl<MCFixup> &Fixups,
                                    const MCSubtargetInfo &STI) const {
@@ -192,6 +192,7 @@ PPCMCCodeEmitter::getMemRI34PCRelEncoding(const MCInst &MI, unsigned OpNo,
   if (MO.isExpr()) {
     const MCExpr *Expr = MO.getExpr();
     const MCSymbolRefExpr *SRE = cast<MCSymbolRefExpr>(Expr);
+    (void)SRE;
     assert(SRE->getKind() == MCSymbolRefExpr::VK_PCREL &&
            "VariantKind must be VK_PCREL");
     Fixups.push_back(
