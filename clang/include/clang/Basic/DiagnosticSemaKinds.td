@@ -3002,6 +3002,10 @@ def err_missing_atsign_prefix : Error<
 def warn_objc_string_literal_comparison : Warning<
   "direct comparison of a string literal has undefined behavior">,
   InGroup<ObjCStringComparison>;
+def warn_concatenated_literal_array_init : Warning<
+  "suspicious concatenation of string literals in an array initialization; "
+  "did you mean to separate the elements with a comma?">,
+  InGroup<DiagGroup<"string-concatenation">>;
 def warn_concatenated_nsarray_literal : Warning<
   "concatenated NSString literal for an NSArray expression - "
   "possibly missing a comma">,
@@ -5046,8 +5050,8 @@ def err_unexpanded_parameter_pack : Error<
   "size|static assertion|fixed underlying type|enumerator value|"
   "using declaration|friend declaration|qualifier|initializer|default argument|"
   "non-type template parameter type|exception type|partial specialization|"
-  "__if_exists name|__if_not_exists name|lambda|block|type constraint}0 "
-  "contains%plural{0: an|:}1 unexpanded parameter pack"
+  "__if_exists name|__if_not_exists name|lambda|block|type constraint|"
+  "requirement}0 contains%plural{0: an|:}1 unexpanded parameter pack"
   "%plural{0:|1: %2|2:s %2 and %3|:s %2, %3, ...}1">;
 
 def err_pack_expansion_without_parameter_packs : Error<
@@ -6141,6 +6145,9 @@ def warn_overloaded_shift_in_comparison :Warning<
   InGroup<OverloadedShiftOpParentheses>;
 def note_evaluate_comparison_first :Note<
   "place parentheses around comparison expression to evaluate it first">;
+
+def note_concatenated_string_literal_silence :Note<
+  "place parentheses around the string literal to silence warning">;
 
 def warn_addition_in_bitshift : Warning<
   "operator '%0' has lower precedence than '%1'; "
