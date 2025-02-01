@@ -23,9 +23,6 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/IR/Function.h"
-
-#include <vector>
 
 namespace llvm {
 
@@ -234,7 +231,7 @@ void AVRFrameLowering::emitEpilogue(MachineFunction &MF,
 //
 // Notice that strictly this is not a frame pointer because it contains SP after
 // frame allocation instead of having the original SP in function entry.
-bool AVRFrameLowering::hasFP(const MachineFunction &MF) const {
+bool AVRFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   const AVRMachineFunctionInfo *FuncInfo = MF.getInfo<AVRMachineFunctionInfo>();
 
   return (FuncInfo->getHasSpills() || FuncInfo->getHasAllocas() ||
@@ -259,6 +256,16 @@ bool AVRFrameLowering::spillCalleeSavedRegisters(
   for (const CalleeSavedInfo &I : llvm::reverse(CSI)) {
     Register Reg = I.getReg();
     bool IsNotLiveIn = !MBB.isLiveIn(Reg);
+
+    // Check if Reg is a sub register of a 16-bit livein register, and then
+    // add it to the livein list.
+    if (IsNotLiveIn)
+      for (const auto &LiveIn : MBB.liveins())
+        if (STI.getRegisterInfo()->isSubRegister(LiveIn.PhysReg, Reg)) {
+          IsNotLiveIn = false;
+          MBB.addLiveIn(Reg);
+          break;
+        }
 
     assert(TRI->getRegSizeInBits(*TRI->getMinimalPhysRegClass(Reg)) == 8 &&
            "Invalid register size");

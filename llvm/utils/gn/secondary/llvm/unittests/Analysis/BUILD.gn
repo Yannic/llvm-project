@@ -1,31 +1,5 @@
 import("//third-party/unittest/unittest.gni")
 
-# Keyed off LLVM_ENABLE_PLUGINS in the CMake build, which is usually false
-# on Windows and true elsewhere.
-if (host_os != "win") {
-  foreach(plugin, [ "InlineAdvisorPlugin" ]) {
-    loadable_module(plugin) {
-      # Put plugin next to the unit test executable.
-      output_dir = target_out_dir
-
-      sources = [ "$plugin.cpp" ]
-
-      deps = [
-        # TestPlugin doesn't want to link in any LLVM code, it just needs its
-        # headers.
-        "//llvm/include/llvm/IR:public_tablegen",
-      ]
-
-      if (host_os != "mac" && host_os != "win") {
-        # The GN build currently doesn't globally pass -fPIC, but that's
-        # needed for building .so files on ELF.  Just pass it manually
-        # for loadable_modules for now.
-        cflags = [ "-fPIC" ]
-      }
-    }
-  }
-}
-
 unittest("AnalysisTests") {
   deps = [
     "//llvm/lib/Analysis",
@@ -49,14 +23,17 @@ unittest("AnalysisTests") {
     "CallGraphTest.cpp",
     "CaptureTrackingTest.cpp",
     "ConstraintSystemTest.cpp",
+    "CtxProfAnalysisTest.cpp",
     "DDGTest.cpp",
-    "DivergenceAnalysisTest.cpp",
+    "DXILResourceTest.cpp",
     "DomTreeUpdaterTest.cpp",
     "FunctionPropertiesAnalysisTest.cpp",
     "GlobalsModRefTest.cpp",
+    "GraphWriterTest.cpp",
     "IRSimilarityIdentifierTest.cpp",
     "IVDescriptorsTest.cpp",
     "InlineCostTest.cpp",
+    "LastRunTrackingAnalysisTest.cpp",
     "LazyCallGraphTest.cpp",
     "LoadsTest.cpp",
     "LoopInfoTest.cpp",
@@ -67,7 +44,9 @@ unittest("AnalysisTests") {
     "MemorySSATest.cpp",
     "PhiValuesTest.cpp",
     "PluginInlineAdvisorAnalysisTest.cpp",
+    "PluginInlineOrderAnalysisTest.cpp",
     "ProfileSummaryInfoTest.cpp",
+    "ReplaceWithVecLibTest.cpp",
     "ScalarEvolutionTest.cpp",
     "SparsePropagation.cpp",
     "TBAATest.cpp",
@@ -76,7 +55,6 @@ unittest("AnalysisTests") {
     "UnrollAnalyzerTest.cpp",
     "ValueLatticeTest.cpp",
     "ValueTrackingTest.cpp",
-    "VectorFunctionABITest.cpp",
     "VectorUtilsTest.cpp",
   ]
 
@@ -84,7 +62,10 @@ unittest("AnalysisTests") {
   # Otherwise, reconfiguring with plugins disabled will leave behind a stale
   # executable.
   if (host_os != "win") {
-    deps += [ ":InlineAdvisorPlugin" ]
+    deps += [
+      "InlineAdvisorPlugin",
+      "InlineOrderPlugin",
+    ]
   }
 
   # Support plugins.

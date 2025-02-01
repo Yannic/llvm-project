@@ -253,6 +253,9 @@ public:
   ///
   void clearParent() { ParentMI = nullptr; }
 
+  /// Returns the index of this operand in the instruction that it belongs to.
+  unsigned getOperandNo() const;
+
   /// Print a subreg index operand.
   /// MO_Immediate operands can also be subreg idices. If it's the case, the
   /// subreg index name will be printed. MachineInstr::isOperandSubregIdx can be
@@ -642,8 +645,9 @@ public:
   /// mask pointers.
   static bool clobbersPhysReg(const uint32_t *RegMask, MCRegister PhysReg) {
     // See TargetRegisterInfo.h.
-    assert(PhysReg < (1u << 30) && "Not a physical register");
-    return !(RegMask[PhysReg / 32] & (1u << PhysReg % 32));
+    assert((!PhysReg.isValid() || PhysReg.isPhysical()) &&
+           "Not a physical register");
+    return !(RegMask[PhysReg.id() / 32] & (1u << PhysReg.id() % 32));
   }
 
   /// clobbersPhysReg - Returns true if this RegMask operand clobbers PhysReg.
@@ -779,6 +783,10 @@ public:
   void ChangeToGA(const GlobalValue *GV, int64_t Offset,
                   unsigned TargetFlags = 0);
 
+  /// ChangeToBA - Replace this operand with a new block address operand.
+  void ChangeToBA(const BlockAddress *BA, int64_t Offset,
+                  unsigned TargetFlags = 0);
+
   /// ChangeToMCSymbol - Replace this operand with a new MC symbol operand.
   void ChangeToMCSymbol(MCSymbol *Sym, unsigned TargetFlags = 0);
 
@@ -846,7 +854,7 @@ public:
     Op.IsEarlyClobber = isEarlyClobber;
     Op.TiedTo = 0;
     Op.IsDebug = isDebug;
-    Op.SmallContents.RegNo = Reg;
+    Op.SmallContents.RegNo = Reg.id();
     Op.Contents.Reg.Prev = nullptr;
     Op.Contents.Reg.Next = nullptr;
     Op.setSubReg(SubReg);

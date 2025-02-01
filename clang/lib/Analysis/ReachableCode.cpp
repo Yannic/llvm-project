@@ -12,6 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Analysis/Analyses/ReachableCode.h"
+#include "clang/AST/Attr.h"
+#include "clang/AST/DynamicRecursiveASTVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
@@ -452,26 +454,71 @@ bool DeadCodeScan::isDeadCodeRoot(const clang::CFGBlock *Block) {
   return isDeadRoot;
 }
 
-static bool isValidDeadStmt(const Stmt *S) {
+// Check if the given `DeadStmt` is one of target statements or is a sub-stmt of
+// them. `Block` is the CFGBlock containing the `DeadStmt`.
+template <class... Ts>
+static bool isDeadStmtInOneOf(const Stmt *DeadStmt, const CFGBlock *Block) {
+  // The coroutine statement, co_return, co_await, or co_yield.
+  const Stmt *TargetStmt = nullptr;
+  // Find the first coroutine statement after the DeadStmt in the block.
+  bool AfterDeadStmt = false;
+  for (CFGBlock::const_iterator I = Block->begin(), E = Block->end(); I != E;
+       ++I)
+    if (std::optional<CFGStmt> CS = I->getAs<CFGStmt>()) {
+      const Stmt *S = CS->getStmt();
+      if (S == DeadStmt)
+        AfterDeadStmt = true;
+      if (AfterDeadStmt && llvm::isa<Ts...>(S)) {
+        TargetStmt = S;
+        break;
+      }
+    }
+  if (!TargetStmt)
+    return false;
+  struct Checker : DynamicRecursiveASTVisitor {
+    const Stmt *DeadStmt;
+    bool IsSubStmtOfTargetStmt = false;
+    Checker(const Stmt *S) : DeadStmt(S) { ShouldVisitImplicitCode = true; }
+
+    bool VisitStmt(Stmt *S) override {
+      if (S == DeadStmt)
+        IsSubStmtOfTargetStmt = true;
+      return true;
+    }
+  };
+  Checker checker(DeadStmt);
+  checker.TraverseStmt(const_cast<Stmt *>(TargetStmt));
+  return checker.IsSubStmtOfTargetStmt;
+}
+
+static bool isValidDeadStmt(const Stmt *S, const clang::CFGBlock *Block) {
   if (S->getBeginLoc().isInvalid())
     return false;
   if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(S))
     return BO->getOpcode() != BO_Comma;
-  return true;
+  // Coroutine statements are never considered dead statements, because removing
+  // them may change the function semantic if it is the only coroutine statement
+  // of the coroutine.
+  //
+  // If the dead stmt is a sub-stmt of CXXDefaultInitExpr and CXXDefaultArgExpr,
+  // we would rather expect to find CXXDefaultInitExpr and CXXDefaultArgExpr as
+  // a valid dead stmt.
+  return !isDeadStmtInOneOf<CoreturnStmt, CoroutineSuspendExpr,
+                            CXXDefaultArgExpr, CXXDefaultInitExpr>(S, Block);
 }
 
 const Stmt *DeadCodeScan::findDeadCode(const clang::CFGBlock *Block) {
   for (CFGBlock::const_iterator I = Block->begin(), E = Block->end(); I!=E; ++I)
     if (std::optional<CFGStmt> CS = I->getAs<CFGStmt>()) {
       const Stmt *S = CS->getStmt();
-      if (isValidDeadStmt(S))
+      if (isValidDeadStmt(S, Block))
         return S;
     }
 
   CFGTerminator T = Block->getTerminator();
   if (T.isStmtBranch()) {
     const Stmt *S = T.getStmt();
-    if (S && isValidDeadStmt(S))
+    if (S && isValidDeadStmt(S, Block))
       return S;
   }
 
@@ -629,6 +676,10 @@ void DeadCodeScan::reportDeadCode(const CFGBlock *B,
     UK = reachable_code::UK_Return;
   }
 
+  const auto *AS = dyn_cast<AttributedStmt>(S);
+  bool HasFallThroughAttr =
+      AS && hasSpecificAttr<FallThroughAttr>(AS->getAttrs());
+
   SourceRange SilenceableCondVal;
 
   if (UK == reachable_code::UK_Other) {
@@ -645,8 +696,9 @@ void DeadCodeScan::reportDeadCode(const CFGBlock *B,
         R2 = Inc->getSourceRange();
       }
 
-      CB.HandleUnreachable(reachable_code::UK_Loop_Increment,
-                           Loc, SourceRange(), SourceRange(Loc, Loc), R2);
+      CB.HandleUnreachable(reachable_code::UK_Loop_Increment, Loc,
+                           SourceRange(), SourceRange(Loc, Loc), R2,
+                           HasFallThroughAttr);
       return;
     }
 
@@ -665,7 +717,7 @@ void DeadCodeScan::reportDeadCode(const CFGBlock *B,
 
   SourceRange R1, R2;
   SourceLocation Loc = GetUnreachableLoc(S, R1, R2);
-  CB.HandleUnreachable(UK, Loc, SilenceableCondVal, R1, R2);
+  CB.HandleUnreachable(UK, Loc, SilenceableCondVal, R1, R2, HasFallThroughAttr);
 }
 
 //===----------------------------------------------------------------------===//

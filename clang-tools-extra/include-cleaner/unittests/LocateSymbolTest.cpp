@@ -11,20 +11,17 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Testing/TestAST.h"
 #include "clang/Tooling/Inclusions/StandardLibrary.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Testing/Annotations/Annotations.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include <cstddef>
-#include <memory>
 #include <tuple>
-#include <unordered_map>
-#include <utility>
-#include <variant>
 #include <vector>
 
 namespace clang::include_cleaner {
@@ -34,8 +31,6 @@ using testing::ElementsAre;
 using testing::ElementsAreArray;
 using testing::Eq;
 using testing::Field;
-using testing::Pair;
-using testing::UnorderedElementsAre;
 
 // A helper for building ASTs and getting decls out of it by name. Example usage
 // looks like:
@@ -66,8 +61,8 @@ public:
           ND = TD;
         if (ND->getName() == NameToFind) {
           EXPECT_TRUE(Out == nullptr || Out == ND->getCanonicalDecl())
-              << "Found multiple matches for " << NameToFind;
-          Out = cast<NamedDecl>(ND->getCanonicalDecl());
+              << "Found multiple matches for " << NameToFind.str();
+          Out = llvm::cast<NamedDecl>(ND->getCanonicalDecl());
         }
         return true;
       }
@@ -102,6 +97,8 @@ public:
       Results.emplace_back(SM.getComposedLoc(FID, Offset));
     return Results;
   }
+
+  const LangOptions &langOpts() { return AST.preprocessor().getLangOpts(); }
 };
 
 TEST(LocateSymbol, Decl) {
@@ -116,21 +113,29 @@ TEST(LocateSymbol, Decl) {
   for (auto &Case : Cases) {
     SCOPED_TRACE(Case);
     LocateExample Test(Case);
-    EXPECT_THAT(locateSymbol(Test.findDecl("foo")),
+    EXPECT_THAT(locateSymbol(Test.findDecl("foo"), Test.langOpts()),
                 ElementsAreArray(Test.points()));
   }
 }
 
 TEST(LocateSymbol, Stdlib) {
-  LocateExample Test("namespace std { struct vector; }");
-  EXPECT_THAT(locateSymbol(Test.findDecl("vector")),
-              ElementsAre(*tooling::stdlib::Symbol::named("std::", "vector")));
+  {
+    LocateExample Test("namespace std { struct vector; }");
+    EXPECT_THAT(
+        locateSymbol(Test.findDecl("vector"), Test.langOpts()),
+        ElementsAre(*tooling::stdlib::Symbol::named("std::", "vector")));
+  }
+  {
+    LocateExample Test("#define assert(x)\nvoid foo() { assert(true); }");
+    EXPECT_THAT(locateSymbol(Test.findMacro("assert"), Test.langOpts()),
+                ElementsAre(*tooling::stdlib::Symbol::named("", "assert")));
+  }
 }
 
 TEST(LocateSymbol, Macros) {
   // Make sure we preserve the last one.
   LocateExample Test("#define FOO\n#undef FOO\n#define ^FOO");
-  EXPECT_THAT(locateSymbol(Test.findMacro("FOO")),
+  EXPECT_THAT(locateSymbol(Test.findMacro("FOO"), Test.langOpts()),
               ElementsAreArray(Test.points()));
 }
 
@@ -141,7 +146,7 @@ TEST(LocateSymbol, CompleteSymbolHint) {
   {
     // stdlib symbols are always complete.
     LocateExample Test("namespace std { struct vector; }");
-    EXPECT_THAT(locateSymbol(Test.findDecl("vector")),
+    EXPECT_THAT(locateSymbol(Test.findDecl("vector"), Test.langOpts()),
                 ElementsAre(HintedSymbol(
                     *tooling::stdlib::Symbol::named("std::", "vector"),
                     Hints::CompleteSymbol)));
@@ -149,7 +154,7 @@ TEST(LocateSymbol, CompleteSymbolHint) {
   {
     // macros are always complete.
     LocateExample Test("#define ^FOO");
-    EXPECT_THAT(locateSymbol(Test.findMacro("FOO")),
+    EXPECT_THAT(locateSymbol(Test.findMacro("FOO"), Test.langOpts()),
                 ElementsAre(HintedSymbol(Test.points().front(),
                                          Hints::CompleteSymbol)));
   }
@@ -163,7 +168,7 @@ TEST(LocateSymbol, CompleteSymbolHint) {
     for (auto &Case : Cases) {
       SCOPED_TRACE(Case);
       LocateExample Test(Case);
-      EXPECT_THAT(locateSymbol(Test.findDecl("foo")),
+      EXPECT_THAT(locateSymbol(Test.findDecl("foo"), Test.langOpts()),
                   ElementsAre(HintedSymbol(Test.points().front(), Hints::None),
                               HintedSymbol(Test.points().back(),
                                            Hints::CompleteSymbol)));
@@ -179,7 +184,7 @@ TEST(LocateSymbol, CompleteSymbolHint) {
     for (auto &Case : Cases) {
       SCOPED_TRACE(Case);
       LocateExample Test(Case);
-      EXPECT_THAT(locateSymbol(Test.findDecl("foo")),
+      EXPECT_THAT(locateSymbol(Test.findDecl("foo"), Test.langOpts()),
                   Each(Field(&Hinted<SymbolLocation>::Hint,
                              Eq(Hints::CompleteSymbol))));
     }

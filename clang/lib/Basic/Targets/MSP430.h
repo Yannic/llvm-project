@@ -15,8 +15,8 @@
 
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace clang {
 namespace targets {
@@ -52,7 +52,7 @@ public:
 
   ArrayRef<Builtin::Info> getTargetBuiltins() const override {
     // FIXME: Implement.
-    return std::nullopt;
+    return {};
   }
 
   bool allowsLargerPreferedTypeAlignment() const override { return false; }
@@ -87,7 +87,7 @@ public:
     return false;
   }
 
-  const char *getClobbers() const override {
+  std::string_view getClobbers() const override {
     // FIXME: Is this really right?
     return "";
   }

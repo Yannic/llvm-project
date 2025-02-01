@@ -19,12 +19,9 @@ add_clang_library(clangDependencyScanning
   LINK_LIBS
   clangAST
   clangBasic
-  clangCodeGen
   clangDriver
   clangFrontend
-  clangFrontendTool
   clangLex
-  clangParse
   clangSerialization
   clangTooling
-)
+  )

@@ -14,7 +14,6 @@
 #include "llvm/Support/YAMLParser.h"
 #include <optional>
 #include <string>
-#include <system_error>
 
 namespace clang {
 namespace clangd {
@@ -68,6 +67,7 @@ public:
     Dict.handle("Completion", [&](Node &N) { parse(F.Completion, N); });
     Dict.handle("Hover", [&](Node &N) { parse(F.Hover, N); });
     Dict.handle("InlayHints", [&](Node &N) { parse(F.InlayHints, N); });
+    Dict.handle("SemanticTokens", [&](Node &N) { parse(F.SemanticTokens, N); });
     Dict.parse(N);
     return !(N.failed() || HadError);
   }
@@ -116,6 +116,14 @@ private:
       if (auto Values = scalarValues(N))
         F.FullyQualifiedNamespaces = std::move(*Values);
     });
+    Dict.handle("QuotedHeaders", [&](Node &N) {
+      if (auto Values = scalarValues(N))
+        F.QuotedHeaders = std::move(*Values);
+    });
+    Dict.handle("AngledHeaders", [&](Node &N) {
+      if (auto Values = scalarValues(N))
+        F.AngledHeaders = std::move(*Values);
+    });
     Dict.parse(N);
   }
 
@@ -127,6 +135,9 @@ private:
     });
     Dict.handle("UnusedIncludes", [&](Node &N) {
       F.UnusedIncludes = scalarValue(N, "UnusedIncludes");
+    });
+    Dict.handle("MissingIncludes", [&](Node &N) {
+      F.MissingIncludes = scalarValue(N, "MissingIncludes");
     });
     Dict.handle("Includes", [&](Node &N) { parse(F.Includes, N); });
     Dict.handle("ClangTidy", [&](Node &N) { parse(F.ClangTidy, N); });
@@ -152,6 +163,10 @@ private:
       });
       CheckOptDict.parse(N);
     });
+    Dict.handle("FastCheckFilter", [&](Node &N) {
+      if (auto FastCheckFilter = scalarValue(N, "FastCheckFilter"))
+        F.FastCheckFilter = *FastCheckFilter;
+    });
     Dict.parse(N);
   }
 
@@ -160,6 +175,10 @@ private:
     Dict.handle("IgnoreHeader", [&](Node &N) {
       if (auto Values = scalarValues(N))
         F.IgnoreHeader = std::move(*Values);
+    });
+    Dict.handle("AnalyzeAngledIncludes", [&](Node &N) {
+      if (auto Value = boolValue(N, "AnalyzeAngledIncludes"))
+        F.AnalyzeAngledIncludes = *Value;
     });
     Dict.parse(N);
   }
@@ -218,6 +237,10 @@ private:
       if (auto AllScopes = boolValue(N, "AllScopes"))
         F.AllScopes = *AllScopes;
     });
+    Dict.handle("ArgumentLists", [&](Node &N) {
+      if (auto ArgumentLists = scalarValue(N, "ArgumentLists"))
+        F.ArgumentLists = *ArgumentLists;
+    });
     Dict.parse(N);
   }
 
@@ -248,6 +271,31 @@ private:
       if (auto Value = boolValue(N, "Designators"))
         F.Designators = *Value;
     });
+    Dict.handle("BlockEnd", [&](Node &N) {
+      if (auto Value = boolValue(N, "BlockEnd"))
+        F.BlockEnd = *Value;
+    });
+    Dict.handle("DefaultArguments", [&](Node &N) {
+      if (auto Value = boolValue(N, "DefaultArguments"))
+        F.DefaultArguments = *Value;
+    });
+    Dict.handle("TypeNameLimit", [&](Node &N) {
+      if (auto Value = uint32Value(N, "TypeNameLimit"))
+        F.TypeNameLimit = *Value;
+    });
+    Dict.parse(N);
+  }
+
+  void parse(Fragment::SemanticTokensBlock &F, Node &N) {
+    DictParser Dict("SemanticTokens", this);
+    Dict.handle("DisabledKinds", [&](Node &N) {
+      if (auto Values = scalarValues(N))
+        F.DisabledKinds = std::move(*Values);
+    });
+    Dict.handle("DisabledModifiers", [&](Node &N) {
+      if (auto Values = scalarValues(N))
+        F.DisabledModifiers = std::move(*Values);
+    });
     Dict.parse(N);
   }
 
@@ -268,7 +316,7 @@ private:
     // If Key is seen twice, Parse runs only once and an error is reported.
     void handle(llvm::StringLiteral Key, std::function<void(Node &)> Parse) {
       for (const auto &Entry : Keys) {
-        (void) Entry;
+        (void)Entry;
         assert(Entry.first != Key && "duplicate key handler");
       }
       Keys.emplace_back(Key, std::move(Parse));
@@ -366,6 +414,17 @@ private:
         return Located<bool>(*Bool, Scalar->Range);
       warning(Desc + " should be a boolean", N);
     }
+    return std::nullopt;
+  }
+
+  std::optional<Located<uint32_t>> uint32Value(Node &N, llvm::StringRef Desc) {
+    if (auto Scalar = scalarValue(N, Desc)) {
+      unsigned long long Num;
+      if (!llvm::getAsUnsignedInteger(**Scalar, 0, Num)) {
+        return Located<uint32_t>(Num, Scalar->Range);
+      }
+    }
+    warning(Desc + " invalid number", N);
     return std::nullopt;
   }
 

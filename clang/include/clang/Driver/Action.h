@@ -60,7 +60,6 @@ public:
     PrecompileJobClass,
     ExtractAPIJobClass,
     AnalyzeJobClass,
-    MigrateJobClass,
     CompileJobClass,
     BackendJobClass,
     AssembleJobClass,
@@ -75,9 +74,10 @@ public:
     OffloadPackagerJobClass,
     LinkerWrapperJobClass,
     StaticLibJobClass,
+    BinaryAnalyzeJobClass,
 
     JobClassFirst = PreprocessJobClass,
-    JobClassLast = StaticLibJobClass
+    JobClassLast = BinaryAnalyzeJobClass
   };
 
   // The offloading kind determines if this action is binded to a particular
@@ -93,6 +93,7 @@ public:
     OFK_Cuda = 0x02,
     OFK_OpenMP = 0x04,
     OFK_HIP = 0x08,
+    OFK_SYCL = 0x10,
   };
 
   static const char *getClassName(ActionClass AC);
@@ -458,17 +459,6 @@ public:
   }
 };
 
-class MigrateJobAction : public JobAction {
-  void anchor() override;
-
-public:
-  MigrateJobAction(Action *Input, types::ID OutputType);
-
-  static bool classof(const Action *A) {
-    return A->getKind() == MigrateJobClass;
-  }
-};
-
 class CompileJobAction : public JobAction {
   void anchor() override;
 
@@ -671,6 +661,17 @@ public:
 
   static bool classof(const Action *A) {
     return A->getKind() == StaticLibJobClass;
+  }
+};
+
+class BinaryAnalyzeJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  BinaryAnalyzeJobAction(Action *Input, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == BinaryAnalyzeJobClass;
   }
 };
 

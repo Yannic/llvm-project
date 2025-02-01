@@ -9,8 +9,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/DivisionByConstantInfo.h"
 #include "gtest/gtest.h"
-#include <array>
-#include <optional>
 
 using namespace llvm;
 
@@ -34,7 +32,7 @@ APInt SignedDivideUsingMagic(APInt Numerator, APInt Divisor,
   unsigned Bits = Numerator.getBitWidth();
 
   APInt Factor(Bits, 0);
-  APInt ShiftMask(Bits, -1);
+  APInt ShiftMask(Bits, -1, true);
   if (Divisor.isOne() || Divisor.isAllOnes()) {
     // If d is +1/-1, we just multiply the numerator by +1/-1.
     Factor = Divisor.getSExtValue();
@@ -106,9 +104,9 @@ APInt UnsignedDivideUsingMagic(const APInt &Numerator, const APInt &Divisor,
   unsigned Bits = Numerator.getBitWidth();
 
   if (LZOptimization) {
-    unsigned LeadingZeros = Numerator.countLeadingZeros();
+    unsigned LeadingZeros = Numerator.countl_zero();
     // Clip to the number of leading zeros in the divisor.
-    LeadingZeros = std::min(LeadingZeros, Divisor.countLeadingZeros());
+    LeadingZeros = std::min(LeadingZeros, Divisor.countl_zero());
     if (LeadingZeros > 0) {
       Magics = UnsignedDivisionByConstantInfo::get(
           Divisor, LeadingZeros, AllowEvenDivisorOptimization);

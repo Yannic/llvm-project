@@ -8,10 +8,14 @@
 //
 // UNSUPPORTED: no-threads
 
-// ALLOW_RETRIES: 3
-
 // notify_all_at_thread_exit(...) requires move semantics to transfer the unique_lock.
 // UNSUPPORTED: c++03
+
+// This test requires the fix for LWG3343 (64fc3cd), which is done in the dylib
+// and landed in LLVM 16. Due to the nature of the test, testing on a broken
+// system does not guarantee that the test fails, so we use UNSUPPORTED instead
+// of XFAIL.
+// UNSUPPORTED: using-built-library-before-llvm-16
 
 // This is a regression test for LWG3343.
 //
@@ -29,12 +33,20 @@
 #include <mutex>
 #include <thread>
 
+int condition_variable_lock_skipped_counter = 0;
+
+TEST_DIAGNOSTIC_PUSH
+// MSVC warning C4583: 'X::cv_': destructor is not implicitly called
+TEST_MSVC_DIAGNOSTIC_IGNORED(4583)
+
 union X {
     X() : cv_() {}
     ~X() {}
     std::condition_variable cv_;
     unsigned char bytes_[sizeof(std::condition_variable)];
 };
+
+TEST_DIAGNOSTIC_POP
 
 void test()
 {
@@ -46,11 +58,13 @@ void test()
 
     for (int i = 0; i < N; ++i) {
         std::thread t = support::make_test_thread([&] {
-            // Signal thread completion
+            // Emulate work being done.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+            // Signal thread completion.
             std::unique_lock<std::mutex> lk(m);
             --threads_active;
             std::notify_all_at_thread_exit(x.cv_, std::move(lk));
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         });
         t.detach();
     }
@@ -62,6 +76,15 @@ void test()
     // unlocks `m`.
     {
         std::unique_lock<std::mutex> lk(m);
+        // Due to OS scheduling the workers might have terminated when this
+        // code is reached. In that case the wait will not sleep and the call
+        // to notify_all_at_thread_exit has no effect; the condition variable
+        // will not be used here.
+        //
+        // Keep track of how often that happens, if too often the test needs
+        // to be improved.
+        if(threads_active == 0)
+            ++condition_variable_lock_skipped_counter;
         x.cv_.wait(lk, [&]() { return threads_active == 0; });
     }
 
@@ -91,6 +114,10 @@ int main(int, char**)
     for (int i = 0; i < 1000; ++i) {
         test();
     }
+
+    // The threshold is arbitrary, it just makes sure the notification is
+    // tested a reasonable number of times.
+    assert(condition_variable_lock_skipped_counter < 250);
 
     return 0;
 }

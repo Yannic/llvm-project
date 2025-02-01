@@ -28,18 +28,21 @@
 #include <optional>
 
 namespace mlir {
+namespace affine {
 #define GEN_PASS_DEF_AFFINELOOPTILING
 #include "mlir/Dialect/Affine/Passes.h.inc"
+} // namespace affine
 } // namespace mlir
 
 using namespace mlir;
+using namespace mlir::affine;
 
 #define DEBUG_TYPE "affine-loop-tile"
 
 namespace {
 
 /// A pass to perform loop tiling on all suitable loop nests of a Function.
-struct LoopTiling : public impl::AffineLoopTilingBase<LoopTiling> {
+struct LoopTiling : public affine::impl::AffineLoopTilingBase<LoopTiling> {
   LoopTiling() = default;
   explicit LoopTiling(uint64_t cacheSizeBytes, bool avoidMaxMinBounds = true)
       : avoidMaxMinBounds(avoidMaxMinBounds) {
@@ -62,10 +65,11 @@ struct LoopTiling : public impl::AffineLoopTilingBase<LoopTiling> {
 /// Creates a pass to perform loop tiling on all suitable loop nests of a
 /// Function.
 std::unique_ptr<OperationPass<func::FuncOp>>
-mlir::createLoopTilingPass(uint64_t cacheSizeBytes) {
+mlir::affine::createLoopTilingPass(uint64_t cacheSizeBytes) {
   return std::make_unique<LoopTiling>(cacheSizeBytes);
 }
-std::unique_ptr<OperationPass<func::FuncOp>> mlir::createLoopTilingPass() {
+std::unique_ptr<OperationPass<func::FuncOp>>
+mlir::affine::createLoopTilingPass() {
   return std::make_unique<LoopTiling>();
 }
 
@@ -175,6 +179,11 @@ void LoopTiling::runOnOperation() {
 
   // Tile each band.
   for (auto &band : bands) {
+    if (!isTilingValid(band)) {
+      band.front().emitRemark("tiling nest is invalid due to dependences");
+      continue;
+    }
+
     // Set up tile sizes; fill missing tile sizes at the end with default tile
     // size or tileSize if one was provided.
     SmallVector<unsigned, 6> tileSizes;

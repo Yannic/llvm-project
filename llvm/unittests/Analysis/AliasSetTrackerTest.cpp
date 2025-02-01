@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/AliasSetTracker.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
@@ -15,6 +14,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -62,7 +62,7 @@ TEST(AliasSetTracker, AliasUnknownInst) {
   TargetLibraryInfoImpl TLII(Trip);
   TargetLibraryInfo TLI(TLII);
   AAResults AA(TLI);
-  TypeBasedAAResult TBAAR;
+  TypeBasedAAResult TBAAR(false);
   AA.addAAResult(TBAAR);
 
   // Initialize the alias set tracker for the @test function.

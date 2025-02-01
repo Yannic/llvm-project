@@ -20,7 +20,7 @@ define amdgpu_kernel void @store_flat_i32(ptr addrspace(1) %gptr, i32 %x) #0 {
 }
 
 ; GCN-LABEL: {{^}}store_flat_i64:
-; GCN: flat_store_{{dwordx2|b64}}
+; GCN: flat_store_{{dword|b64}}
 define amdgpu_kernel void @store_flat_i64(ptr addrspace(1) %gptr, i64 %x) #0 {
   %fptr = addrspacecast ptr addrspace(1) %gptr to ptr
   store volatile i64 %x, ptr %fptr, align 8
@@ -28,7 +28,7 @@ define amdgpu_kernel void @store_flat_i64(ptr addrspace(1) %gptr, i64 %x) #0 {
 }
 
 ; GCN-LABEL: {{^}}store_flat_v4i32:
-; GCN: flat_store_{{dwordx4|b128}}
+; GCN: flat_store_{{dword|b128}}
 define amdgpu_kernel void @store_flat_v4i32(ptr addrspace(1) %gptr, <4 x i32> %x) #0 {
   %fptr = addrspacecast ptr addrspace(1) %gptr to ptr
   store volatile <4 x i32> %x, ptr %fptr, align 16
@@ -65,7 +65,7 @@ define amdgpu_kernel void @load_flat_i32(ptr addrspace(1) noalias %out, ptr addr
 }
 
 ; GCN-LABEL: load_flat_i64:
-; GCN: flat_load_{{dwordx2|b64}}
+; GCN: flat_load_{{dword|b64}}
 define amdgpu_kernel void @load_flat_i64(ptr addrspace(1) noalias %out, ptr addrspace(1) noalias %gptr) #0 {
   %fptr = addrspacecast ptr addrspace(1) %gptr to ptr
   %fload = load volatile i64, ptr %fptr, align 8
@@ -74,7 +74,7 @@ define amdgpu_kernel void @load_flat_i64(ptr addrspace(1) noalias %out, ptr addr
 }
 
 ; GCN-LABEL: load_flat_v4i32:
-; GCN: flat_load_{{dwordx4|b128}}
+; GCN: flat_load_{{dword|b128}}
 define amdgpu_kernel void @load_flat_v4i32(ptr addrspace(1) noalias %out, ptr addrspace(1) noalias %gptr) #0 {
   %fptr = addrspacecast ptr addrspace(1) %gptr to ptr
   %fload = load volatile <4 x i32>, ptr %fptr, align 32
@@ -123,10 +123,8 @@ define amdgpu_kernel void @zextload_flat_i16(ptr addrspace(1) noalias %out, ptr 
 }
 
 ; GCN-LABEL: flat_scratch_unaligned_load:
-; GCN: flat_load_{{ubyte|u8}}
-; GCN: flat_load_{{ubyte|u8}}
-; GCN: flat_load_{{ubyte|u8}}
-; GCN: flat_load_{{ubyte|u8}}
+; GFX9: flat_load_dword
+; GFX10PLUS: flat_load_{{dword|b32}}
 define amdgpu_kernel void @flat_scratch_unaligned_load() {
   %scratch = alloca i32, addrspace(5)
   %fptr = addrspacecast ptr addrspace(5) %scratch to ptr
@@ -136,10 +134,8 @@ define amdgpu_kernel void @flat_scratch_unaligned_load() {
 }
 
 ; GCN-LABEL: flat_scratch_unaligned_store:
-; GCN: flat_store_{{byte|b8}}
-; GCN: flat_store_{{byte|b8}}
-; GCN: flat_store_{{byte|b8}}
-; GCN: flat_store_{{byte|b8}}
+; GFX9: flat_store_dword
+; GFX10PLUS: flat_store_{{dword|b32}}
 define amdgpu_kernel void @flat_scratch_unaligned_store() {
   %scratch = alloca i32, addrspace(5)
   %fptr = addrspacecast ptr addrspace(5) %scratch to ptr
@@ -148,29 +144,50 @@ define amdgpu_kernel void @flat_scratch_unaligned_store() {
   ret void
 }
 
-; GCN-LABEL: flat_scratch_multidword_load:
+; GCN-LABEL: flat_scratch_multidword_load_kernel:
 ; CIVI-HSA: flat_load_dword v
 ; CIVI-HSA: flat_load_dword v
 ; GFX9:  flat_load_dwordx2
 ; GFX10PLUS: flat_load_{{dwordx2|b64}}
 ; FIXME: These tests are broken for os = mesa3d, becasue it doesn't initialize flat_scr
-define amdgpu_kernel void @flat_scratch_multidword_load() {
+define amdgpu_kernel void @flat_scratch_multidword_load_kernel() {
   %scratch = alloca <2 x i32>, addrspace(5)
   %fptr = addrspacecast ptr addrspace(5) %scratch to ptr
   %ld = load volatile <2 x i32>, ptr %fptr
   ret void
 }
+;
+; GCN-LABEL: flat_scratch_multidword_load_func:
+; CIVI-HSA: flat_load_dword v
+; CIVI-HSA: flat_load_dword v
+; GFX9:  flat_load_dwordx2
+; GFX10PLUS: flat_load_{{dwordx2|b64}}
+; FIXME: These tests are broken for os = mesa3d, becasue it doesn't initialize flat_scr
+define <2 x i32> @flat_scratch_multidword_load_func(ptr %maybe.scratch) {
+  %load = load <2 x i32>, ptr %maybe.scratch
+  ret <2 x i32> %load
+}
 
-; GCN-LABEL: flat_scratch_multidword_store:
+; GCN-LABEL: flat_scratch_multidword_store_kernel:
 ; CIVI-HSA: flat_store_dword v
 ; CIVI-HSA: flat_store_dword v
 ; GFX9:  flat_store_dwordx2
 ; GFX10PLUS: flat_store_{{dwordx2|b64}}
 ; FIXME: These tests are broken for os = mesa3d, becasue it doesn't initialize flat_scr
-define amdgpu_kernel void @flat_scratch_multidword_store() {
+define amdgpu_kernel void @flat_scratch_multidword_store_kernel() {
   %scratch = alloca <2 x i32>, addrspace(5)
   %fptr = addrspacecast ptr addrspace(5) %scratch to ptr
   store volatile <2 x i32> zeroinitializer, ptr %fptr
+  ret void
+}
+
+; GCN-LABEL: flat_scratch_multidword_store_func:
+; CIVI-HSA: flat_store_dword v
+; CIVI-HSA: flat_store_dword v
+; GFX9:  flat_store_dwordx2
+; GFX10PLUS: flat_store_{{dwordx2|b64}}
+define void @flat_scratch_multidword_store_func(ptr %maybe.scratch) {
+  store <2 x i32> zeroinitializer, ptr %maybe.scratch
   ret void
 }
 

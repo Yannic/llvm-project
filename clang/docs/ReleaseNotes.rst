@@ -13,7 +13,7 @@ Written by the `LLVM Team <https://llvm.org/>`_
   .. warning::
      These are in-progress notes for the upcoming Clang |version| release.
      Release notes for previous releases can be found on
-     `the Download Page <https://releases.llvm.org/download.html>`_.
+     `the Releases Page <https://llvm.org/releases/>`_.
 
 Introduction
 ============
@@ -23,43 +23,74 @@ frontend, part of the LLVM Compiler Infrastructure, release |release|. Here we
 describe the status of Clang in some detail, including major
 improvements from the previous release and new feature work. For the
 general LLVM release notes, see `the LLVM
-documentation <https://llvm.org/docs/ReleaseNotes.html>`_. All LLVM
-releases may be downloaded from the `LLVM releases web
-site <https://llvm.org/releases/>`_.
+documentation <https://llvm.org/docs/ReleaseNotes.html>`_. For the libc++ release notes,
+see `this page <https://libcxx.llvm.org/ReleaseNotes.html>`_. All LLVM releases
+may be downloaded from the `LLVM releases web site <https://llvm.org/releases/>`_.
 
 For more information about Clang or LLVM, including information about the
 latest release, please see the `Clang Web Site <https://clang.llvm.org>`_ or the
 `LLVM Web Site <https://llvm.org>`_.
 
-Note that if you are reading this file from a Git checkout or the
-main Clang web page, this document applies to the *next* release, not
-the current one. To see the release notes for a specific release, please
-see the `releases page <https://llvm.org/releases/>`_.
-
 Potentially Breaking Changes
 ============================
-These changes are ones which we think may surprise users when upgrading to
-Clang |release| because of the opportunity they pose for disruption to existing
-code bases.
+
+- The Objective-C ARC migrator (ARCMigrate) has been removed.
+
+C/C++ Language Potentially Breaking Changes
+-------------------------------------------
+
+C++ Specific Potentially Breaking Changes
+-----------------------------------------
+
+ABI Changes in This Version
+---------------------------
+
+AST Dumping Potentially Breaking Changes
+----------------------------------------
+
+Clang Frontend Potentially Breaking Changes
+-------------------------------------------
+
+Clang Python Bindings Potentially Breaking Changes
+--------------------------------------------------
 
 What's New in Clang |release|?
 ==============================
-Some of the major new features and improvements to Clang are listed
-here. Generic improvements to Clang as a whole or to its underlying
-infrastructure are described first, followed by language-specific
-sections with improvements to Clang's support for those languages.
 
-Major New Features
+C++ Language Changes
+--------------------
+
+C++2c Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+C++23 Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+C++20 Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+C++17 Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+Resolutions to C++ Defect Reports
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- The flag `-frelaxed-template-template-args`
+  and its negation have been removed, having been deprecated since the previous
+  two releases. The improvements to template template parameter matching implemented
+  in the previous release, as described in P3310 and P3579, made this flag unnecessary.
+
+C Language Changes
 ------------------
 
-Bug Fixes
----------
-- Fix crash on invalid code when looking up a destructor in a templated class
-  inside a namespace. This fixes
-  `Issue 59446 <https://github.com/llvm/llvm-project/issues/59446>`_.
+- Clang now allows an ``inline`` specifier on a typedef declaration of a
+  function type in Microsoft compatibility mode. #GH124869
 
-Improvements to Clang's diagnostics
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C2y Feature Support
+^^^^^^^^^^^^^^^^^^^
+
+C23 Feature Support
+^^^^^^^^^^^^^^^^^^^
 
 Non-comprehensive list of changes in this release
 -------------------------------------------------
@@ -76,82 +107,102 @@ Modified Compiler Flags
 Removed Compiler Flags
 -------------------------
 
-New Pragmas in Clang
---------------------
-- ...
-
 Attribute Changes in Clang
 --------------------------
 
+Improvements to Clang's diagnostics
+-----------------------------------
+
+Improvements to Clang's time-trace
+----------------------------------
+
+Improvements to Coverage Mapping
+--------------------------------
+
+Bug Fixes in This Version
+-------------------------
+
+Bug Fixes to Compiler Builtins
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- The behvaiour of ``__add_pointer`` and ``__remove_pointer`` for Objective-C++'s ``id`` and interfaces has been fixed.
+
+Bug Fixes to Attribute Support
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Bug Fixes to C++ Support
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Bug Fixes to AST Handling
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Miscellaneous Bug Fixes
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Miscellaneous Clang Crashes Fixed
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+OpenACC Specific Changes
+------------------------
+
+Target Specific Changes
+-----------------------
+
+AMDGPU Support
+^^^^^^^^^^^^^^
+
+NVPTX Support
+^^^^^^^^^^^^^^
+
+X86 Support
+^^^^^^^^^^^
+
+- Disable ``-m[no-]avx10.1`` and switch ``-m[no-]avx10.2`` to alias of 512 bit
+  options.
+- Change ``-mno-avx10.1-512`` to alias of ``-mno-avx10.1-256`` to disable both
+  256 and 512 bit instructions.
+
+Arm and AArch64 Support
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Android Support
+^^^^^^^^^^^^^^^
+
 Windows Support
----------------
+^^^^^^^^^^^^^^^
+
+LoongArch Support
+^^^^^^^^^^^^^^^^^
+
+RISC-V Support
+^^^^^^^^^^^^^^
+
+CUDA/HIP Language Changes
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+CUDA Support
+^^^^^^^^^^^^
 
 AIX Support
------------
+^^^^^^^^^^^
 
-C Language Changes in Clang
----------------------------
+NetBSD Support
+^^^^^^^^^^^^^^
 
-C2x Feature Support
--------------------
+WebAssembly Support
+^^^^^^^^^^^^^^^^^^^
 
-C++ Language Changes in Clang
------------------------------
-
-C++20 Feature Support
-^^^^^^^^^^^^^^^^^^^^^
-
-C++2b Feature Support
-^^^^^^^^^^^^^^^^^^^^^
-
-CUDA/HIP Language Changes in Clang
-----------------------------------
-
-Objective-C Language Changes in Clang
--------------------------------------
-
-OpenCL C Language Changes in Clang
-----------------------------------
-
-...
-
-ABI Changes in Clang
---------------------
-
-OpenMP Support in Clang
------------------------
-
-...
-
-CUDA Support in Clang
----------------------
-
-LoongArch Support in Clang
---------------------------
-
-RISC-V Support in Clang
------------------------
-
-X86 Support in Clang
---------------------
-
-WebAssembly Support in Clang
-----------------------------
+AVR Support
+^^^^^^^^^^^
 
 DWARF Support in Clang
 ----------------------
 
-Arm and AArch64 Support in Clang
---------------------------------
-
 Floating Point Support in Clang
 -------------------------------
 
-Internal API Changes
---------------------
-
-Build System Changes
---------------------
+Fixed Point Support in Clang
+----------------------------
 
 AST Matchers
 ------------
@@ -159,39 +210,44 @@ AST Matchers
 clang-format
 ------------
 
-clang-extdef-mapping
---------------------
-
 libclang
 --------
 
+Code Completion
+---------------
+
 Static Analyzer
 ---------------
+
+- Clang currently support extending lifetime of object bound to 
+  reference members of aggregates in CFG and ExprEngine, that are
+  created from default member initializer.
+
+New features
+^^^^^^^^^^^^
+
+Crash and bug fixes
+^^^^^^^^^^^^^^^^^^^
+
+Improvements
+^^^^^^^^^^^^
+
+Moved checkers
+^^^^^^^^^^^^^^
 
 .. _release-notes-sanitizers:
 
 Sanitizers
 ----------
 
-Core Analysis Improvements
-==========================
-
-- ...
-
-New Issues Found
-================
-
-- ...
-
 Python Binding Changes
 ----------------------
 
-The following methods have been added:
+OpenMP Support
+--------------
 
--  ...
-
-Significant Known Problems
-==========================
+Improvements
+^^^^^^^^^^^^
 
 Additional Information
 ======================
@@ -204,5 +260,5 @@ this release by going into the "``clang/docs/``" directory in the Clang
 tree.
 
 If you have any questions or comments about Clang, please feel free to
-contact us on the Discourse forums (Clang Frontend category)
+contact us on the `Discourse forums (Clang Frontend category)
 <https://discourse.llvm.org/c/clang/6>`_.

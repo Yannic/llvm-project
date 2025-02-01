@@ -43,8 +43,6 @@ infrastructure are described first, followed by tool-specific sections.
 Major New Features
 ------------------
 
-...
-
 Improvements to clangd
 ----------------------
 
@@ -66,6 +64,9 @@ Hover
 Code completion
 ^^^^^^^^^^^^^^^
 
+Code actions
+^^^^^^^^^^^^
+
 Signature help
 ^^^^^^^^^^^^^^
 
@@ -84,13 +85,6 @@ Improvements to clang-doc
 Improvements to clang-query
 ---------------------------
 
-The improvements are...
-
-Improvements to clang-rename
-----------------------------
-
-The improvements are...
-
 Improvements to clang-tidy
 --------------------------
 
@@ -103,8 +97,15 @@ New check aliases
 Changes in existing checks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+- Improved :doc:`bugprone-unsafe-functions
+  <clang-tidy/checks/bugprone/unsafe-functions>` check to allow specifying
+  additional C++ member functions to match.
+
 Removed checks
 ^^^^^^^^^^^^^^
+
+Miscellaneous
+^^^^^^^^^^^^^
 
 Improvements to include-fixer
 -----------------------------

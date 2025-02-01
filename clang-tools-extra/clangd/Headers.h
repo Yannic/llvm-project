@@ -33,6 +33,8 @@
 namespace clang {
 namespace clangd {
 
+using HeaderFilter = llvm::ArrayRef<std::function<bool(llvm::StringRef)>>;
+
 /// Returns true if \p Include is literal include like "path" or <path>.
 bool isLiteralInclude(llvm::StringRef Include);
 
@@ -73,7 +75,6 @@ struct Inclusion {
   int HashLine = 0;        // Line number containing the directive, 0-indexed.
   SrcMgr::CharacteristicKind FileKind = SrcMgr::C_User;
   std::optional<unsigned> HeaderID;
-  bool BehindPragmaKeep = false; // Has IWYU pragma: keep right after.
 };
 llvm::raw_ostream &operator<<(llvm::raw_ostream &, const Inclusion &);
 bool operator==(const Inclusion &LHS, const Inclusion &RHS);
@@ -151,16 +152,13 @@ public:
     return RealPathNames[static_cast<unsigned>(ID)];
   }
 
-  bool isSelfContained(HeaderID ID) const {
-    return !NonSelfContained.contains(ID);
-  }
-
-  bool hasIWYUExport(HeaderID ID) const {
-    return HasIWYUExport.contains(ID);
-  }
-
   // Return all transitively reachable files.
   llvm::ArrayRef<std::string> allHeaders() const { return RealPathNames; }
+
+  // Returns includes inside the main file with the given spelling.
+  // Spelling should include brackets or quotes, e.g. <foo>.
+  llvm::SmallVector<const Inclusion *>
+  mainFileIncludesWithSpelling(llvm::StringRef Spelling) const;
 
   // Return all transitively reachable files, and their minimum include depth.
   // All transitive includes (absolute paths), with their minimum include depth.
@@ -176,6 +174,11 @@ public:
       StdlibHeaders;
 
   std::vector<Inclusion> MainFileIncludes;
+
+  // The entries of the header search path. (HeaderSearch::search_dir_range())
+  // Only includes the plain-directory entries (not header maps or frameworks).
+  // All paths are canonical (FileManager::getCanonicalPath()).
+  std::vector<std::string> SearchPathsCanonical;
 
   // We reserve HeaderID(0) for the main file and will manually check for that
   // in getID and getOrCreateID because the UniqueID is not stable when the
@@ -196,12 +199,10 @@ private:
   // and RealPathName and UniqueID are not preserved in
   // the preamble.
   llvm::DenseMap<llvm::sys::fs::UniqueID, HeaderID> UIDToIndex;
-  // Contains HeaderIDs of all non self-contained entries in the
-  // IncludeStructure.
-  llvm::DenseSet<HeaderID> NonSelfContained;
-  // Contains a set of headers that have either "IWYU pragma: export" or "IWYU
-  // pragma: begin_exports".
-  llvm::DenseSet<HeaderID> HasIWYUExport;
+
+  // Maps written includes to indices in MainFileInclude for easier lookup by
+  // spelling.
+  llvm::StringMap<llvm::SmallVector<unsigned>> MainFileIncludesBySpelling;
 };
 
 // Calculates insertion edit for including a new header in a file.
@@ -212,10 +213,12 @@ public:
   // include path of non-verbatim header will not be shortened.
   IncludeInserter(StringRef FileName, StringRef Code,
                   const format::FormatStyle &Style, StringRef BuildDir,
-                  HeaderSearch *HeaderSearchInfo)
+                  HeaderSearch *HeaderSearchInfo, HeaderFilter QuotedHeaders,
+                  HeaderFilter AngledHeaders)
       : FileName(FileName), Code(Code), BuildDir(BuildDir),
         HeaderSearchInfo(HeaderSearchInfo),
-        Inserter(FileName, Code, Style.IncludeStyle) {}
+        Inserter(FileName, Code, Style.IncludeStyle),
+        QuotedHeaders(QuotedHeaders), AngledHeaders(AngledHeaders) {}
 
   void addExisting(const Inclusion &Inc);
 
@@ -259,6 +262,8 @@ private:
   HeaderSearch *HeaderSearchInfo = nullptr;
   llvm::StringSet<> IncludedHeaders; // Both written and resolved.
   tooling::HeaderIncludes Inserter;  // Computers insertion replacement.
+  HeaderFilter QuotedHeaders;
+  HeaderFilter AngledHeaders;
 };
 
 } // namespace clangd

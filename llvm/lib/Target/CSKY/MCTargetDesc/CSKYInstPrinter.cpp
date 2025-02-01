@@ -82,7 +82,7 @@ void CSKYInstPrinter::printInst(const MCInst *MI, uint64_t Address,
   printAnnotation(O, Annot);
 }
 
-void CSKYInstPrinter::printRegName(raw_ostream &O, MCRegister Reg) const {
+void CSKYInstPrinter::printRegName(raw_ostream &O, MCRegister Reg) {
   if (PrintBranchImmAsAddress)
     O << getRegisterName(Reg, ABIRegNames ? CSKY::ABIRegAltName
                                           : CSKY::NoRegAltName);
@@ -113,7 +113,7 @@ void CSKYInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
 
     if (Reg == CSKY::C)
       O << "";
-    else if (STI.getFeatureBits()[CSKY::FeatureJAVA]) {
+    else if (STI.hasFeature(CSKY::FeatureJAVA)) {
       if (Reg == CSKY::R23)
         O << (useABIName ? "fp" : "r23");
       else if (Reg == CSKY::R24)

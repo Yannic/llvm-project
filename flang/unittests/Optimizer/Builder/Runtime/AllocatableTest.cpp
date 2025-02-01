@@ -9,7 +9,7 @@
 #include "flang/Optimizer/Builder/Runtime/Allocatable.h"
 #include "RuntimeCallTestBase.h"
 #include "gtest/gtest.h"
-#include "flang/Runtime/descriptor.h"
+#include "flang/Runtime/descriptor-consts.h"
 
 using namespace Fortran::runtime;
 
@@ -22,5 +22,5 @@ TEST_F(RuntimeCallTest, genMoveAlloc) {
   mlir::Value errMsg = firBuilder->create<fir::UndefOp>(loc, seqTy);
   mlir::Value hasStat = firBuilder->createBool(loc, false);
   fir::runtime::genMoveAlloc(*firBuilder, loc, to, from, hasStat, errMsg);
-  checkCallOpFromResultBox(to, "_FortranAMoveAlloc", 4);
+  checkCallOpFromResultBox(to, "_FortranAMoveAlloc", 5);
 }
