@@ -3,8 +3,8 @@
 
 define internal i32 @f1(i32 %x) {
 ; CHECK-LABEL: define {{[^@]+}}@f1
-; CHECK-SAME: (i32 [[X:%.*]]) {
-; CHECK-NEXT:    ret i32 undef
+; CHECK-SAME: (i32 range(i32 0, 2) [[X:%.*]]) {
+; CHECK-NEXT:    ret i32 poison
 ;
   %cmp = icmp sgt i32 %x, 300
   %res = select i1 %cmp, i32 1, i32 2
@@ -40,7 +40,7 @@ end:
 
 define internal i32 @f2(i32 %x, i32 %y, i32 %z, i1 %cmp.1, i1 %cmp.2) {
 ; CHECK-LABEL: define {{[^@]+}}@f2
-; CHECK-SAME: (i32 [[X:%.*]], i32 [[Y:%.*]], i32 [[Z:%.*]], i1 [[CMP_1:%.*]], i1 [[CMP_2:%.*]]) {
+; CHECK-SAME: (i32 range(i32 0, 2) [[X:%.*]], i32 range(i32 -10, 2) [[Y:%.*]], i32 range(i32 1, 11) [[Z:%.*]], i1 [[CMP_1:%.*]], i1 [[CMP_2:%.*]]) {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br i1 [[CMP_1]], label [[IF_TRUE_1:%.*]], label [[END:%.*]]
 ; CHECK:       if.true.1:
@@ -55,12 +55,12 @@ define internal i32 @f2(i32 %x, i32 %y, i32 %z, i1 %cmp.1, i1 %cmp.2) {
 ; CHECK-NEXT:    [[V_1:%.*]] = select i1 [[C_1]], i32 10, i32 100
 ; CHECK-NEXT:    [[V_2:%.*]] = select i1 [[C_2]], i32 20, i32 200
 ; CHECK-NEXT:    [[V_3:%.*]] = select i1 [[C_3]], i32 30, i32 300
-; CHECK-NEXT:    [[R_1:%.*]] = add nuw i32 [[V_1]], [[V_2]]
-; CHECK-NEXT:    [[R_2:%.*]] = add nuw i32 [[R_1]], [[V_3]]
-; CHECK-NEXT:    [[R_3:%.*]] = add nuw i32 [[R_2]], 400
-; CHECK-NEXT:    [[R_4:%.*]] = add nuw i32 [[R_3]], 50
-; CHECK-NEXT:    [[R_5:%.*]] = add nuw i32 [[R_4]], 60
-; CHECK-NEXT:    [[R_6:%.*]] = add nuw i32 [[R_4]], 700
+; CHECK-NEXT:    [[R_1:%.*]] = add nuw nsw i32 [[V_1]], [[V_2]]
+; CHECK-NEXT:    [[R_2:%.*]] = add nuw nsw i32 [[R_1]], [[V_3]]
+; CHECK-NEXT:    [[R_3:%.*]] = add nuw nsw i32 [[R_2]], 400
+; CHECK-NEXT:    [[R_4:%.*]] = add nuw nsw i32 [[R_3]], 50
+; CHECK-NEXT:    [[R_5:%.*]] = add nuw nsw i32 [[R_4]], 60
+; CHECK-NEXT:    [[R_6:%.*]] = add nuw nsw i32 [[R_4]], 700
 ; CHECK-NEXT:    ret i32 [[R_6]]
 ;
 
@@ -133,7 +133,7 @@ end:
 
 define internal i32 @f3(i32 %x, i32 %y, i1 %cmp.1) {
 ; CHECK-LABEL: define {{[^@]+}}@f3
-; CHECK-SAME: (i32 [[X:%.*]], i32 [[Y:%.*]], i1 [[CMP_1:%.*]]) {
+; CHECK-SAME: (i32 range(i32 0, 6) [[X:%.*]], i32 [[Y:%.*]], i1 [[CMP_1:%.*]]) {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br i1 [[CMP_1]], label [[IF_TRUE_1:%.*]], label [[END:%.*]]
 ; CHECK:       if.true.1:
@@ -154,12 +154,12 @@ define internal i32 @f3(i32 %x, i32 %y, i1 %cmp.1) {
 ; CHECK-NEXT:    [[V_5:%.*]] = select i1 [[C_5]], i32 50, i32 500
 ; CHECK-NEXT:    [[V_6:%.*]] = select i1 [[C_6]], i32 60, i32 600
 ; CHECK-NEXT:    [[V_7:%.*]] = select i1 [[C_7]], i32 70, i32 700
-; CHECK-NEXT:    [[R_1:%.*]] = add nuw i32 [[V_1]], [[V_2]]
-; CHECK-NEXT:    [[R_2:%.*]] = add nuw i32 [[R_1]], [[V_3]]
-; CHECK-NEXT:    [[R_3:%.*]] = add nuw i32 [[R_2]], [[V_4]]
-; CHECK-NEXT:    [[R_4:%.*]] = add nuw i32 [[R_3]], [[V_5]]
-; CHECK-NEXT:    [[R_5:%.*]] = add nuw i32 [[R_4]], [[V_6]]
-; CHECK-NEXT:    [[R_6:%.*]] = add nuw i32 [[R_4]], [[V_7]]
+; CHECK-NEXT:    [[R_1:%.*]] = add nuw nsw i32 [[V_1]], [[V_2]]
+; CHECK-NEXT:    [[R_2:%.*]] = add nuw nsw i32 [[R_1]], [[V_3]]
+; CHECK-NEXT:    [[R_3:%.*]] = add nuw nsw i32 [[R_2]], [[V_4]]
+; CHECK-NEXT:    [[R_4:%.*]] = add nuw nsw i32 [[R_3]], [[V_5]]
+; CHECK-NEXT:    [[R_5:%.*]] = add nuw nsw i32 [[R_4]], [[V_6]]
+; CHECK-NEXT:    [[R_6:%.*]] = add nuw nsw i32 [[R_4]], [[V_7]]
 ; CHECK-NEXT:    ret i32 [[R_6]]
 ;
 

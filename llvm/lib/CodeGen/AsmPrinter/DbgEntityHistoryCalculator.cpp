@@ -138,6 +138,9 @@ void DbgValueHistoryMap::trimLocationRanges(
   // references if any entries are removed.
   SmallVector<size_t, 4> Offsets;
 
+  LLVM_DEBUG(dbgs() << "Trimming location ranges for function '" << MF.getName()
+                    << "'\n");
+
   for (auto &Record : VarEntries) {
     auto &HistoryMapEntries = Record.second;
     if (HistoryMapEntries.empty())
@@ -213,6 +216,8 @@ void DbgValueHistoryMap::trimLocationRanges(
         // count of the closing entry, if one exists.
         if (EndIndex != NoEntry)
           ReferenceCount[EndIndex] -= 1;
+        LLVM_DEBUG(dbgs() << "Dropping value outside scope range of variable: ";
+                   StartMI->print(llvm::dbgs()););
       }
     }
 
@@ -253,6 +258,8 @@ void DbgValueHistoryMap::trimLocationRanges(
     // ToRemove indices are valid after each erase.
     for (EntryIndex Idx : llvm::reverse(ToRemove))
       HistoryMapEntries.erase(HistoryMapEntries.begin() + Idx);
+    LLVM_DEBUG(llvm::dbgs() << "New HistoryMap('" << LocalVar->getName()
+                            << "') size: " << HistoryMapEntries.size() << "\n");
   }
 }
 
@@ -355,8 +362,9 @@ static void clobberRegEntries(InlinedEntity Var, unsigned RegNo,
       FellowRegisters.push_back(Reg);
 
   // Drop all entries that have ended.
+  auto &Entries = LiveEntries[Var];
   for (auto Index : IndicesToErase)
-    LiveEntries[Var].erase(Index);
+    Entries.erase(Index);
 }
 
 /// Add a new debug value for \p Var. Closes all overlapping debug values.
@@ -407,9 +415,10 @@ static void handleNewDebugValue(InlinedEntity Var, const MachineInstr &DV,
         dropRegDescribedVar(RegVars, I.first, Var);
 
     // Drop all entries that have ended, and mark the new entry as live.
+    auto &Entries = LiveEntries[Var];
     for (auto Index : IndicesToErase)
-      LiveEntries[Var].erase(Index);
-    LiveEntries[Var].insert(NewIndex);
+      Entries.erase(Index);
+    Entries.insert(NewIndex);
   }
 }
 
@@ -555,8 +564,8 @@ void llvm::calculateDbgEntityHistory(const MachineFunction *MF,
 }
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-LLVM_DUMP_METHOD void DbgValueHistoryMap::dump() const {
-  dbgs() << "DbgValueHistoryMap:\n";
+LLVM_DUMP_METHOD void DbgValueHistoryMap::dump(StringRef FuncName) const {
+  dbgs() << "DbgValueHistoryMap('" << FuncName << "'):\n";
   for (const auto &VarRangePair : *this) {
     const InlinedEntity &Var = VarRangePair.first;
     const Entries &Entries = VarRangePair.second;

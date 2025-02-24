@@ -1,3 +1,5 @@
+include(CheckLibraryExists)
+
 if (LIBPGMATH_DIR)
   # If pgmath library is found, it can be used for constant folding.
   find_library(LIBPGMATH pgmath PATHS ${LIBPGMATH_DIR})
@@ -17,6 +19,13 @@ if (LIBPGMATH_DIR)
   else()
     message(STATUS "Libpgmath not found in: ${LIBPGMATH_DIR}")
   endif()
+endif()
+
+check_include_file(quadmath.h FOUND_QUADMATH_HEADER)
+check_library_exists(quadmath sinq "" FOUND_QUADMATH_LIB)
+if(FOUND_QUADMATH_HEADER AND FOUND_QUADMATH_LIB)
+  add_compile_definitions(HAS_QUADMATHLIB)
+  set(QUADMATHLIB quadmath)
 endif()
 
 add_flang_library(FortranEvaluate
@@ -51,10 +60,11 @@ add_flang_library(FortranEvaluate
   variable.cpp
 
   LINK_LIBS
-  FortranCommon
+  FortranSupport
   FortranDecimal
   FortranParser
   ${LIBPGMATH}
+  ${QUADMATHLIB}
 
   LINK_COMPONENTS
   Support

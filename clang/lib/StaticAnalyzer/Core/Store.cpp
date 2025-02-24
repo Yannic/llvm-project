@@ -29,6 +29,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/StoreRef.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymExpr.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -43,18 +44,21 @@ StoreManager::StoreManager(ProgramStateManager &stateMgr)
     : svalBuilder(stateMgr.getSValBuilder()), StateMgr(stateMgr),
       MRMgr(svalBuilder.getRegionManager()), Ctx(stateMgr.getContext()) {}
 
-StoreRef StoreManager::enterStackFrame(Store OldStore,
-                                       const CallEvent &Call,
-                                       const StackFrameContext *LCtx) {
-  StoreRef Store = StoreRef(OldStore, *this);
+BindResult StoreManager::enterStackFrame(Store OldStore, const CallEvent &Call,
+                                         const StackFrameContext *LCtx) {
+  BindResult Result{StoreRef(OldStore, *this), {}};
 
   SmallVector<CallEvent::FrameBindingTy, 16> InitialBindings;
   Call.getInitialStackFrameContents(LCtx, InitialBindings);
 
-  for (const auto &I : InitialBindings)
-    Store = Bind(Store.getStore(), I.first.castAs<Loc>(), I.second);
+  for (const auto &[Location, Val] : InitialBindings) {
+    Store S = Result.ResultingStore.getStore();
+    BindResult Curr = Bind(S, Location.castAs<Loc>(), Val);
+    Result.ResultingStore = Curr.ResultingStore;
+    llvm::append_range(Result.FailedToBindValues, Curr.FailedToBindValues);
+  }
 
-  return Store;
+  return Result;
 }
 
 const ElementRegion *StoreManager::MakeElementRegion(const SubRegion *Base,
@@ -144,6 +148,7 @@ std::optional<const MemRegion *> StoreManager::castRegion(const MemRegion *R,
     case MemRegion::NonParamVarRegionKind:
     case MemRegion::ParamVarRegionKind:
     case MemRegion::CXXTempObjectRegionKind:
+    case MemRegion::CXXLifetimeExtendedObjectRegionKind:
     case MemRegion::CXXBaseObjectRegionKind:
     case MemRegion::CXXDerivedObjectRegionKind:
       return MakeElementRegion(cast<SubRegion>(R), PointeeTy);
@@ -256,10 +261,8 @@ SVal StoreManager::evalDerivedToBase(SVal Derived, const CastExpr *Cast) {
 
   // Walk through the cast path to create nested CXXBaseRegions.
   SVal Result = Derived;
-  for (CastExpr::path_const_iterator I = Cast->path_begin(),
-                                     E = Cast->path_end();
-       I != E; ++I) {
-    Result = evalDerivedToBase(Result, (*I)->getType(), (*I)->isVirtual());
+  for (const CXXBaseSpecifier *Base : Cast->path()) {
+    Result = evalDerivedToBase(Result, Base->getType(), Base->isVirtual());
   }
   return Result;
 }
@@ -403,7 +406,7 @@ SVal StoreManager::getLValueFieldOrIvar(const Decl *D, SVal Base) {
   Loc BaseL = Base.castAs<Loc>();
   const SubRegion* BaseR = nullptr;
 
-  switch (BaseL.getSubKind()) {
+  switch (BaseL.getKind()) {
   case loc::MemRegionValKind:
     BaseR = cast<SubRegion>(BaseL.castAs<loc::MemRegionVal>().getRegion());
     break;
@@ -473,7 +476,17 @@ SVal StoreManager::getLValueElement(QualType elementType, NonLoc Offset,
   const auto *ElemR = dyn_cast<ElementRegion>(BaseRegion);
 
   // Convert the offset to the appropriate size and signedness.
-  Offset = svalBuilder.convertToArrayIndex(Offset).castAs<NonLoc>();
+  auto Off = svalBuilder.convertToArrayIndex(Offset).getAs<NonLoc>();
+  if (!Off) {
+    // Handle cases when LazyCompoundVal is used for an array index.
+    // Such case is possible if code does:
+    //   char b[4];
+    //   a[__builtin_bitcast(int, b)];
+    // Return UnknownVal, since we cannot model it.
+    return UnknownVal();
+  }
+
+  Offset = Off.value();
 
   if (!ElemR) {
     // If the base region is not an ElementRegion, create one.

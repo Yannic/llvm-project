@@ -147,6 +147,48 @@ block4:
   ret i32 %PRE
 }
 
+; Same as test4, with a nuw flag on the GEP.
+define i32 @test4_nuw(ptr %p, ptr %q, ptr %Hack, i1 %C) {
+; CHECK-LABEL: @test4_nuw(
+; CHECK-NEXT:  block1:
+; CHECK-NEXT:    br i1 [[C:%.*]], label [[BLOCK2:%.*]], label [[BLOCK3:%.*]]
+; CHECK:       block2:
+; CHECK-NEXT:    [[P3_PHI_TRANS_INSERT:%.*]] = getelementptr nuw i32, ptr [[Q:%.*]], i32 1
+; CHECK-NEXT:    [[PRE_PRE:%.*]] = load i32, ptr [[P3_PHI_TRANS_INSERT]], align 4
+; CHECK-NEXT:    br label [[BLOCK4:%.*]]
+; CHECK:       block3:
+; CHECK-NEXT:    [[B:%.*]] = getelementptr i32, ptr [[Q]], i32 1
+; CHECK-NEXT:    store ptr [[B]], ptr [[HACK:%.*]], align 8
+; CHECK-NEXT:    [[A:%.*]] = getelementptr i32, ptr [[P:%.*]], i32 1
+; CHECK-NEXT:    store i32 0, ptr [[A]], align 4
+; CHECK-NEXT:    br label [[BLOCK4]]
+; CHECK:       block4:
+; CHECK-NEXT:    [[PRE:%.*]] = phi i32 [ 0, [[BLOCK3]] ], [ [[PRE_PRE]], [[BLOCK2]] ]
+; CHECK-NEXT:    [[P2:%.*]] = phi ptr [ [[P]], [[BLOCK3]] ], [ [[Q]], [[BLOCK2]] ]
+; CHECK-NEXT:    [[P3:%.*]] = getelementptr nuw i32, ptr [[P2]], i32 1
+; CHECK-NEXT:    ret i32 [[PRE]]
+;
+block1:
+  br i1 %C, label %block2, label %block3
+
+block2:
+  br label %block4
+
+block3:
+  %B = getelementptr i32, ptr %q, i32 1
+  store ptr %B, ptr %Hack
+
+  %A = getelementptr i32, ptr %p, i32 1
+  store i32 0, ptr %A
+  br label %block4
+
+block4:
+  %P2 = phi ptr [%p, %block3], [%q, %block2]
+  %P3 = getelementptr nuw i32, ptr %P2, i32 1
+  %PRE = load i32, ptr %P3
+  ret i32 %PRE
+}
+
 ;void test5(int N, ptr G) {
 ;  int j;
 ;  for (j = 0; j < N - 1; j++)
@@ -553,10 +595,10 @@ define void @test12(ptr %p) personality ptr @__CxxFrameHandler3 {
 ; CHECK-LABEL: @test12(
 ; CHECK-NEXT:  block1:
 ; CHECK-NEXT:    invoke void @f()
-; CHECK-NEXT:    to label [[BLOCK2:%.*]] unwind label [[CATCH_DISPATCH:%.*]]
+; CHECK-NEXT:            to label [[BLOCK2:%.*]] unwind label [[CATCH_DISPATCH:%.*]]
 ; CHECK:       block2:
 ; CHECK-NEXT:    invoke void @f()
-; CHECK-NEXT:    to label [[BLOCK3:%.*]] unwind label [[CLEANUP:%.*]]
+; CHECK-NEXT:            to label [[BLOCK3:%.*]] unwind label [[CLEANUP:%.*]]
 ; CHECK:       block3:
 ; CHECK-NEXT:    ret void
 ; CHECK:       catch.dispatch:
@@ -880,7 +922,7 @@ define void @test19(i1 %cond, ptr %p1, ptr %p2)
 ; CHECK-NEXT:    br label [[END:%.*]]
 ; CHECK:       else:
 ; CHECK-NEXT:    invoke void @f()
-; CHECK-NEXT:    to label [[ELSE_END_CRIT_EDGE:%.*]] unwind label [[LPAD:%.*]]
+; CHECK-NEXT:            to label [[ELSE_END_CRIT_EDGE:%.*]] unwind label [[LPAD:%.*]]
 ; CHECK:       else.end_crit_edge:
 ; CHECK-NEXT:    [[V1_PRE:%.*]] = load i64, ptr [[P1]], align 8
 ; CHECK-NEXT:    br label [[END]]
@@ -891,7 +933,7 @@ define void @test19(i1 %cond, ptr %p1, ptr %p2)
 ; CHECK-NEXT:    ret void
 ; CHECK:       lpad:
 ; CHECK-NEXT:    [[LP:%.*]] = landingpad { ptr, i32 }
-; CHECK-NEXT:    cleanup
+; CHECK-NEXT:            cleanup
 ; CHECK-NEXT:    [[V3:%.*]] = load i64, ptr [[P1]], align 8
 ; CHECK-NEXT:    [[OR:%.*]] = or i64 [[V3]], 200
 ; CHECK-NEXT:    store i64 [[OR]], ptr [[P1]], align 8
@@ -974,9 +1016,9 @@ define void @test21(i1 %cond, i32 %code, ptr %p1, ptr %p2) {
 ; CHECK-NEXT:    br label [[IF_END:%.*]]
 ; CHECK:       if.else:
 ; CHECK-NEXT:    switch i32 [[CODE:%.*]], label [[IF_END]] [
-; CHECK-NEXT:    i32 1, label [[IF_END]]
-; CHECK-NEXT:    i32 2, label [[IF_END]]
-; CHECK-NEXT:    i32 3, label [[IF_END]]
+; CHECK-NEXT:      i32 1, label [[IF_END]]
+; CHECK-NEXT:      i32 2, label [[IF_END]]
+; CHECK-NEXT:      i32 3, label [[IF_END]]
 ; CHECK-NEXT:    ]
 ; CHECK:       if.end:
 ; CHECK-NEXT:    [[V2:%.*]] = load i16, ptr [[P1]], align 2
@@ -1002,5 +1044,101 @@ if.else:
 if.end:
   %v2 = load i16, ptr %p1
   store i16 %v2, ptr %p2
+  ret void
+}
+
+; Call to function @maybethrow may cause exception, so the load of %v3 can't
+; be hoisted to block %if.else.
+define void @test22(i1 %cond, ptr %p1, ptr %p2) {
+; CHECK-LABEL: @test22(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br i1 [[COND:%.*]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    [[V1:%.*]] = load i64, ptr [[P1:%.*]], align 8
+; CHECK-NEXT:    [[DEC:%.*]] = add i64 [[V1]], -1
+; CHECK-NEXT:    store i64 [[DEC]], ptr [[P1]], align 8
+; CHECK-NEXT:    br label [[IF_END:%.*]]
+; CHECK:       if.end:
+; CHECK-NEXT:    [[V2:%.*]] = phi i64 [ [[V2_PRE:%.*]], [[IF_ELSE_IF_END_CRIT_EDGE:%.*]] ], [ [[DEC]], [[IF_THEN]] ]
+; CHECK-NEXT:    store i64 [[V2]], ptr [[P2:%.*]], align 8
+; CHECK-NEXT:    ret void
+; CHECK:       if.else:
+; CHECK-NEXT:    [[COND2:%.*]] = call i1 @foo()
+; CHECK-NEXT:    br i1 [[COND2]], label [[IF_ELSE_IF_END_CRIT_EDGE]], label [[EXIT:%.*]]
+; CHECK:       if.else.if.end_crit_edge:
+; CHECK-NEXT:    [[V2_PRE]] = load i64, ptr [[P1]], align 8
+; CHECK-NEXT:    br label [[IF_END]]
+; CHECK:       exit:
+; CHECK-NEXT:    [[_:%.*]] = call i1 @maybethrow()
+; CHECK-NEXT:    [[V3:%.*]] = load i64, ptr [[P1]], align 8
+; CHECK-NEXT:    store i64 [[V3]], ptr [[P2]], align 8
+; CHECK-NEXT:    ret void
+;
+entry:
+  br i1 %cond, label %if.then, label %if.else
+
+if.then:
+  %v1 = load i64, ptr %p1
+  %dec = add i64 %v1, -1
+  store i64 %dec, ptr %p1
+  br label %if.end
+
+if.end:
+  %v2 = load i64, ptr %p1
+  store i64 %v2, ptr %p2
+  ret void
+
+if.else:
+  %cond2 = call i1 @foo()
+  br i1 %cond2, label %if.end, label %exit
+
+exit:
+  %_ = call i1 @maybethrow()
+  %v3 = load i64, ptr %p1
+  store i64 %v3, ptr %p2
+  ret void
+}
+
+declare void @maybethrow() readnone
+@B = external global i64, align 8
+
+; When BB in ValuesPerBlock(BB, OldLoad) is not OldLoad->getParent(), it should
+; also be replaced by ValuesPerBlock(BB, NewLoad). So we'll not use the deleted
+; OldLoad in later PHI instruction.
+define void @test23(i1 %cond1, i1 %cond2) {
+; CHECK-LABEL: @test23(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[G:%.*]] = alloca i64, align 8
+; CHECK-NEXT:    [[VAL1_PRE:%.*]] = load i64, ptr @B, align 8
+; CHECK-NEXT:    br i1 [[COND2:%.*]], label [[THEN:%.*]], label [[WRONG:%.*]]
+; CHECK:       then:
+; CHECK-NEXT:    br i1 [[COND1:%.*]], label [[STORE:%.*]], label [[EXIT:%.*]]
+; CHECK:       store:
+; CHECK-NEXT:    store i64 [[VAL1_PRE]], ptr @B, align 8
+; CHECK-NEXT:    br label [[WRONG]]
+; CHECK:       wrong:
+; CHECK-NEXT:    store i64 [[VAL1_PRE]], ptr [[G]], align 8
+; CHECK-NEXT:    ret void
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  %G = alloca i64, align 8
+  br i1 %cond2, label %then, label %wrong
+
+then:
+  %val2 = load i64, ptr @B, align 8
+  br i1 %cond1, label %store, label %exit
+
+store:
+  store i64 %val2, ptr @B, align 8
+  br label %wrong
+
+wrong:
+  %val1 = load i64, ptr @B, align 8
+  store i64 %val1, ptr %G, align 8
+  ret void
+
+exit:
   ret void
 }

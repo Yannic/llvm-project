@@ -587,11 +587,6 @@ func.func @bad_arrow(%arg : !unreg.ptr<(i32)->)
 
 // -----
 
-// expected-error @+1 {{attribute 'attr' occurs more than once in the attribute list}}
-test.format_symbol_name_attr_op @name { attr = "xx" }
-
-// -----
-
 func.func @forward_reference_type_check() -> (i8) {
   cf.br ^bb2
 
@@ -680,3 +675,17 @@ func.func @error_at_end_of_line() {
 // -----
 
 @foo   // expected-error {{expected operation name in quotes}}
+
+// -----
+
+func.func @drop_references_on_block_parse_error(){
+  "test.user"(%i, %1) : (index, index) -> ()
+  "test.op_with_region"() ({
+  ^bb0(%i : index):
+    // expected-error @below{{expected operation name in quotes}}
+    %1 = "test.foo"() : () -> (index)
+    // Syntax error to abort parsing this block.
+    123
+  }) : () -> ()
+  return
+}

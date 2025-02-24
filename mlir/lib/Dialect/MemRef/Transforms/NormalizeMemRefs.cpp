@@ -29,6 +29,7 @@ namespace memref {
 #define DEBUG_TYPE "normalize-memrefs"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace {
 
@@ -150,11 +151,11 @@ void NormalizeMemRefs::setCalleesAndCallersNonNormalizable(
   });
 }
 
-/// Check whether all the uses of AllocOps, CallOps and function arguments of a
-/// function are either of dereferencing type or are uses in: DeallocOp, CallOp
-/// or ReturnOp. Only if these constraints are satisfied will the function
-/// become a candidate for normalization. When the uses of a memref are
-/// non-normalizable and the memref map layout is trivial (identity), we can
+/// Check whether all the uses of AllocOps, AllocaOps, CallOps and function
+/// arguments of a function are either of dereferencing type or are uses in:
+/// DeallocOp, CallOp or ReturnOp. Only if these constraints are satisfied will
+/// the function become a candidate for normalization. When the uses of a memref
+/// are non-normalizable and the memref map layout is trivial (identity), we can
 /// still label the entire function as normalizable. We assume external
 /// functions to be normalizable.
 bool NormalizeMemRefs::areMemRefsNormalizable(func::FuncOp funcOp) {
@@ -174,12 +175,23 @@ bool NormalizeMemRefs::areMemRefsNormalizable(func::FuncOp funcOp) {
     return false;
 
   if (funcOp
+          .walk([&](memref::AllocaOp allocaOp) -> WalkResult {
+            Value oldMemRef = allocaOp.getResult();
+            if (!allocaOp.getType().getLayout().isIdentity() &&
+                !isMemRefNormalizable(oldMemRef.getUsers()))
+              return WalkResult::interrupt();
+            return WalkResult::advance();
+          })
+          .wasInterrupted())
+    return false;
+
+  if (funcOp
           .walk([&](func::CallOp callOp) -> WalkResult {
             for (unsigned resIndex :
                  llvm::seq<unsigned>(0, callOp.getNumResults())) {
               Value oldMemRef = callOp.getResult(resIndex);
               if (auto oldMemRefType =
-                      oldMemRef.getType().dyn_cast<MemRefType>())
+                      dyn_cast<MemRefType>(oldMemRef.getType()))
                 if (!oldMemRefType.getLayout().isIdentity() &&
                     !isMemRefNormalizable(oldMemRef.getUsers()))
                   return WalkResult::interrupt();
@@ -191,7 +203,7 @@ bool NormalizeMemRefs::areMemRefsNormalizable(func::FuncOp funcOp) {
 
   for (unsigned argIndex : llvm::seq<unsigned>(0, funcOp.getNumArguments())) {
     BlockArgument oldMemRef = funcOp.getArgument(argIndex);
-    if (auto oldMemRefType = oldMemRef.getType().dyn_cast<MemRefType>())
+    if (auto oldMemRefType = dyn_cast<MemRefType>(oldMemRef.getType()))
       if (!oldMemRefType.getLayout().isIdentity() &&
           !isMemRefNormalizable(oldMemRef.getUsers()))
         return false;
@@ -225,7 +237,7 @@ void NormalizeMemRefs::updateFunctionSignature(func::FuncOp funcOp,
     funcOp.walk([&](func::ReturnOp returnOp) {
       for (const auto &operandEn : llvm::enumerate(returnOp.getOperands())) {
         Type opType = operandEn.value().getType();
-        MemRefType memrefType = opType.dyn_cast<MemRefType>();
+        MemRefType memrefType = dyn_cast<MemRefType>(opType);
         // If type is not memref or if the memref type is same as that in
         // function's return signature then no update is required.
         if (!memrefType || memrefType == resultTypes[operandEn.index()])
@@ -283,7 +295,7 @@ void NormalizeMemRefs::updateFunctionSignature(func::FuncOp funcOp,
       if (oldResult.getType() == newResult.getType())
         continue;
       AffineMap layoutMap =
-          oldResult.getType().cast<MemRefType>().getLayout().getAffineMap();
+          cast<MemRefType>(oldResult.getType()).getLayout().getAffineMap();
       if (failed(replaceAllMemRefUsesWith(oldResult, /*newMemRef=*/newResult,
                                           /*extraIndices=*/{},
                                           /*indexRemap=*/layoutMap,
@@ -334,17 +346,22 @@ void NormalizeMemRefs::updateFunctionSignature(func::FuncOp funcOp,
 }
 
 /// Normalizes the memrefs within a function which includes those arising as a
-/// result of AllocOps, CallOps and function's argument. The ModuleOp argument
-/// is used to help update function's signature after normalization.
+/// result of AllocOps, AllocaOps, CallOps and function's argument. The ModuleOp
+/// argument is used to help update function's signature after normalization.
 void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
                                               ModuleOp moduleOp) {
   // Turn memrefs' non-identity layouts maps into ones with identity. Collect
-  // alloc ops first and then process since normalizeMemRef replaces/erases ops
-  // during memref rewriting.
+  // alloc/alloca ops first and then process since normalizeMemRef
+  // replaces/erases ops during memref rewriting.
   SmallVector<memref::AllocOp, 4> allocOps;
   funcOp.walk([&](memref::AllocOp op) { allocOps.push_back(op); });
   for (memref::AllocOp allocOp : allocOps)
     (void)normalizeMemRef(&allocOp);
+
+  SmallVector<memref::AllocaOp> allocaOps;
+  funcOp.walk([&](memref::AllocaOp op) { allocaOps.push_back(op); });
+  for (memref::AllocaOp allocaOp : allocaOps)
+    (void)normalizeMemRef(&allocaOp);
 
   // We use this OpBuilder to create new memref layout later.
   OpBuilder b(funcOp);
@@ -357,7 +374,7 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
   for (unsigned argIndex :
        llvm::seq<unsigned>(0, functionType.getNumInputs())) {
     Type argType = functionType.getInput(argIndex);
-    MemRefType memrefType = argType.dyn_cast<MemRefType>();
+    MemRefType memrefType = dyn_cast<MemRefType>(argType);
     // Check whether argument is of MemRef type. Any other argument type can
     // simply be part of the final function signature.
     if (!memrefType) {
@@ -366,8 +383,7 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
     }
     // Fetch a new memref type after normalizing the old memref to have an
     // identity map layout.
-    MemRefType newMemRefType = normalizeMemRefType(memrefType,
-                                                   /*numSymbolicOperands=*/0);
+    MemRefType newMemRefType = normalizeMemRefType(memrefType);
     if (newMemRefType == memrefType || funcOp.isExternal()) {
       // Either memrefType already had an identity map or the map couldn't be
       // transformed to an identity map.
@@ -421,11 +437,11 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
           // Replace all uses of the old memrefs.
           Value oldMemRef = op->getResult(resIndex);
           Value newMemRef = newOp->getResult(resIndex);
-          MemRefType oldMemRefType = oldMemRef.getType().dyn_cast<MemRefType>();
+          MemRefType oldMemRefType = dyn_cast<MemRefType>(oldMemRef.getType());
           // Check whether the operation result is MemRef type.
           if (!oldMemRefType)
             continue;
-          MemRefType newMemRefType = newMemRef.getType().cast<MemRefType>();
+          MemRefType newMemRefType = cast<MemRefType>(newMemRef.getType());
           if (oldMemRefType == newMemRefType)
             continue;
           // TODO: Assume single layout map. Multiple maps not supported.
@@ -465,7 +481,7 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
     for (unsigned resIndex :
          llvm::seq<unsigned>(0, functionType.getNumResults())) {
       Type resType = functionType.getResult(resIndex);
-      MemRefType memrefType = resType.dyn_cast<MemRefType>();
+      MemRefType memrefType = dyn_cast<MemRefType>(resType);
       // Check whether result is of MemRef type. Any other argument type can
       // simply be part of the final function signature.
       if (!memrefType) {
@@ -474,8 +490,7 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
       }
       // Computing a new memref type after normalizing the old memref to have an
       // identity map layout.
-      MemRefType newMemRefType = normalizeMemRefType(memrefType,
-                                                     /*numSymbolicOperands=*/0);
+      MemRefType newMemRefType = normalizeMemRefType(memrefType);
       resultTypes.push_back(newMemRefType);
     }
 
@@ -506,15 +521,15 @@ Operation *NormalizeMemRefs::createOpResultsNormalized(func::FuncOp funcOp,
   bool resultTypeNormalized = false;
   for (unsigned resIndex : llvm::seq<unsigned>(0, oldOp->getNumResults())) {
     auto resultType = oldOp->getResult(resIndex).getType();
-    MemRefType memrefType = resultType.dyn_cast<MemRefType>();
+    MemRefType memrefType = dyn_cast<MemRefType>(resultType);
     // Check whether the operation result is MemRef type.
     if (!memrefType) {
       resultTypes.push_back(resultType);
       continue;
     }
+
     // Fetch a new memref type after normalizing the old memref.
-    MemRefType newMemRefType = normalizeMemRefType(memrefType,
-                                                   /*numSymbolicOperands=*/0);
+    MemRefType newMemRefType = normalizeMemRefType(memrefType);
     if (newMemRefType == memrefType) {
       // Either memrefType already had an identity map or the map couldn't
       // be transformed to an identity map.

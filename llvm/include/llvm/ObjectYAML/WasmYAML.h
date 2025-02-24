@@ -189,6 +189,7 @@ struct Section {
 
   SectionType Type;
   std::vector<Relocation> Relocations;
+  std::optional<uint8_t> HeaderSecSizeEncodingLen;
 };
 
 struct CustomSection : Section {
@@ -229,6 +230,7 @@ struct DylinkSection : CustomSection {
   std::vector<StringRef> Needed;
   std::vector<DylinkImportInfo> ImportInfo;
   std::vector<DylinkExportInfo> ExportInfo;
+  std::vector<StringRef> RuntimePath;
 };
 
 struct NameSection : CustomSection {

@@ -112,7 +112,7 @@ static Register performCopyPropagation(Register Reg,
                                        bool &IsKill, const TargetInstrInfo &TII,
                                        const TargetRegisterInfo &TRI) {
   // First check if statepoint itself uses Reg in non-meta operands.
-  int Idx = RI->findRegisterUseOperandIdx(Reg, false, &TRI);
+  int Idx = RI->findRegisterUseOperandIdx(Reg, &TRI, false);
   if (Idx >= 0 && (unsigned)Idx < StatepointOpers(&*RI).getNumDeoptArgsIdx()) {
     IsKill = false;
     return Reg;
@@ -179,18 +179,11 @@ class RegReloadCache {
 public:
   RegReloadCache() = default;
 
-  // Record reload of Reg from FI in block MBB
-  void recordReload(Register Reg, int FI, const MachineBasicBlock *MBB) {
+  // Record reload of Reg from FI in block MBB if not present yet.
+  // Return true if the reload is successfully recorded.
+  bool tryRecordReload(Register Reg, int FI, const MachineBasicBlock *MBB) {
     RegSlotPair RSP(Reg, FI);
-    auto Res = Reloads[MBB].insert(RSP);
-    (void)Res;
-    assert(Res.second && "reload already exists");
-  }
-
-  // Does basic block MBB contains reload of Reg from FI?
-  bool hasReload(Register Reg, int FI, const MachineBasicBlock *MBB) {
-    RegSlotPair RSP(Reg, FI);
-    return Reloads.count(MBB) && Reloads[MBB].count(RSP);
+    return Reloads[MBB].insert(RSP).second;
   }
 };
 
@@ -242,9 +235,10 @@ public:
       It.second.Index = 0;
 
     ReservedSlots.clear();
-    if (EHPad && GlobalIndices.count(EHPad))
-      for (auto &RSP : GlobalIndices[EHPad])
-        ReservedSlots.insert(RSP.second);
+    if (EHPad)
+      if (auto It = GlobalIndices.find(EHPad); It != GlobalIndices.end())
+        for (auto &RSP : It->second)
+          ReservedSlots.insert(RSP.second);
   }
 
   // Get frame index to spill the register.
@@ -381,14 +375,12 @@ public:
                   EndIdx = MI.getNumOperands();
          Idx < EndIdx; ++Idx) {
       MachineOperand &MO = MI.getOperand(Idx);
-      // Leave `undef` operands as is, StackMaps will rewrite them
-      // into a constant.
       if (!MO.isReg() || MO.isImplicit() || MO.isUndef())
         continue;
       Register Reg = MO.getReg();
       assert(Reg.isPhysical() && "Only physical regs are expected");
 
-      if (isCalleeSaved(Reg) && (AllowGCPtrInCSR || !is_contained(GCRegs, Reg)))
+      if (isCalleeSaved(Reg) && (AllowGCPtrInCSR || !GCRegs.contains(Reg)))
         continue;
 
       LLVM_DEBUG(dbgs() << "Will spill " << printReg(Reg, &TRI) << " at index "
@@ -407,7 +399,6 @@ public:
   void spillRegisters() {
     for (Register Reg : RegsToSpill) {
       int FI = CacheFI.getFrameIndex(Reg, EHPad);
-      const TargetRegisterClass *RC = TRI.getMinimalPhysRegClass(Reg);
 
       NumSpilledRegisters++;
       RegToSlotIdx[Reg] = FI;
@@ -419,6 +410,7 @@ public:
       bool IsKill = true;
       MachineBasicBlock::iterator InsertBefore(MI);
       Reg = performCopyPropagation(Reg, InsertBefore, IsKill, TII, TRI);
+      const TargetRegisterClass *RC = TRI.getMinimalPhysRegClass(Reg);
 
       LLVM_DEBUG(dbgs() << "Insert spill before " << *InsertBefore);
       TII.storeRegToStackSlot(*MI.getParent(), InsertBefore, Reg, IsKill, FI,
@@ -459,9 +451,9 @@ public:
       LLVM_DEBUG(dbgs() << "Reloading " << printReg(Reg, &TRI) << " from FI "
                         << RegToSlotIdx[Reg] << " after statepoint\n");
 
-      if (EHPad && !RC.hasReload(Reg, RegToSlotIdx[Reg], EHPad)) {
-        RC.recordReload(Reg, RegToSlotIdx[Reg], EHPad);
-        auto EHPadInsertPoint = EHPad->SkipPHIsLabelsAndDebug(EHPad->begin());
+      if (EHPad && RC.tryRecordReload(Reg, RegToSlotIdx[Reg], EHPad)) {
+        auto EHPadInsertPoint =
+            EHPad->SkipPHIsLabelsAndDebug(EHPad->begin(), Reg);
         insertReloadBefore(Reg, EHPadInsertPoint, EHPad);
         LLVM_DEBUG(dbgs() << "...also reload at EHPad "
                           << printMBBReference(*EHPad) << "\n");

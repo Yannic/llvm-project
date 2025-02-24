@@ -1,5 +1,5 @@
-; RUN: llc -verify-machineinstrs -mcpu=pwr7 -code-model=medium <%s | FileCheck %s
-; RUN: llc -verify-machineinstrs -mcpu=pwr7 -code-model=large <%s | FileCheck -check-prefix=LARGE  %s
+; RUN: llc -verify-machineinstrs -mcpu=pwr7 -ppc-min-jump-table-entries=4 -code-model=medium <%s | FileCheck %s
+; RUN: llc -verify-machineinstrs -mcpu=pwr7 -ppc-min-jump-table-entries=4 -code-model=large <%s | FileCheck -check-prefix=LARGE  %s
 
 ; Test correct code generation for medium and large code model
 ; for loading the address of a jump table from the TOC.
@@ -55,8 +55,8 @@ sw.epilog:                                        ; preds = %sw.bb3, %sw.default
 
 ; CHECK:       addis [[REG1:[0-9]+]], 2, .LC[[TOCNUM:[0-9]+]]@toc@ha
 ; CHECK:       ld [[REG2:[0-9]+]], .LC[[TOCNUM]]@toc@l([[REG1]])
-; CHECK:       lwax [[REG3:[0-9]+]], {{[0-9]+}}, [[REG2]]
-; CHECK-NEXT:  add  [[REG4:[0-9]+]], [[REG3]], [[REG2]]
+; CHECK:       lwax [[REG3:[0-9]+]], [[REG2]], {{[0-9]+}}
+; CHECK-NEXT:  add  [[REG4:[0-9]+]], [[REG2]], [[REG3]]
 ; CHECK-NEXT:  mtctr [[REG4]]
 ; CHECK-NEXT:  bctr
 
@@ -70,8 +70,8 @@ sw.epilog:                                        ; preds = %sw.bb3, %sw.default
 
 ; LARGE:       addis [[REG1:[0-9]+]], 2, .LC[[TOCNUM:[0-9]+]]@toc@ha
 ; LARGE:       ld [[REG2:[0-9]+]], .LC[[TOCNUM]]@toc@l([[REG1]])
-; LARGE:       lwax [[REG3:[0-9]+]], {{[0-9]+}}, [[REG2]]
-; LARGE-NEXT:  add  [[REG4:[0-9]+]], [[REG3]], [[REGBASE]]
+; LARGE:       lwax [[REG3:[0-9]+]], [[REG2]], {{[0-9]+}}
+; LARGE-NEXT:  add  [[REG4:[0-9]+]], [[REGBASE]], [[REG3]]
 ; LARGE-NEXT:  mtctr [[REG4]]
 ; LARGE-NEXT:  bctr
 

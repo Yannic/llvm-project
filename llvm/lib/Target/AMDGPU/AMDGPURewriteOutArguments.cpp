@@ -43,9 +43,9 @@
 
 #include "AMDGPU.h"
 #include "Utils/AMDGPUBaseInfo.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
+#include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/InitializePasses.h"
@@ -330,6 +330,8 @@ bool AMDGPURewriteOutArguments::runOnFunction(Function &F) {
   NewFunc->removeRetAttrs(RetAttrs);
   // TODO: How to preserve metadata?
 
+  NewFunc->setIsNewDbgInfoFormat(F.IsNewDbgInfoFormat);
+
   // Move the body of the function into the new rewritten function, and replace
   // this function with a stub.
   NewFunc->splice(NewFunc->begin(), &F);
@@ -374,22 +376,16 @@ bool AMDGPURewriteOutArguments::runOnFunction(Function &F) {
 
   int RetIdx = RetTy->isVoidTy() ? 0 : 1;
   for (Argument &Arg : F.args()) {
-    if (!OutArgIndexes.count(Arg.getArgNo()))
+    auto It = OutArgIndexes.find(Arg.getArgNo());
+    if (It == OutArgIndexes.end())
       continue;
 
-    PointerType *ArgType = cast<PointerType>(Arg.getType());
-
-    Type *EltTy = OutArgIndexes[Arg.getArgNo()];
+    Type *EltTy = It->second;
     const auto Align =
         DL->getValueOrABITypeAlignment(Arg.getParamAlign(), EltTy);
 
     Value *Val = B.CreateExtractValue(StubCall, RetIdx++);
-    Type *PtrTy = Val->getType()->getPointerTo(ArgType->getAddressSpace());
-
-    // We can peek through bitcasts, so the type may not match.
-    Value *PtrVal = B.CreateBitCast(&Arg, PtrTy);
-
-    B.CreateAlignedStore(Val, PtrVal, Align);
+    B.CreateAlignedStore(Val, &Arg, Align);
   }
 
   if (!RetTy->isVoidTy()) {

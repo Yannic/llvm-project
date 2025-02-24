@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/Orc/EPCGenericRTDyldMemoryManager.h"
-#include "llvm/ExecutionEngine/Orc/EPCGenericMemoryAccess.h"
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -235,7 +234,7 @@ bool EPCGenericRTDyldMemoryManager::finalizeMemory(std::string *ErrMsg) {
     for (unsigned I = 0; I != 3; ++I) {
       FR.Segments.push_back({});
       auto &Seg = FR.Segments.back();
-      Seg.AG = SegMemProts[I];
+      Seg.RAG = SegMemProts[I];
       Seg.Addr = RemoteAddrs[I]->Start;
       for (auto &SecAlloc : *SegSections[I]) {
         Seg.Size = alignTo(Seg.Size, SecAlloc.Align);

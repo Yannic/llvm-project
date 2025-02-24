@@ -83,10 +83,13 @@ define i32 @test3.unhandled(i32 %val) {
 ; CHECK-LABEL: @test3.unhandled(
 ; CHECK-NEXT:    [[COND0:%.*]] = icmp slt i32 [[VAL:%.*]], 40
 ; CHECK-NEXT:    call void (i1, ...) @llvm.experimental.guard(i1 [[COND0]]) [ "deopt"() ]
-; CHECK-NEXT:    call void (i1, ...) @llvm.experimental.guard(i1 false) [ "deopt"() ]
+; CHECK-NEXT:    [[COND1:%.*]] = icmp sge i32 [[VAL]], 40
+; CHECK-NEXT:    call void (i1, ...) @llvm.experimental.guard(i1 [[COND1]]) [ "deopt"() ]
 ; CHECK-NEXT:    ret i32 0
 ;
 
+; Demonstrates a case we do not yet handle (it is legal to fold %cond2
+; to false)
   %cond0 = icmp slt i32 %val, 40
   call void(i1,...) @llvm.experimental.guard(i1 %cond0) [ "deopt"() ]
   %cond1 = icmp sge i32 %val, 40
@@ -136,7 +139,7 @@ right:
 }
 
 define i32 @test5(i32 %val, i1 %c) {
-; Same as test4, but the %left block has mutliple predecessors.
+; Same as test4, but the %left block has multiple predecessors.
 ; CHECK-LABEL: @test5(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    [[COND0:%.*]] = icmp slt i32 [[VAL:%.*]], 40

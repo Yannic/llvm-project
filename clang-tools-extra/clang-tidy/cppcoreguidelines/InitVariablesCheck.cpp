@@ -8,9 +8,10 @@
 
 #include "InitVariablesCheck.h"
 
+#include "../utils/LexerUtils.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Type.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
 #include <optional>
 
@@ -59,6 +60,10 @@ void InitVariablesCheck::check(const MatchFinder::MatchResult &Result) {
   const ASTContext &Context = *Result.Context;
   const SourceManager &Source = Context.getSourceManager();
 
+  // Clang diagnostic error may cause the variable to be an invalid int vardecl
+  if (MatchedDecl->isInvalidDecl())
+    return;
+
   // We want to warn about cases where the type name
   // comes from a macro like this:
   //
@@ -103,8 +108,9 @@ void InitVariablesCheck::check(const MatchFinder::MatchResult &Result) {
         << MatchedDecl;
     if (*InitializationString != nullptr)
       Diagnostic << FixItHint::CreateInsertion(
-          MatchedDecl->getLocation().getLocWithOffset(
-              MatchedDecl->getName().size()),
+          utils::lexer::findNextTerminator(MatchedDecl->getLocation(),
+                                           *Result.SourceManager,
+                                           Result.Context->getLangOpts()),
           *InitializationString);
     if (AddMathInclude) {
       Diagnostic << IncludeInserter.createIncludeInsertion(

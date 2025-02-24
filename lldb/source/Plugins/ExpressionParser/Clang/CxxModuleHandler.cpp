@@ -239,7 +239,8 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
         LLDB_LOG_ERROR(log, type.takeError(), "Couldn't import type: {0}");
         return std::nullopt;
       }
-      imported_args.push_back(TemplateArgument(*type));
+      imported_args.push_back(
+          TemplateArgument(*type, /*isNullPtr*/ false, arg.getIsDefaulted()));
       break;
     }
     case TemplateArgument::Integral: {
@@ -250,8 +251,8 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
         LLDB_LOG_ERROR(log, type.takeError(), "Couldn't import type: {0}");
         return std::nullopt;
       }
-      imported_args.push_back(
-          TemplateArgument(d->getASTContext(), integral, *type));
+      imported_args.push_back(TemplateArgument(d->getASTContext(), integral,
+                                               *type, arg.getIsDefaulted()));
       break;
     }
     default:
@@ -279,7 +280,8 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
       new_class_template->getDeclContext(),
       new_class_template->getTemplatedDecl()->getLocation(),
       new_class_template->getLocation(), new_class_template, imported_args,
-      nullptr);
+      td->hasStrictPackMatch(),
+      /*PrevDecl=*/nullptr);
 
   new_class_template->AddSpecialization(result, InsertPos);
   if (new_class_template->isOutOfLine())

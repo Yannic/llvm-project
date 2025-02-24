@@ -8,7 +8,7 @@
 #ifndef MLIR_CONVERSION_AMDGPUTOROCDL_AMDGPUTOROCDL_H_
 #define MLIR_CONVERSION_AMDGPUTOROCDL_AMDGPUTOROCDL_H_
 
-#include "mlir/Conversion/AMDGPUToROCDL/Chipset.h"
+#include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
 #include <memory>
 #include <string>
 
@@ -18,14 +18,15 @@ class LLVMTypeConverter;
 class RewritePatternSet;
 class Pass;
 
-#define GEN_PASS_DECL_CONVERTAMDGPUTOROCDL
+#define GEN_PASS_DECL_CONVERTAMDGPUTOROCDLPASS
 #include "mlir/Conversion/Passes.h.inc"
 
-void populateAMDGPUToROCDLConversionPatterns(LLVMTypeConverter &converter,
+/// Note: The ROCDL target does not support the LLVM bfloat type at this time
+/// and so this function will add conversions to change all `bfloat` uses
+/// to `i16`.
+void populateAMDGPUToROCDLConversionPatterns(const LLVMTypeConverter &converter,
                                              RewritePatternSet &patterns,
                                              amdgpu::Chipset chipset);
-
-std::unique_ptr<Pass> createConvertAMDGPUToROCDLPass();
 
 } // namespace mlir
 

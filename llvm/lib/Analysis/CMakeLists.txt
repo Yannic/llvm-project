@@ -26,7 +26,6 @@ endif()
 add_llvm_component_library(LLVMAnalysis
   AliasAnalysis.cpp
   AliasAnalysisEvaluator.cpp
-  AliasAnalysisSummary.cpp
   AliasSetTracker.cpp
   Analysis.cpp
   AssumeBundleQueries.cpp
@@ -47,6 +46,7 @@ add_llvm_component_library(LLVMAnalysis
   CostModel.cpp
   CodeMetrics.cpp
   ConstantFolding.cpp
+  CtxProfAnalysis.cpp
   CycleAnalysis.cpp
   DDG.cpp
   DDGPrinter.cpp
@@ -56,11 +56,12 @@ add_llvm_component_library(LLVMAnalysis
   DependenceAnalysis.cpp
   DependenceGraphBuilder.cpp
   DevelopmentModeInlineAdvisor.cpp
-  DivergenceAnalysis.cpp
+  DomConditionCache.cpp
   DomPrinter.cpp
   DomTreeUpdater.cpp
   DominanceFrontier.cpp
-  EHPersonalities.cpp
+  DXILResource.cpp
+  DXILMetadataAnalysis.cpp
   FunctionPropertiesAnalysis.cpp
   GlobalsModRef.cpp
   GuardUtils.cpp
@@ -77,13 +78,13 @@ add_llvm_component_library(LLVMAnalysis
   InstCount.cpp
   InstructionPrecedenceTracking.cpp
   InstructionSimplify.cpp
-  Interval.cpp
-  IntervalPartition.cpp
+  InteractiveModelRunner.cpp
+  KernelInfo.cpp
+  LastRunTrackingAnalysis.cpp
   LazyBranchProbabilityInfo.cpp
   LazyBlockFrequencyInfo.cpp
   LazyCallGraph.cpp
   LazyValueInfo.cpp
-  LegacyDivergenceAnalysis.cpp
   Lint.cpp
   Loads.cpp
   Local.cpp
@@ -95,7 +96,6 @@ add_llvm_component_library(LLVMAnalysis
   LoopInfo.cpp
   LoopPass.cpp
   MLInlineAdvisor.cpp
-  MemDepPrinter.cpp
   MemDerefPrinter.cpp
   MemoryBuiltins.cpp
   MemoryDependenceAnalysis.cpp
@@ -128,7 +128,7 @@ add_llvm_component_library(LLVMAnalysis
   ScalarEvolutionNormalization.cpp
   StackLifetime.cpp
   StackSafetyAnalysis.cpp
-  SyncDependenceAnalysis.cpp
+  StructuralHash.cpp
   SyntheticCountsUtils.cpp
   TFLiteUtils.cpp
   TargetLibraryInfo.cpp
@@ -144,7 +144,6 @@ add_llvm_component_library(LLVMAnalysis
   ValueLatticeUtils.cpp
   ValueTracking.cpp
   VectorUtils.cpp
-  VFABIDemangling.cpp
   ${GeneratedMLSources}
 
   ADDITIONAL_HEADER_DIRS
@@ -165,3 +164,9 @@ add_llvm_component_library(LLVMAnalysis
   Support
   TargetParser
   )
+
+include(CheckCXXSymbolExists)
+check_cxx_symbol_exists(logf128 math.h HAS_LOGF128)
+if(HAS_LOGF128)
+ target_compile_definitions(LLVMAnalysis PRIVATE HAS_LOGF128)
+endif()

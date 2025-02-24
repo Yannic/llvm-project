@@ -1,4 +1,4 @@
-add_libc_testsuite(libc_setjmp_unittests)
+add_custom_target(libc_setjmp_unittests)
 
 # Skip setjmp tests under sanitizers
 if(LLVM_USE_SANITIZER)
@@ -11,8 +11,9 @@ add_libc_unittest(
     libc_setjmp_unittests
   SRCS
     setjmp_test.cpp
+  CXX_STANDARD
+    20
   DEPENDS
-    libc.include.setjmp
     libc.src.setjmp.longjmp
     libc.src.setjmp.setjmp
 )

@@ -154,7 +154,7 @@ bool LivePhysRegs::available(const MachineRegisterInfo &MRI,
 /// Add live-in registers of basic block \p MBB to \p LiveRegs.
 void LivePhysRegs::addBlockLiveIns(const MachineBasicBlock &MBB) {
   for (const auto &LI : MBB.liveins()) {
-    MCPhysReg Reg = LI.PhysReg;
+    MCRegister Reg = LI.PhysReg;
     LaneBitmask Mask = LI.LaneMask;
     MCSubRegIndexIterator S(Reg, TRI);
     assert(Mask.any() && "Invalid livein mask");
@@ -265,14 +265,9 @@ void llvm::addLiveIns(MachineBasicBlock &MBB, const LivePhysRegs &LiveRegs) {
     if (MRI.isReserved(Reg))
       continue;
     // Skip the register if we are about to add one of its super registers.
-    bool ContainsSuperReg = false;
-    for (MCSuperRegIterator SReg(Reg, &TRI); SReg.isValid(); ++SReg) {
-      if (LiveRegs.contains(*SReg) && !MRI.isReserved(*SReg)) {
-        ContainsSuperReg = true;
-        break;
-      }
-    }
-    if (ContainsSuperReg)
+    if (any_of(TRI.superregs(Reg), [&](MCPhysReg SReg) {
+          return LiveRegs.contains(SReg) && !MRI.isReserved(SReg);
+        }))
       continue;
     MBB.addLiveIn(Reg);
   }
@@ -306,7 +301,7 @@ void llvm::recomputeLivenessFlags(MachineBasicBlock &MBB) {
       // the last instruction in the block.
       if (MI.isReturn() && MFI.isCalleeSavedInfoValid()) {
         for (const CalleeSavedInfo &Info : MFI.getCalleeSavedInfo()) {
-          if (Info.getReg() == Reg) {
+          if (Info.getReg() == Reg.asMCReg()) {
             IsNotLive = !Info.isRestored();
             break;
           }

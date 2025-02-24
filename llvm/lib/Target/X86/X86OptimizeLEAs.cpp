@@ -321,8 +321,7 @@ int X86OptimizeLEAPass::calcInstrDist(const MachineInstr &First,
   // presented in InstrPos.
   assert(Last.getParent() == First.getParent() &&
          "Instructions are in different basic blocks");
-  assert(InstrPos.find(&First) != InstrPos.end() &&
-         InstrPos.find(&Last) != InstrPos.end() &&
+  assert(InstrPos.contains(&First) && InstrPos.contains(&Last) &&
          "Instructions' positions are undefined");
 
   return InstrPos[&Last] - InstrPos[&First];
@@ -742,9 +741,7 @@ bool X86OptimizeLEAPass::runOnMachineFunction(MachineFunction &MF) {
 
     // Remove redundant address calculations. Do it only for -Os/-Oz since only
     // a code size gain is expected from this part of the pass.
-    bool OptForSize = MF.getFunction().hasOptSize() ||
-                      llvm::shouldOptimizeForSize(&MBB, PSI, MBFI);
-    if (OptForSize)
+    if (llvm::shouldOptimizeForSize(&MBB, PSI, MBFI))
       Changed |= removeRedundantAddrCalc(LEAs);
   }
 

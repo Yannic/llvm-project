@@ -15,8 +15,8 @@
 
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace clang {
 namespace targets {
@@ -29,6 +29,8 @@ public:
     TLSSupported = false;
     PointerWidth = 16;
     PointerAlign = 8;
+    ShortWidth = 16;
+    ShortAlign = 8;
     IntWidth = 16;
     IntAlign = 8;
     LongWidth = 32;
@@ -61,15 +63,17 @@ public:
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
 
-  ArrayRef<Builtin::Info> getTargetBuiltins() const override {
-    return std::nullopt;
+  llvm::SmallVector<Builtin::InfosShard> getTargetBuiltins() const override {
+    return {};
   }
+
+  bool allowsLargerPreferedTypeAlignment() const override { return false; }
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::VoidPtrBuiltinVaList;
   }
 
-  const char *getClobbers() const override { return ""; }
+  std::string_view getClobbers() const override { return ""; }
 
   ArrayRef<const char *> getGCCRegNames() const override {
     static const char *const GCCRegNames[] = {
@@ -80,7 +84,7 @@ public:
   }
 
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override {
-    return std::nullopt;
+    return {};
   }
 
   ArrayRef<TargetInfo::AddlRegName> getGCCAddlRegNames() const override {
@@ -146,7 +150,9 @@ public:
     case 'R': // Integer constant (Range: -6 to 5)
       Info.setRequiresImmediate(-6, 5);
       return true;
-    case 'G': // Floating point constant
+    case 'G': // Floating point constant 0.0
+      Info.setRequiresImmediate(0);
+      return true;
     case 'Q': // A memory address based on Y or Z pointer with displacement.
       return true;
     }
@@ -170,7 +176,12 @@ public:
   bool isValidCPUName(StringRef Name) const override;
   void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
   bool setCPU(const std::string &Name) override;
+  std::optional<std::string> handleAsmEscapedChar(char EscChar) const override;
   StringRef getABI() const override { return ABI; }
+
+  std::pair<unsigned, unsigned> hardwareInterferenceSizes() const override {
+    return std::make_pair(32, 32);
+  }
 
 protected:
   std::string CPU;

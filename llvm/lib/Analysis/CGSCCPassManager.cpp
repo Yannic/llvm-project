@@ -13,6 +13,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/IR/Constant.h"
@@ -25,15 +26,15 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
-#include <iterator>
 #include <optional>
 
 #define DEBUG_TYPE "cgscc"
 
 using namespace llvm;
+
+STATISTIC(LargestCGSCC, "Number of functions in the largest SCC");
 
 // Explicit template instantiations and specialization definitions for core
 // template typedefs.
@@ -84,12 +85,9 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
     if (!PI.runBeforePass(*Pass, *C))
       continue;
 
-    PreservedAnalyses PassPA = Pass->run(*C, AM, G, UR);
+    LargestCGSCC.updateMax(C->size());
 
-    if (UR.InvalidatedSCCs.count(C))
-      PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass, PassPA);
-    else
-      PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C, PassPA);
+    PreservedAnalyses PassPA = Pass->run(*C, AM, G, UR);
 
     // Update the SCC if necessary.
     C = UR.UpdatedC ? UR.UpdatedC : C;
@@ -107,6 +105,7 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
     // If the CGSCC pass wasn't able to provide a valid updated SCC, the
     // current SCC may simply need to be skipped if invalid.
     if (UR.InvalidatedSCCs.count(C)) {
+      PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass, PassPA);
       LLVM_DEBUG(dbgs() << "Skipping invalidated root or island SCC!\n");
       break;
     }
@@ -117,6 +116,8 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
     // Update the analysis manager as each pass runs and potentially
     // invalidates analyses.
     AM.invalidate(*C, PassPA);
+
+    PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C, PassPA);
   }
 
   // Before we mark all of *this* SCC's analyses as preserved below, intersect
@@ -152,18 +153,22 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
   SmallPriorityWorklist<LazyCallGraph::RefSCC *, 1> RCWorklist;
   SmallPriorityWorklist<LazyCallGraph::SCC *, 1> CWorklist;
 
-  // Keep sets for invalidated SCCs and RefSCCs that should be skipped when
+  // Keep sets for invalidated SCCs that should be skipped when
   // iterating off the worklists.
-  SmallPtrSet<LazyCallGraph::RefSCC *, 4> InvalidRefSCCSet;
   SmallPtrSet<LazyCallGraph::SCC *, 4> InvalidSCCSet;
 
   SmallDenseSet<std::pair<LazyCallGraph::Node *, LazyCallGraph::SCC *>, 4>
       InlinedInternalEdges;
 
-  CGSCCUpdateResult UR = {
-      RCWorklist,           CWorklist, InvalidRefSCCSet,
-      InvalidSCCSet,        nullptr,   PreservedAnalyses::all(),
-      InlinedInternalEdges, {}};
+  SmallVector<Function *, 4> DeadFunctions;
+
+  CGSCCUpdateResult UR = {CWorklist,
+                          InvalidSCCSet,
+                          nullptr,
+                          PreservedAnalyses::all(),
+                          InlinedInternalEdges,
+                          DeadFunctions,
+                          {}};
 
   // Request PassInstrumentation from analysis manager, will use it to run
   // instrumenting callbacks for the passes later.
@@ -190,11 +195,6 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
 
     do {
       LazyCallGraph::RefSCC *RC = RCWorklist.pop_back_val();
-      if (InvalidRefSCCSet.count(RC)) {
-        LLVM_DEBUG(dbgs() << "Skipping an invalid RefSCC...\n");
-        continue;
-      }
-
       assert(CWorklist.empty() &&
              "Should always start with an empty SCC worklist");
 
@@ -237,7 +237,7 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
         // rather one pass of the RefSCC creating one child RefSCC at a time.
 
         // Ensure we can proxy analysis updates from the CGSCC analysis manager
-        // into the the Function analysis manager by getting a proxy here.
+        // into the Function analysis manager by getting a proxy here.
         // This also needs to update the FunctionAnalysisManager, as this may be
         // the first time we see this SCC.
         CGAM.getResult<FunctionAnalysisManagerCGSCCProxy>(*C, CG).updateFAM(
@@ -276,11 +276,6 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
 
           PreservedAnalyses PassPA = Pass->run(*C, CGAM, CG, UR);
 
-          if (UR.InvalidatedSCCs.count(C))
-            PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass, PassPA);
-          else
-            PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C, PassPA);
-
           // Update the SCC and RefSCC if necessary.
           C = UR.UpdatedC ? UR.UpdatedC : C;
 
@@ -301,6 +296,7 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
           // If the CGSCC pass wasn't able to provide a valid updated SCC,
           // the current SCC may simply need to be skipped if invalid.
           if (UR.InvalidatedSCCs.count(C)) {
+            PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass, PassPA);
             LLVM_DEBUG(dbgs() << "Skipping invalidated root or island SCC!\n");
             break;
           }
@@ -315,6 +311,8 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
           // late as it contains the nodes that were actively being
           // processed.
           CGAM.invalidate(*C, PassPA);
+
+          PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C, PassPA);
 
           // The pass may have restructured the call graph and refined the
           // current SCC and/or RefSCC. We need to update our current SCC and
@@ -343,6 +341,15 @@ ModuleToPostOrderCGSCCPassAdaptor::run(Module &M, ModuleAnalysisManager &AM) {
       InlinedInternalEdges.clear();
     } while (!RCWorklist.empty());
   }
+
+  CG.removeDeadFunctions(DeadFunctions);
+  for (Function *DeadF : DeadFunctions)
+    DeadF->eraseFromParent();
+
+#if defined(EXPENSIVE_CHECKS)
+  // Verify that the call graph is still valid.
+  CG.verify();
+#endif
 
   // By definition we preserve the call garph, all SCC analyses, and the
   // analysis proxies by handling them above and in any nested pass managers.
@@ -408,24 +415,26 @@ PreservedAnalyses DevirtSCCRepeatedPass::run(LazyCallGraph::SCC &InitialC,
 
     PreservedAnalyses PassPA = Pass->run(*C, AM, CG, UR);
 
-    if (UR.InvalidatedSCCs.count(C))
-      PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass, PassPA);
-    else
-      PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C, PassPA);
-
     PA.intersect(PassPA);
+
+    // If the CGSCC pass wasn't able to provide a valid updated SCC, the
+    // current SCC may simply need to be skipped if invalid.
+    if (UR.InvalidatedSCCs.count(C)) {
+      PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass, PassPA);
+      LLVM_DEBUG(dbgs() << "Skipping invalidated root or island SCC!\n");
+      break;
+    }
+
+    // Update the analysis manager with each run and intersect the total set
+    // of preserved analyses so we're ready to iterate.
+    AM.invalidate(*C, PassPA);
+
+    PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C, PassPA);
 
     // If the SCC structure has changed, bail immediately and let the outer
     // CGSCC layer handle any iteration to reflect the refined structure.
     if (UR.UpdatedC && UR.UpdatedC != C)
       break;
-
-    // If the CGSCC pass wasn't able to provide a valid updated SCC, the
-    // current SCC may simply need to be skipped if invalid.
-    if (UR.InvalidatedSCCs.count(C)) {
-      LLVM_DEBUG(dbgs() << "Skipping invalidated root or island SCC!\n");
-      break;
-    }
 
     assert(C->begin() != C->end() && "Cannot have an empty SCC!");
 
@@ -490,10 +499,6 @@ PreservedAnalyses DevirtSCCRepeatedPass::run(LazyCallGraph::SCC &InitialC,
 
     // Move over the new call counts in preparation for iterating.
     CallCounts = std::move(NewCallCounts);
-
-    // Update the analysis manager with each run and intersect the total set
-    // of preserved analyses so we're ready to iterate.
-    AM.invalidate(*C, PassPA);
   }
 
   // Note that we don't add any preserved entries here unlike a more normal
@@ -539,14 +544,13 @@ PreservedAnalyses CGSCCToFunctionPassAdaptor::run(LazyCallGraph::SCC &C,
       continue;
 
     PreservedAnalyses PassPA = Pass->run(F, FAM);
-    PI.runAfterPass<Function>(*Pass, F, PassPA);
 
     // We know that the function pass couldn't have invalidated any other
     // function's analyses (that's the contract of a function pass), so
     // directly handle the function analysis manager's invalidation here.
     FAM.invalidate(F, EagerlyInvalidate ? PreservedAnalyses::none() : PassPA);
-    if (NoRerun)
-      (void)FAM.getResult<ShouldNotRunFunctionPassesAnalysis>(F);
+
+    PI.runAfterPass<Function>(*Pass, F, PassPA);
 
     // Then intersect the preserved set so that invalidation of module
     // analyses will eventually occur when the module pass completes.
@@ -1032,36 +1036,6 @@ static LazyCallGraph::SCC &updateCGAndAnalysisManagerForPass(
     return true;
   });
 
-  // Now do a batch removal of the internal ref edges left.
-  auto NewRefSCCs = RC->removeInternalRefEdge(N, DeadTargets);
-  if (!NewRefSCCs.empty()) {
-    // The old RefSCC is dead, mark it as such.
-    UR.InvalidatedRefSCCs.insert(RC);
-
-    // Note that we don't bother to invalidate analyses as ref-edge
-    // connectivity is not really observable in any way and is intended
-    // exclusively to be used for ordering of transforms rather than for
-    // analysis conclusions.
-
-    // Update RC to the "bottom".
-    assert(G.lookupSCC(N) == C && "Changed the SCC when splitting RefSCCs!");
-    RC = &C->getOuterRefSCC();
-    assert(G.lookupRefSCC(N) == RC && "Failed to update current RefSCC!");
-
-    // The RC worklist is in reverse postorder, so we enqueue the new ones in
-    // RPO except for the one which contains the source node as that is the
-    // "bottom" we will continue processing in the bottom-up walk.
-    assert(NewRefSCCs.front() == RC &&
-           "New current RefSCC not first in the returned list!");
-    for (RefSCC *NewRC : llvm::reverse(llvm::drop_begin(NewRefSCCs))) {
-      assert(NewRC != RC && "Should not encounter the current RefSCC further "
-                            "in the postorder list of new RefSCCs.");
-      UR.RCWorklist.insert(NewRC);
-      LLVM_DEBUG(dbgs() << "Enqueuing a new RefSCC in the update worklist: "
-                        << *NewRC << "\n");
-    }
-  }
-
   // Next demote all the call edges that are now ref edges. This helps make
   // the SCCs small which should minimize the work below as we don't want to
   // form cycles that this would break.
@@ -1194,7 +1168,6 @@ static LazyCallGraph::SCC &updateCGAndAnalysisManagerForPass(
   }
 
   assert(!UR.InvalidatedSCCs.count(C) && "Invalidated the current SCC!");
-  assert(!UR.InvalidatedRefSCCs.count(RC) && "Invalidated the current RefSCC!");
   assert(&C->getOuterRefSCC() == RC && "Current SCC not in current RefSCC!");
 
   // Record the current SCC for higher layers of the CGSCC pass manager now that

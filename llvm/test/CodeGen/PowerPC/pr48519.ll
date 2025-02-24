@@ -20,17 +20,17 @@ define void @julia__typed_vcat_20() #0 {
 ; CHECK-NEXT:    addi r3, r3, -1
 ; CHECK-NEXT:    mtfprd f0, r3
 ; CHECK-NEXT:    xscvsxdsp f1, f0
-; CHECK-NEXT:    bl __gnu_f2h_ieee
+; CHECK-NEXT:    bl __truncsfhf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    clrldi r3, r3, 48
-; CHECK-NEXT:    bl __gnu_h2f_ieee
+; CHECK-NEXT:    bl __extendhfsf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    addi r30, r30, -1
 ; CHECK-NEXT:    li r3, 0
 ; CHECK-NEXT:    cmpldi r30, 0
 ; CHECK-NEXT:    bc 12, gt, .LBB0_1
 ; CHECK-NEXT:  # %bb.2: # %bb11
-; CHECK-NEXT:    bl __gnu_f2h_ieee
+; CHECK-NEXT:    bl __truncsfhf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    sth r3, 0(r3)
 ;
@@ -95,7 +95,7 @@ define void @julia__hypot_17() #0 {
 ; CHECK-NEXT:  # %bb.2: # %bb3
 ; CHECK-NEXT:    #
 ; CHECK-NEXT:    lhz r3, 0(0)
-; CHECK-NEXT:    bl __gnu_h2f_ieee
+; CHECK-NEXT:    bl __extendhfsf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    fcmpu cr0, f1, f1
 ; CHECK-NEXT:    bun cr0, .LBB1_1
@@ -147,8 +147,8 @@ define void @func_48786() #0 {
 ; CHECK-LABEL: func_48786:
 ; CHECK:       # %bb.0: # %bb
 ; CHECK-NEXT:    mfocrf r12, 32
-; CHECK-NEXT:    mflr r0
 ; CHECK-NEXT:    stw r12, 8(r1)
+; CHECK-NEXT:    mflr r0
 ; CHECK-NEXT:    stdu r1, -48(r1)
 ; CHECK-NEXT:    std r0, 64(r1)
 ; CHECK-NEXT:    std r30, 32(r1) # 8-byte Folded Spill
@@ -169,12 +169,12 @@ define void @func_48786() #0 {
 ; CHECK-NEXT:  # %bb.3: # %bb4
 ; CHECK-NEXT:    #
 ; CHECK-NEXT:    lhz r3, 0(r3)
-; CHECK-NEXT:    bl __gnu_h2f_ieee
+; CHECK-NEXT:    bl __extendhfsf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    bc 4, 4*cr2+lt, .LBB2_6
 ; CHECK-NEXT:  # %bb.4: # %bb8
 ; CHECK-NEXT:    #
-; CHECK-NEXT:    bl __gnu_f2h_ieee
+; CHECK-NEXT:    bl __truncsfhf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    sth r3, 0(0)
 ; CHECK-NEXT:    b .LBB2_1
@@ -183,8 +183,8 @@ define void @func_48786() #0 {
 ; CHECK-NEXT:    addi r1, r1, 48
 ; CHECK-NEXT:    ld r0, 16(r1)
 ; CHECK-NEXT:    lwz r12, 8(r1)
-; CHECK-NEXT:    mtocrf 32, r12
 ; CHECK-NEXT:    mtlr r0
+; CHECK-NEXT:    mtocrf 32, r12
 ; CHECK-NEXT:    blr
 ; CHECK-NEXT:  .LBB2_6: # %bb15
 ;
@@ -273,7 +273,7 @@ define void @func_48785(half %arg) #0 {
 ; CHECK-NEXT:  .LBB3_1: # %bb1
 ; CHECK-NEXT:    #
 ; CHECK-NEXT:    fmr f1, f31
-; CHECK-NEXT:    bl __gnu_f2h_ieee
+; CHECK-NEXT:    bl __truncsfhf2
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:    addi r30, r30, -1
 ; CHECK-NEXT:    sth r3, 0(r29)

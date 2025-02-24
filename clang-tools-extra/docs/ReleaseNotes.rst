@@ -43,8 +43,6 @@ infrastructure are described first, followed by tool-specific sections.
 Major New Features
 ------------------
 
-...
-
 Improvements to clangd
 ----------------------
 
@@ -66,6 +64,9 @@ Hover
 Code completion
 ^^^^^^^^^^^^^^^
 
+Code actions
+^^^^^^^^^^^^
+
 Signature help
 ^^^^^^^^^^^^^^
 
@@ -84,13 +85,6 @@ Improvements to clang-doc
 Improvements to clang-query
 ---------------------------
 
-The improvements are...
-
-Improvements to clang-rename
-----------------------------
-
-The improvements are...
-
 Improvements to clang-tidy
 --------------------------
 
@@ -103,8 +97,29 @@ New check aliases
 Changes in existing checks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+- Improved :doc:`bugprone-string-constructor
+  <clang-tidy/checks/bugprone/string-constructor>` check to find suspicious
+  calls of ``std::string`` constructor with char pointer, start position and
+  length parameters.
+
+- Improved :doc:`bugprone-unsafe-functions
+  <clang-tidy/checks/bugprone/unsafe-functions>` check to allow specifying
+  additional C++ member functions to match.
+
+- Improved :doc:`misc-const-correctness
+  <clang-tidy/checks/misc/const-correctness>` check by adding the option
+  `AllowedTypes`, that excludes specified types from const-correctness
+  checking.
+
+- Improved :doc:`misc-redundant-expression
+  <clang-tidy/checks/misc/redundant-expression>` check by providing additional
+  examples and fixing some macro related false positives.
+
 Removed checks
 ^^^^^^^^^^^^^^
+
+Miscellaneous
+^^^^^^^^^^^^^
 
 Improvements to include-fixer
 -----------------------------

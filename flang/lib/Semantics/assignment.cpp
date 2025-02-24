@@ -42,10 +42,10 @@ public:
   void Analyze(const parser::AssignmentStmt &);
   void Analyze(const parser::PointerAssignmentStmt &);
   void Analyze(const parser::ConcurrentControl &);
+  int deviceConstructDepth_{0};
 
 private:
-  bool CheckForPureContext(const SomeExpr &rhs, parser::CharBlock rhsSource,
-      bool isPointerAssignment);
+  bool CheckForPureContext(const SomeExpr &rhs, parser::CharBlock rhsSource);
   void CheckShape(parser::CharBlock, const SomeExpr *);
   template <typename... A>
   parser::Message *Say(parser::CharBlock at, A &&...args) {
@@ -67,17 +67,40 @@ void AssignmentContext::Analyze(const parser::AssignmentStmt &stmt) {
     const SomeExpr &rhs{assignment->rhs};
     auto lhsLoc{std::get<parser::Variable>(stmt.t).GetSource()};
     const Scope &scope{context_.FindScope(lhsLoc)};
-    if (auto whyNot{WhyNotDefinable(lhsLoc, scope,
-            DefinabilityFlags{DefinabilityFlag::VectorSubscriptIsOk}, lhs)}) {
-      if (auto *msg{Say(lhsLoc,
-              "Left-hand side of assignment is not definable"_err_en_US)}) {
-        msg->Attach(std::move(*whyNot));
+    DefinabilityFlags flags{DefinabilityFlag::VectorSubscriptIsOk};
+    bool isDefinedAssignment{
+        std::holds_alternative<evaluate::ProcedureRef>(assignment->u)};
+    if (isDefinedAssignment) {
+      flags.set(DefinabilityFlag::AllowEventLockOrNotifyType);
+    }
+    if (auto whyNot{WhyNotDefinable(lhsLoc, scope, flags, lhs)}) {
+      if (whyNot->IsFatal()) {
+        if (auto *msg{Say(lhsLoc,
+                "Left-hand side of assignment is not definable"_err_en_US)}) {
+          msg->Attach(
+              std::move(whyNot->set_severity(parser::Severity::Because)));
+        }
+      } else {
+        context_.Say(std::move(*whyNot));
       }
     }
     auto rhsLoc{std::get<parser::Expr>(stmt.t).source};
-    CheckForPureContext(rhs, rhsLoc, false);
+    if (!isDefinedAssignment) {
+      CheckForPureContext(rhs, rhsLoc);
+    }
     if (whereDepth_ > 0) {
       CheckShape(lhsLoc, &lhs);
+    }
+    if (context_.foldingContext().languageFeatures().IsEnabled(
+            common::LanguageFeature::CUDA)) {
+      const auto &scope{context_.FindScope(lhsLoc)};
+      const Scope &progUnit{GetProgramUnitContaining(scope)};
+      if (!IsCUDADeviceContext(&progUnit) && deviceConstructDepth_ == 0) {
+        if (Fortran::evaluate::HasCUDADeviceAttrs(lhs) &&
+            Fortran::evaluate::HasCUDAImplicitTransfer(rhs)) {
+          context_.Say(lhsLoc, "Unsupported CUDA data transfer"_err_en_US);
+        }
+      }
     }
   }
 }
@@ -85,12 +108,9 @@ void AssignmentContext::Analyze(const parser::AssignmentStmt &stmt) {
 void AssignmentContext::Analyze(const parser::PointerAssignmentStmt &stmt) {
   CHECK(whereDepth_ == 0);
   if (const evaluate::Assignment * assignment{GetAssignment(stmt)}) {
-    const SomeExpr &rhs{assignment->rhs};
-    CheckForPureContext(rhs, std::get<parser::Expr>(stmt.t).source, true);
     parser::CharBlock at{context_.location().value()};
     auto restorer{foldingContext().messages().SetLocation(at)};
-    const Scope &scope{context_.FindScope(at)};
-    CheckPointerAssignment(foldingContext(), *assignment, scope);
+    CheckPointerAssignment(context_, *assignment, context_.FindScope(at));
   }
 }
 
@@ -125,28 +145,16 @@ bool CheckCopyabilityInPureScope(parser::ContextualMessages &messages,
   return true;
 }
 
-bool AssignmentContext::CheckForPureContext(const SomeExpr &rhs,
-    parser::CharBlock rhsSource, bool isPointerAssignment) {
+bool AssignmentContext::CheckForPureContext(
+    const SomeExpr &rhs, parser::CharBlock rhsSource) {
   const Scope &scope{context_.FindScope(rhsSource)};
-  if (!FindPureProcedureContaining(scope)) {
+  if (FindPureProcedureContaining(scope)) {
+    parser::ContextualMessages messages{
+        context_.location().value(), &context_.messages()};
+    return CheckCopyabilityInPureScope(messages, rhs, scope);
+  } else {
     return true;
   }
-  parser::ContextualMessages messages{
-      context_.location().value(), &context_.messages()};
-  if (isPointerAssignment) {
-    if (const Symbol * base{GetFirstSymbol(rhs)}) {
-      if (const char *why{WhyBaseObjectIsSuspicious(
-              base->GetUltimate(), scope)}) { // C1594(3)
-        evaluate::SayWithDeclaration(messages, *base,
-            "A pure subprogram may not use '%s' as the target of pointer assignment because it is %s"_err_en_US,
-            base->name(), why);
-        return false;
-      }
-    }
-  } else {
-    return CheckCopyabilityInPureScope(messages, rhs, scope);
-  }
-  return true;
 }
 
 // 10.2.3.1(2) The masks and LHS of assignments must be arrays of the same shape
@@ -220,6 +228,46 @@ void AssignmentChecker::Enter(const parser::MaskedElsewhereStmt &x) {
 }
 void AssignmentChecker::Leave(const parser::MaskedElsewhereStmt &) {
   context_.value().PopWhereContext();
+}
+void AssignmentChecker::Enter(const parser::CUFKernelDoConstruct &x) {
+  ++context_.value().deviceConstructDepth_;
+}
+void AssignmentChecker::Leave(const parser::CUFKernelDoConstruct &) {
+  --context_.value().deviceConstructDepth_;
+}
+static bool IsOpenACCComputeConstruct(const parser::OpenACCBlockConstruct &x) {
+  const auto &beginBlockDirective =
+      std::get<Fortran::parser::AccBeginBlockDirective>(x.t);
+  const auto &blockDirective =
+      std::get<Fortran::parser::AccBlockDirective>(beginBlockDirective.t);
+  if (blockDirective.v == llvm::acc::ACCD_parallel ||
+      blockDirective.v == llvm::acc::ACCD_serial ||
+      blockDirective.v == llvm::acc::ACCD_kernels) {
+    return true;
+  }
+  return false;
+}
+void AssignmentChecker::Enter(const parser::OpenACCBlockConstruct &x) {
+  if (IsOpenACCComputeConstruct(x)) {
+    ++context_.value().deviceConstructDepth_;
+  }
+}
+void AssignmentChecker::Leave(const parser::OpenACCBlockConstruct &x) {
+  if (IsOpenACCComputeConstruct(x)) {
+    --context_.value().deviceConstructDepth_;
+  }
+}
+void AssignmentChecker::Enter(const parser::OpenACCCombinedConstruct &) {
+  ++context_.value().deviceConstructDepth_;
+}
+void AssignmentChecker::Leave(const parser::OpenACCCombinedConstruct &) {
+  --context_.value().deviceConstructDepth_;
+}
+void AssignmentChecker::Enter(const parser::OpenACCLoopConstruct &) {
+  ++context_.value().deviceConstructDepth_;
+}
+void AssignmentChecker::Leave(const parser::OpenACCLoopConstruct &) {
+  --context_.value().deviceConstructDepth_;
 }
 
 } // namespace Fortran::semantics

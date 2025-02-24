@@ -13,7 +13,6 @@
 #include "EHStreamer.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -253,10 +252,10 @@ void EHStreamer::computeCallSiteTable(
     if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
       // We start a call-site range upon function entry and at the beginning of
       // every basic block section.
-      CallSiteRanges.push_back(
-          {Asm->MBBSectionRanges[MBB.getSectionIDNum()].BeginLabel,
-           Asm->MBBSectionRanges[MBB.getSectionIDNum()].EndLabel,
-           Asm->getMBBExceptionSym(MBB), CallSites.size()});
+      auto &Range = Asm->MBBSectionRanges[MBB.getSectionID()];
+      CallSiteRanges.push_back({Range.BeginLabel, Range.EndLabel,
+                                Asm->getMBBExceptionSym(MBB),
+                                CallSites.size()});
       PreviousIsInvoke = false;
       SawPotentiallyThrowing = false;
       LastLabel = nullptr;
@@ -410,7 +409,7 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   computeActionsTable(LandingPads, Actions, FirstActions);
 
   // Compute the call-site table and call-site ranges. Normally, there is only
-  // one call-site-range which covers the whole funciton. With
+  // one call-site-range which covers the whole function. With
   // -basic-block-sections, there is one call-site-range per basic block
   // section.
   SmallVector<CallSiteEntry, 64> CallSites;

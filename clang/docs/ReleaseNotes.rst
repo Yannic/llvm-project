@@ -13,7 +13,7 @@ Written by the `LLVM Team <https://llvm.org/>`_
   .. warning::
      These are in-progress notes for the upcoming Clang |version| release.
      Release notes for previous releases can be found on
-     `the Download Page <https://releases.llvm.org/download.html>`_.
+     `the Releases Page <https://llvm.org/releases/>`_.
 
 Introduction
 ============
@@ -23,49 +23,95 @@ frontend, part of the LLVM Compiler Infrastructure, release |release|. Here we
 describe the status of Clang in some detail, including major
 improvements from the previous release and new feature work. For the
 general LLVM release notes, see `the LLVM
-documentation <https://llvm.org/docs/ReleaseNotes.html>`_. All LLVM
-releases may be downloaded from the `LLVM releases web
-site <https://llvm.org/releases/>`_.
+documentation <https://llvm.org/docs/ReleaseNotes.html>`_. For the libc++ release notes,
+see `this page <https://libcxx.llvm.org/ReleaseNotes.html>`_. All LLVM releases
+may be downloaded from the `LLVM releases web site <https://llvm.org/releases/>`_.
 
 For more information about Clang or LLVM, including information about the
 latest release, please see the `Clang Web Site <https://clang.llvm.org>`_ or the
 `LLVM Web Site <https://llvm.org>`_.
 
-Note that if you are reading this file from a Git checkout or the
-main Clang web page, this document applies to the *next* release, not
-the current one. To see the release notes for a specific release, please
-see the `releases page <https://llvm.org/releases/>`_.
-
 Potentially Breaking Changes
 ============================
-These changes are ones which we think may surprise users when upgrading to
-Clang |release| because of the opportunity they pose for disruption to existing
-code bases.
+
+- The Objective-C ARC migrator (ARCMigrate) has been removed.
+
+C/C++ Language Potentially Breaking Changes
+-------------------------------------------
+
+C++ Specific Potentially Breaking Changes
+-----------------------------------------
+
+- The type trait builtin ``__is_referenceable`` has been removed, since it has
+  very few users and all the type traits that could benefit from it in the
+  standard library already have their own bespoke builtins.
+
+ABI Changes in This Version
+---------------------------
+
+- Return larger CXX records in memory instead of using AVX registers. Code compiled with older clang will be incompatible with newer version of the clang unless -fclang-abi-compat=20 is provided. (#GH120670)
+
+AST Dumping Potentially Breaking Changes
+----------------------------------------
+
+- Added support for dumping template arguments of structural value kinds.
+
+Clang Frontend Potentially Breaking Changes
+-------------------------------------------
+
+Clang Python Bindings Potentially Breaking Changes
+--------------------------------------------------
 
 What's New in Clang |release|?
 ==============================
-Some of the major new features and improvements to Clang are listed
-here. Generic improvements to Clang as a whole or to its underlying
-infrastructure are described first, followed by language-specific
-sections with improvements to Clang's support for those languages.
 
-Major New Features
+C++ Language Changes
+--------------------
+
+C++2c Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+- Implemented `P1061R10 Structured Bindings can introduce a Pack <https://wg21.link/P1061R10>`_.
+
+C++23 Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+C++20 Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+C++17 Feature Support
+^^^^^^^^^^^^^^^^^^^^^
+
+Resolutions to C++ Defect Reports
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- The flag `-frelaxed-template-template-args`
+  and its negation have been removed, having been deprecated since the previous
+  two releases. The improvements to template template parameter matching implemented
+  in the previous release, as described in P3310 and P3579, made this flag unnecessary.
+
+C Language Changes
 ------------------
 
-Bug Fixes
----------
-- Fix crash on invalid code when looking up a destructor in a templated class
-  inside a namespace. This fixes
-  `Issue 59446 <https://github.com/llvm/llvm-project/issues/59446>`_.
+- Clang now allows an ``inline`` specifier on a typedef declaration of a
+  function type in Microsoft compatibility mode. #GH124869
+- Clang now allows ``restrict`` qualifier for array types with pointer elements (#GH92847).
 
-Improvements to Clang's diagnostics
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C2y Feature Support
+^^^^^^^^^^^^^^^^^^^
+
+C23 Feature Support
+^^^^^^^^^^^^^^^^^^^
 
 Non-comprehensive list of changes in this release
 -------------------------------------------------
 
 New Compiler Flags
 ------------------
+
+- New option ``-fprofile-continuous`` added to enable continuous profile syncing to file (#GH124353, `docs <https://clang.llvm.org/docs/UsersManual.html#cmdoption-fprofile-continuous>`_).
+  The feature has `existed <https://clang.llvm.org/docs/SourceBasedCodeCoverage.html#running-the-instrumented-program>`_)
+  for a while and this is just a user facing option.
 
 Deprecated Compiler Flags
 -------------------------
@@ -76,82 +122,145 @@ Modified Compiler Flags
 Removed Compiler Flags
 -------------------------
 
-New Pragmas in Clang
---------------------
-- ...
-
 Attribute Changes in Clang
 --------------------------
 
+- The ``no_sanitize`` attribute now accepts both ``gnu`` and ``clang`` names.
+- Clang now diagnoses use of declaration attributes on void parameters. (#GH108819)
+- Clang now allows ``__attribute__((model("small")))`` and
+  ``__attribute__((model("large")))`` on non-TLS globals in x86-64 compilations.
+  This forces the global to be considered small or large in regards to the
+  x86-64 code model, regardless of the code model specified for the compilation.
+
+Improvements to Clang's diagnostics
+-----------------------------------
+
+- Improve the diagnostics for deleted default constructor errors for C++ class
+  initializer lists that don't explicitly list a class member and thus attempt
+  to implicitly default construct that member.
+- The ``-Wunique-object-duplication`` warning has been added to warn about objects
+  which are supposed to only exist once per program, but may get duplicated when
+  built into a shared library.
+- Fixed a bug where Clang's Analysis did not correctly model the destructor behavior of ``union`` members (#GH119415).
+- A statement attribute applied to a ``case`` label no longer suppresses
+  'bypassing variable initialization' diagnostics (#84072).
+- The ``-Wunsafe-buffer-usage`` warning has been updated to warn
+  about unsafe libc function calls.  Those new warnings are emitted
+  under the subgroup ``-Wunsafe-buffer-usage-in-libc-call``.
+- Diagnostics on chained comparisons (``a < b < c``) are now an error by default. This can be disabled with
+  ``-Wno-error=parentheses``.
+
+Improvements to Clang's time-trace
+----------------------------------
+
+Improvements to Coverage Mapping
+--------------------------------
+
+Bug Fixes in This Version
+-------------------------
+
+- Clang now outputs correct values when #embed data contains bytes with negative
+  signed char values (#GH102798).
+
+Bug Fixes to Compiler Builtins
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- The behvaiour of ``__add_pointer`` and ``__remove_pointer`` for Objective-C++'s ``id`` and interfaces has been fixed.
+
+Bug Fixes to Attribute Support
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ - Fixed crash when a parameter to the ``clang::annotate`` attribute evaluates to ``void``. See #GH119125
+
+Bug Fixes to C++ Support
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Clang is now better at keeping track of friend function template instance contexts. (#GH55509)
+- Clang now prints the correct instantiation context for diagnostics suppressed
+  by template argument deduction.
+- The initialization kind of elements of structured bindings
+  direct-list-initialized from an array is corrected to direct-initialization.
+- Clang no longer crashes when a coroutine is declared ``[[noreturn]]``. (#GH127327)
+
+Bug Fixes to AST Handling
+^^^^^^^^^^^^^^^^^^^^^^^^^
+- Fixed type checking when a statement expression ends in an l-value of atomic type. (#GH106576)
+
+Miscellaneous Bug Fixes
+^^^^^^^^^^^^^^^^^^^^^^^
+
+- HTML tags in comments that span multiple lines are now parsed correctly by Clang's comment parser. (#GH120843)
+
+Miscellaneous Clang Crashes Fixed
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+OpenACC Specific Changes
+------------------------
+
+Target Specific Changes
+-----------------------
+
+AMDGPU Support
+^^^^^^^^^^^^^^
+
+NVPTX Support
+^^^^^^^^^^^^^^
+
+Hexagon Support
+^^^^^^^^^^^^^^^
+
+-  The default compilation target has been changed from V60 to V68.
+
+X86 Support
+^^^^^^^^^^^
+
+- Disable ``-m[no-]avx10.1`` and switch ``-m[no-]avx10.2`` to alias of 512 bit
+  options.
+- Change ``-mno-avx10.1-512`` to alias of ``-mno-avx10.1-256`` to disable both
+  256 and 512 bit instructions.
+
+Arm and AArch64 Support
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Android Support
+^^^^^^^^^^^^^^^
+
 Windows Support
----------------
+^^^^^^^^^^^^^^^
+
+LoongArch Support
+^^^^^^^^^^^^^^^^^
+
+RISC-V Support
+^^^^^^^^^^^^^^
+
+- Add support for `-mtune=generic-ooo` (a generic out-of-order model).
+
+CUDA/HIP Language Changes
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+CUDA Support
+^^^^^^^^^^^^
 
 AIX Support
------------
+^^^^^^^^^^^
 
-C Language Changes in Clang
----------------------------
+NetBSD Support
+^^^^^^^^^^^^^^
 
-C2x Feature Support
--------------------
+WebAssembly Support
+^^^^^^^^^^^^^^^^^^^
 
-C++ Language Changes in Clang
------------------------------
-
-C++20 Feature Support
-^^^^^^^^^^^^^^^^^^^^^
-
-C++2b Feature Support
-^^^^^^^^^^^^^^^^^^^^^
-
-CUDA/HIP Language Changes in Clang
-----------------------------------
-
-Objective-C Language Changes in Clang
--------------------------------------
-
-OpenCL C Language Changes in Clang
-----------------------------------
-
-...
-
-ABI Changes in Clang
---------------------
-
-OpenMP Support in Clang
------------------------
-
-...
-
-CUDA Support in Clang
----------------------
-
-LoongArch Support in Clang
---------------------------
-
-RISC-V Support in Clang
------------------------
-
-X86 Support in Clang
---------------------
-
-WebAssembly Support in Clang
-----------------------------
+AVR Support
+^^^^^^^^^^^
 
 DWARF Support in Clang
 ----------------------
 
-Arm and AArch64 Support in Clang
---------------------------------
-
 Floating Point Support in Clang
 -------------------------------
 
-Internal API Changes
---------------------
-
-Build System Changes
---------------------
+Fixed Point Support in Clang
+----------------------------
 
 AST Matchers
 ------------
@@ -159,39 +268,63 @@ AST Matchers
 clang-format
 ------------
 
-clang-extdef-mapping
---------------------
+- Adds ``BreakBeforeTemplateCloser`` option.
+- Adds ``BinPackLongBracedList`` option to override bin packing options in
+  long (20 item or more) braced list initializer lists.
+- Add the C language instead of treating it like C++.
+- Allow specifying the language (C, C++, or Objective-C) for a ``.h`` file by
+  adding a special comment (e.g. ``// clang-format Language: ObjC``) near the
+  top of the file.
 
 libclang
 --------
 
+- Fixed a buffer overflow in ``CXString`` implementation. The fix may result in
+  increased memory allocation.
+
+Code Completion
+---------------
+
 Static Analyzer
 ---------------
+
+New features
+^^^^^^^^^^^^
+
+A new flag - `-static-libclosure` was introduced to support statically linking
+the runtime for the Blocks extension on Windows. This flag currently only
+changes the code generation, and even then, only on Windows. This does not
+impact the linker behaviour like the other `-static-*` flags.
+
+Crash and bug fixes
+^^^^^^^^^^^^^^^^^^^
+
+Improvements
+^^^^^^^^^^^^
+
+Moved checkers
+^^^^^^^^^^^^^^
+
+- After lots of improvements, the checker ``alpha.security.ArrayBoundV2`` is
+  renamed to ``security.ArrayBound``. As this checker is stable now, the old
+  checker ``alpha.security.ArrayBound`` (which was searching for the same kind
+  of bugs with an different, simpler and less accurate algorithm) is removed.
 
 .. _release-notes-sanitizers:
 
 Sanitizers
 ----------
 
-Core Analysis Improvements
-==========================
-
-- ...
-
-New Issues Found
-================
-
-- ...
-
 Python Binding Changes
 ----------------------
 
-The following methods have been added:
+OpenMP Support
+--------------
+- Added support 'no_openmp_constructs' assumption clause.
+- Added support for 'omp stripe' directive.
 
--  ...
-
-Significant Known Problems
-==========================
+Improvements
+^^^^^^^^^^^^
 
 Additional Information
 ======================
@@ -204,5 +337,5 @@ this release by going into the "``clang/docs/``" directory in the Clang
 tree.
 
 If you have any questions or comments about Clang, please feel free to
-contact us on the Discourse forums (Clang Frontend category)
+contact us on the `Discourse forums (Clang Frontend category)
 <https://discourse.llvm.org/c/clang/6>`_.

@@ -155,10 +155,8 @@ void RetainCountChecker::checkPostStmt(const BlockExpr *BE,
   ProgramStateRef state = C.getState();
   auto *R = cast<BlockDataRegion>(C.getSVal(BE).getAsRegion());
 
-  BlockDataRegion::referenced_vars_iterator I = R->referenced_vars_begin(),
-                                            E = R->referenced_vars_end();
-
-  if (I == E)
+  auto ReferencedVars = R->referenced_vars();
+  if (ReferencedVars.empty())
     return;
 
   // FIXME: For now we invalidate the tracking of all symbols passed to blocks
@@ -168,8 +166,8 @@ void RetainCountChecker::checkPostStmt(const BlockExpr *BE,
   const LocationContext *LC = C.getLocationContext();
   MemRegionManager &MemMgr = C.getSValBuilder().getRegionManager();
 
-  for ( ; I != E; ++I) {
-    const VarRegion *VR = I.getCapturedRegion();
+  for (auto Var : ReferencedVars) {
+    const VarRegion *VR = Var.getCapturedRegion();
     if (VR->getSuperRegion() == R) {
       VR = MemMgr.getVarRegion(VR->getDecl(), LC);
     }
@@ -503,13 +501,13 @@ static bool isSmartPtrField(const MemRegion *MR) {
 /// assigned to a struct field, unless it is a known smart pointer
 /// implementation, about which we know that it is inlined.
 /// FIXME: This could definitely be improved upon.
-static bool shouldEscapeRegion(const MemRegion *R) {
+static bool shouldEscapeRegion(ProgramStateRef State, const MemRegion *R) {
   if (isSmartPtrField(R))
     return false;
 
   const auto *VR = dyn_cast<VarRegion>(R);
 
-  if (!R->hasStackStorage() || !VR)
+  if (!R->hasMemorySpace<StackSpaceRegion>(State) || !VR)
     return true;
 
   const VarDecl *VD = VR->getDecl();
@@ -563,7 +561,7 @@ updateOutParameters(ProgramStateRef State, const RetainSummary &Summ,
     if (!Pointee)
       continue;
 
-    if (shouldEscapeRegion(ArgRegion))
+    if (shouldEscapeRegion(State, ArgRegion))
       continue;
 
     auto makeNotOwnedParameter = [&](ProgramStateRef St) {
@@ -1143,7 +1141,7 @@ void RetainCountChecker::checkBind(SVal loc, SVal val, const Stmt *S,
 
   // Find all symbols referenced by 'val' that we are tracking
   // and stop tracking them.
-  if (MR && shouldEscapeRegion(MR)) {
+  if (MR && shouldEscapeRegion(state, MR)) {
     state = state->scanReachableSymbols<StopTrackingCallback>(val).getState();
     C.addTransition(state);
   }

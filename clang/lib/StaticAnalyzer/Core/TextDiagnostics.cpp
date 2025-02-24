@@ -81,20 +81,16 @@ public:
 
         if (llvm::Error Err = Repls.add(Repl)) {
           llvm::errs() << "Error applying replacement " << Repl.toString()
-                       << ": " << Err << "\n";
+                       << ": " << llvm::toString(std::move(Err)) << "\n";
         }
       }
     };
 
-    for (std::vector<const PathDiagnostic *>::iterator I = Diags.begin(),
-         E = Diags.end();
-         I != E; ++I) {
-      const PathDiagnostic *PD = *I;
+    for (const PathDiagnostic *PD : Diags) {
       std::string WarningMsg = (DiagOpts.ShouldDisplayDiagnosticName
                                     ? " [" + PD->getCheckerName() + "]"
                                     : "")
                                    .str();
-
       reportPiece(WarnID, PD->getLocation().asLocation(),
                   (PD->getShortDescription() + WarningMsg).str(),
                   PD->path.back()->getRanges(), PD->path.back()->getFixits());

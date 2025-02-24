@@ -20,13 +20,13 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Index/USRGeneration.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/YAMLParser.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 #include <algorithm>
 #include <fstream>
 #include <optional>
@@ -247,7 +247,7 @@ CrossTranslationUnitContext::getLookupName(const NamedDecl *ND) {
   bool Ret = index::generateUSRForDecl(ND, DeclUSR);
   if (Ret)
     return {};
-  return std::string(DeclUSR.str());
+  return std::string(DeclUSR);
 }
 
 /// Recursively visits the decls of a DeclContext, and returns one with the
@@ -392,11 +392,11 @@ void CrossTranslationUnitContext::emitCrossTUDiagnostics(const IndexError &IE) {
 
 CrossTranslationUnitContext::ASTUnitStorage::ASTUnitStorage(
     CompilerInstance &CI)
-    : Loader(CI, CI.getAnalyzerOpts()->CTUDir,
-             CI.getAnalyzerOpts()->CTUInvocationList),
+    : Loader(CI, CI.getAnalyzerOpts().CTUDir,
+             CI.getAnalyzerOpts().CTUInvocationList),
       LoadGuard(CI.getASTContext().getLangOpts().CPlusPlus
-                    ? CI.getAnalyzerOpts()->CTUImportCppThreshold
-                    : CI.getAnalyzerOpts()->CTUImportThreshold) {}
+                    ? CI.getAnalyzerOpts().CTUImportCppThreshold
+                    : CI.getAnalyzerOpts().CTUImportThreshold) {}
 
 llvm::Expected<ASTUnit *>
 CrossTranslationUnitContext::ASTUnitStorage::getASTUnitForFile(
@@ -453,7 +453,8 @@ CrossTranslationUnitContext::ASTUnitStorage::getASTUnitForFunction(
       return std::move(IndexLoadError);
 
     // Check if there is an entry in the index for the function.
-    if (!NameFileMap.count(FunctionName)) {
+    auto It = NameFileMap.find(FunctionName);
+    if (It == NameFileMap.end()) {
       ++NumNotInOtherTU;
       return llvm::make_error<IndexError>(index_error_code::missing_definition);
     }
@@ -461,7 +462,7 @@ CrossTranslationUnitContext::ASTUnitStorage::getASTUnitForFunction(
     // Search in the index for the filename where the definition of FunctionName
     // resides.
     if (llvm::Expected<ASTUnit *> FoundForFile =
-            getASTUnitForFile(NameFileMap[FunctionName], DisplayCTUProgress)) {
+            getASTUnitForFile(It->second, DisplayCTUProgress)) {
 
       // Update the cache.
       NameASTUnitMap[FunctionName] = *FoundForFile;
@@ -551,7 +552,7 @@ CrossTranslationUnitContext::ASTLoader::load(StringRef Identifier) {
   // Normalize by removing relative path components.
   llvm::sys::path::remove_dots(Path, /*remove_dot_dot*/ true, PathStyle);
 
-  if (Path.endswith(".ast"))
+  if (Path.ends_with(".ast"))
     return loadFromDump(Path);
   else
     return loadFromSource(Path);
@@ -566,9 +567,9 @@ CrossTranslationUnitContext::ASTLoader::loadFromDump(StringRef ASTDumpPath) {
   IntrusiveRefCntPtr<DiagnosticsEngine> Diags(
       new DiagnosticsEngine(DiagID, &*DiagOpts, DiagClient));
   return ASTUnit::LoadFromASTFile(
-      std::string(ASTDumpPath.str()),
-      CI.getPCHContainerOperations()->getRawReader(), ASTUnit::LoadEverything,
-      Diags, CI.getFileSystemOpts());
+      ASTDumpPath, CI.getPCHContainerOperations()->getRawReader(),
+      ASTUnit::LoadEverything, Diags, CI.getFileSystemOpts(),
+      CI.getHeaderSearchOptsPtr());
 }
 
 /// Load the AST from a source-file, which is supposed to be located inside the
@@ -609,10 +610,10 @@ CrossTranslationUnitContext::ASTLoader::loadFromSource(
   IntrusiveRefCntPtr<DiagnosticsEngine> Diags(
       new DiagnosticsEngine{DiagID, &*DiagOpts, DiagClient});
 
-  return std::unique_ptr<ASTUnit>(ASTUnit::LoadFromCommandLine(
-      CommandLineArgs.begin(), (CommandLineArgs.end()),
-      CI.getPCHContainerOperations(), Diags,
-      CI.getHeaderSearchOpts().ResourceDir));
+  return ASTUnit::LoadFromCommandLine(CommandLineArgs.begin(),
+                                      (CommandLineArgs.end()),
+                                      CI.getPCHContainerOperations(), Diags,
+                                      CI.getHeaderSearchOpts().ResourceDir);
 }
 
 llvm::Expected<InvocationListTy>
@@ -660,7 +661,7 @@ parseInvocationList(StringRef FileContent, llvm::sys::path::Style PathStyle) {
 
     StringRef InvocationKey = NativeSourcePath;
 
-    if (InvocationList.find(InvocationKey) != InvocationList.end())
+    if (InvocationList.contains(InvocationKey))
       return llvm::make_error<IndexError>(
           index_error_code::invocation_list_ambiguous);
 

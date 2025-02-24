@@ -17,6 +17,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/LoopCacheAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -26,24 +27,19 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/Constants.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
@@ -61,6 +57,14 @@ static cl::opt<int> LoopInterchangeCostThreshold(
     "loop-interchange-threshold", cl::init(0), cl::Hidden,
     cl::desc("Interchange if you gain more than this number"));
 
+// Maximum number of load-stores that can be handled in the dependency matrix.
+static cl::opt<unsigned int> MaxMemInstrCount(
+    "loop-interchange-max-meminstr-count", cl::init(64), cl::Hidden,
+    cl::desc(
+        "Maximum number of load-store instructions that should be handled "
+        "in the dependency matrix. Higher value may lead to more interchanges "
+        "at the cost of compile-time"));
+
 namespace {
 
 using LoopVector = SmallVector<Loop *, 8>;
@@ -70,13 +74,17 @@ using CharMatrix = std::vector<std::vector<char>>;
 
 } // end anonymous namespace
 
-// Maximum number of dependencies that can be handled in the dependency matrix.
-static const unsigned MaxMemInstrCount = 100;
+// Minimum loop depth supported.
+static cl::opt<unsigned int> MinLoopNestDepth(
+    "loop-interchange-min-loop-nest-depth", cl::init(2), cl::Hidden,
+    cl::desc("Minimum depth of loop nest considered for the transform"));
 
 // Maximum loop depth supported.
-static const unsigned MaxLoopNestDepth = 10;
+static cl::opt<unsigned int> MaxLoopNestDepth(
+    "loop-interchange-max-loop-nest-depth", cl::init(10), cl::Hidden,
+    cl::desc("Maximum depth of loop nest considered for the transform"));
 
-#ifdef DUMP_DEP_MATRICIES
+#ifndef NDEBUG
 static void printDepMatrix(CharMatrix &DepMatrix) {
   for (auto &Row : DepMatrix) {
     for (auto D : Row)
@@ -88,7 +96,8 @@ static void printDepMatrix(CharMatrix &DepMatrix) {
 
 static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
                                      Loop *L, DependenceInfo *DI,
-                                     ScalarEvolution *SE) {
+                                     ScalarEvolution *SE,
+                                     OptimizationRemarkEmitter *ORE) {
   using ValueVector = SmallVector<Value *, 16>;
 
   ValueVector MemInstr;
@@ -113,8 +122,20 @@ static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
 
   LLVM_DEBUG(dbgs() << "Found " << MemInstr.size()
                     << " Loads and Stores to analyze\n");
-
+  if (MemInstr.size() > MaxMemInstrCount) {
+    LLVM_DEBUG(dbgs() << "The transform doesn't support more than "
+                      << MaxMemInstrCount << " load/stores in a loop\n");
+    ORE->emit([&]() {
+      return OptimizationRemarkMissed(DEBUG_TYPE, "UnsupportedLoop",
+                                      L->getStartLoc(), L->getHeader())
+             << "Number of loads/stores exceeded, the supported maximum "
+                "can be increased with option "
+                "-loop-interchange-maxmeminstr-count.";
+    });
+    return false;
+  }
   ValueVector::iterator I, IE, J, JE;
+  StringSet<> Seen;
 
   for (I = MemInstr.begin(), IE = MemInstr.end(); I != IE; ++I) {
     for (J = I, JE = MemInstr.end(); J != JE; ++J) {
@@ -125,7 +146,7 @@ static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
       if (isa<LoadInst>(Src) && isa<LoadInst>(Dst))
         continue;
       // Track Output, Flow, and Anti dependencies.
-      if (auto D = DI->depends(Src, Dst, true)) {
+      if (auto D = DI->depends(Src, Dst)) {
         assert(D->isOrdered() && "Expected an output, flow or anti dep.");
         // If the direction vector is negative, normalize it to
         // make it non-negative.
@@ -139,34 +160,30 @@ static bool populateDependencyMatrix(CharMatrix &DepMatrix, unsigned Level,
         unsigned Levels = D->getLevels();
         char Direction;
         for (unsigned II = 1; II <= Levels; ++II) {
-          if (D->isScalar(II)) {
-            Direction = 'S';
-            Dep.push_back(Direction);
-          } else {
-            unsigned Dir = D->getDirection(II);
-            if (Dir == Dependence::DVEntry::LT ||
-                Dir == Dependence::DVEntry::LE)
-              Direction = '<';
-            else if (Dir == Dependence::DVEntry::GT ||
-                     Dir == Dependence::DVEntry::GE)
-              Direction = '>';
-            else if (Dir == Dependence::DVEntry::EQ)
-              Direction = '=';
-            else
-              Direction = '*';
-            Dep.push_back(Direction);
-          }
+          // `DVEntry::LE` is converted to `*`. This is because `LE` means `<`
+          // or `=`, for which we don't have an equivalent representation, so
+          // that the conservative approximation is necessary. The same goes for
+          // `DVEntry::GE`.
+          // TODO: Use of fine-grained expressions allows for more accurate
+          // analysis.
+          unsigned Dir = D->getDirection(II);
+          if (Dir == Dependence::DVEntry::LT)
+            Direction = '<';
+          else if (Dir == Dependence::DVEntry::GT)
+            Direction = '>';
+          else if (Dir == Dependence::DVEntry::EQ)
+            Direction = '=';
+          else
+            Direction = '*';
+          Dep.push_back(Direction);
         }
         while (Dep.size() != Level) {
           Dep.push_back('I');
         }
 
-        DepMatrix.push_back(Dep);
-        if (DepMatrix.size() > MaxMemInstrCount) {
-          LLVM_DEBUG(dbgs() << "Cannot handle more than " << MaxMemInstrCount
-                            << " dependencies inside loop\n");
-          return false;
-        }
+        // Make sure we only add unique entries to the dependency matrix.
+        if (Seen.insert(StringRef(Dep.data(), Dep.size())).second)
+          DepMatrix.push_back(Dep);
       }
     }
   }
@@ -187,8 +204,7 @@ static void interChangeDependencies(CharMatrix &DepMatrix, unsigned FromIndx,
 // if the direction matrix, after the same permutation is applied to its
 // columns, has no ">" direction as the leftmost non-"=" direction in any row.
 static bool isLexicographicallyPositive(std::vector<char> &DV) {
-  for (unsigned Level = 0; Level < DV.size(); ++Level) {
-    unsigned char Direction = DV[Level];
+  for (unsigned char Direction : DV) {
     if (Direction == '<')
       return true;
     if (Direction == '>' || Direction == '*')
@@ -238,6 +254,47 @@ static void populateWorklist(Loop &L, LoopVector &LoopList) {
     Vec = &CurrentLoop->getSubLoops();
   }
   LoopList.push_back(CurrentLoop);
+}
+
+static bool hasSupportedLoopDepth(SmallVectorImpl<Loop *> &LoopList,
+                                  OptimizationRemarkEmitter &ORE) {
+  unsigned LoopNestDepth = LoopList.size();
+  if (LoopNestDepth < MinLoopNestDepth || LoopNestDepth > MaxLoopNestDepth) {
+    LLVM_DEBUG(dbgs() << "Unsupported depth of loop nest " << LoopNestDepth
+                      << ", the supported range is [" << MinLoopNestDepth
+                      << ", " << MaxLoopNestDepth << "].\n");
+    Loop **OuterLoop = LoopList.begin();
+    ORE.emit([&]() {
+      return OptimizationRemarkMissed(DEBUG_TYPE, "UnsupportedLoopNestDepth",
+                                      (*OuterLoop)->getStartLoc(),
+                                      (*OuterLoop)->getHeader())
+             << "Unsupported depth of loop nest, the supported range is ["
+             << std::to_string(MinLoopNestDepth) << ", "
+             << std::to_string(MaxLoopNestDepth) << "].\n";
+    });
+    return false;
+  }
+  return true;
+}
+
+static bool isComputableLoopNest(ScalarEvolution *SE,
+                                 ArrayRef<Loop *> LoopList) {
+  for (Loop *L : LoopList) {
+    const SCEV *ExitCountOuter = SE->getBackedgeTakenCount(L);
+    if (isa<SCEVCouldNotCompute>(ExitCountOuter)) {
+      LLVM_DEBUG(dbgs() << "Couldn't compute backedge count\n");
+      return false;
+    }
+    if (L->getNumBackEdges() != 1) {
+      LLVM_DEBUG(dbgs() << "NumBackEdges is not equal to 1\n");
+      return false;
+    }
+    if (!L->getExitingBlock()) {
+      LLVM_DEBUG(dbgs() << "Loop doesn't have unique exit block\n");
+      return false;
+    }
+  }
+  return true;
 }
 
 namespace {
@@ -388,30 +445,11 @@ struct LoopInterchange {
   }
 
   bool run(LoopNest &LN) {
-    SmallVector<Loop *, 8> LoopList(LN.getLoops().begin(), LN.getLoops().end());
+    SmallVector<Loop *, 8> LoopList(LN.getLoops());
     for (unsigned I = 1; I < LoopList.size(); ++I)
       if (LoopList[I]->getParentLoop() != LoopList[I - 1])
         return false;
     return processLoopList(LoopList);
-  }
-
-  bool isComputableLoopNest(ArrayRef<Loop *> LoopList) {
-    for (Loop *L : LoopList) {
-      const SCEV *ExitCountOuter = SE->getBackedgeTakenCount(L);
-      if (isa<SCEVCouldNotCompute>(ExitCountOuter)) {
-        LLVM_DEBUG(dbgs() << "Couldn't compute backedge count\n");
-        return false;
-      }
-      if (L->getNumBackEdges() != 1) {
-        LLVM_DEBUG(dbgs() << "NumBackEdges is not equal to 1\n");
-        return false;
-      }
-      if (!L->getExitingBlock()) {
-        LLVM_DEBUG(dbgs() << "Loop doesn't have unique exit block\n");
-        return false;
-      }
-    }
-    return true;
   }
 
   unsigned selectLoopForInterchange(ArrayRef<Loop *> LoopList) {
@@ -422,20 +460,12 @@ struct LoopInterchange {
 
   bool processLoopList(SmallVectorImpl<Loop *> &LoopList) {
     bool Changed = false;
+
+    // Ensure proper loop nest depth.
+    assert(hasSupportedLoopDepth(LoopList, *ORE) &&
+           "Unsupported depth of loop nest.");
+
     unsigned LoopNestDepth = LoopList.size();
-    if (LoopNestDepth < 2) {
-      LLVM_DEBUG(dbgs() << "Loop doesn't contain minimum nesting level.\n");
-      return false;
-    }
-    if (LoopNestDepth > MaxLoopNestDepth) {
-      LLVM_DEBUG(dbgs() << "Cannot handle loops of depth greater than "
-                        << MaxLoopNestDepth << "\n");
-      return false;
-    }
-    if (!isComputableLoopNest(LoopList)) {
-      LLVM_DEBUG(dbgs() << "Not valid loop candidate for interchange\n");
-      return false;
-    }
 
     LLVM_DEBUG(dbgs() << "Processing LoopList of size = " << LoopNestDepth
                       << "\n");
@@ -443,14 +473,13 @@ struct LoopInterchange {
     CharMatrix DependencyMatrix;
     Loop *OuterMostLoop = *(LoopList.begin());
     if (!populateDependencyMatrix(DependencyMatrix, LoopNestDepth,
-                                  OuterMostLoop, DI, SE)) {
+                                  OuterMostLoop, DI, SE, ORE)) {
       LLVM_DEBUG(dbgs() << "Populating dependency matrix failed\n");
       return false;
     }
-#ifdef DUMP_DEP_MATRICIES
-    LLVM_DEBUG(dbgs() << "Dependence before interchange\n");
-    printDepMatrix(DependencyMatrix);
-#endif
+
+    LLVM_DEBUG(dbgs() << "Dependency matrix before interchange:\n";
+               printDepMatrix(DependencyMatrix));
 
     // Get the Outermost loop exit.
     BasicBlock *LoopNestExit = OuterMostLoop->getExitBlock();
@@ -490,10 +519,10 @@ struct LoopInterchange {
         std::swap(LoopList[i - 1], LoopList[i]);
         // Update the DependencyMatrix
         interChangeDependencies(DependencyMatrix, i, i - 1);
-#ifdef DUMP_DEP_MATRICIES
-        LLVM_DEBUG(dbgs() << "Dependence after interchange\n");
-        printDepMatrix(DependencyMatrix);
-#endif
+
+        LLVM_DEBUG(dbgs() << "Dependency matrix after interchange:\n";
+                   printDepMatrix(DependencyMatrix));
+
         ChangedPerIter |= Interchanged;
         Changed |= Interchanged;
       }
@@ -736,7 +765,6 @@ bool LoopInterchangeLegality::findInductionAndReductions(
   if (!L->getLoopLatch() || !L->getLoopPredecessor())
     return false;
   for (PHINode &PHI : L->getHeader()->phis()) {
-    RecurrenceDescriptor RD;
     InductionDescriptor ID;
     if (InductionDescriptor::isInductionPHI(&PHI, L, SE, ID))
       Inductions.push_back(&PHI);
@@ -982,7 +1010,7 @@ bool LoopInterchangeLegality::canInterchangeLoops(unsigned InnerLoopId,
       }
 
   if (!findInductions(InnerLoop, InnerLoopInductions)) {
-    LLVM_DEBUG(dbgs() << "Cound not find inner loop induction variables.\n");
+    LLVM_DEBUG(dbgs() << "Could not find inner loop induction variables.\n");
     return false;
   }
 
@@ -1105,8 +1133,7 @@ LoopInterchangeProfitability::isProfitablePerLoopCacheAnalysis(
   // This is the new cost model returned from loop cache analysis.
   // A smaller index means the loop should be placed an outer loop, and vice
   // versa.
-  if (CostMap.find(InnerLoop) != CostMap.end() &&
-      CostMap.find(OuterLoop) != CostMap.end()) {
+  if (CostMap.contains(InnerLoop) && CostMap.contains(OuterLoop)) {
     unsigned InnerIndex = 0, OuterIndex = 0;
     InnerIndex = CostMap.find(InnerLoop)->second;
     OuterIndex = CostMap.find(OuterLoop)->second;
@@ -1326,7 +1353,7 @@ bool LoopInterchangeTransform::transform() {
         // Duplicate instruction and move it the new latch. Update uses that
         // have been moved.
         Instruction *NewI = WorkList[i]->clone();
-        NewI->insertBefore(NewLatch->getFirstNonPHI());
+        NewI->insertBefore(NewLatch->getFirstNonPHIIt());
         assert(!NewI->mayHaveSideEffects() &&
                "Moving instructions with side-effects may change behavior of "
                "the loop nest!");
@@ -1364,8 +1391,9 @@ bool LoopInterchangeTransform::transform() {
 
   // Ensure the inner loop phi nodes have a separate basic block.
   BasicBlock *InnerLoopHeader = InnerLoop->getHeader();
-  if (InnerLoopHeader->getFirstNonPHI() != InnerLoopHeader->getTerminator()) {
-    SplitBlock(InnerLoopHeader, InnerLoopHeader->getFirstNonPHI(), DT, LI);
+  if (&*InnerLoopHeader->getFirstNonPHIIt() !=
+      InnerLoopHeader->getTerminator()) {
+    SplitBlock(InnerLoopHeader, InnerLoopHeader->getFirstNonPHIIt(), DT, LI);
     LLVM_DEBUG(dbgs() << "splitting InnerLoopHeader done\n");
   }
 
@@ -1381,7 +1409,7 @@ bool LoopInterchangeTransform::transform() {
     for (Instruction &I :
          make_early_inc_range(make_range(InnerLoopPreHeader->begin(),
                                          std::prev(InnerLoopPreHeader->end()))))
-      I.moveBefore(OuterLoopHeader->getTerminator());
+      I.moveBeforePreserving(OuterLoopHeader->getTerminator()->getIterator());
   }
 
   Transformed |= adjustLoopLinks();
@@ -1416,7 +1444,7 @@ static void swapBBContents(BasicBlock *BB1, BasicBlock *BB2) {
 
   // Move instructions from TempInstrs to BB2.
   for (Instruction *I : TempInstrs)
-    I->insertBefore(BB2->getTerminator());
+    I->insertBefore(BB2->getTerminator()->getIterator());
 }
 
 // Update BI to jump to NewBB instead of OldBB. Records updates to the
@@ -1502,12 +1530,12 @@ static void moveLCSSAPhis(BasicBlock *InnerExit, BasicBlock *InnerHeader,
   // InnerLatch, which will become the new exit block for the innermost
   // loop after interchanging.
   for (PHINode *P : LcssaInnerExit)
-    P->moveBefore(InnerLatch->getFirstNonPHI());
+    P->moveBefore(InnerLatch->getFirstNonPHIIt());
 
   // If the inner loop latch contains LCSSA PHIs, those come from a child loop
   // and we have to move them to the new inner latch.
   for (PHINode *P : LcssaInnerLatch)
-    P->moveBefore(InnerExit->getFirstNonPHI());
+    P->moveBefore(InnerExit->getFirstNonPHIIt());
 
   // Deal with LCSSA PHI nodes in the loop nest exit block. For PHIs that have
   // incoming values defined in the outer loop, we have to add a new PHI
@@ -1533,7 +1561,7 @@ static void moveLCSSAPhis(BasicBlock *InnerExit, BasicBlock *InnerHeader,
           continue;
         NewPhi->addIncoming(P.getIncomingValue(0), Pred);
       }
-      NewPhi->insertBefore(InnerLatch->getFirstNonPHI());
+      NewPhi->insertBefore(InnerLatch->getFirstNonPHIIt());
       P.setIncomingValue(0, NewPhi);
     }
   }
@@ -1673,12 +1701,12 @@ bool LoopInterchangeTransform::adjustLoopBranches() {
   // outer loop and all the remains to do is and updating the incoming blocks.
   for (PHINode *PHI : OuterLoopPHIs) {
     LLVM_DEBUG(dbgs() << "Outer loop reduction PHIs:\n"; PHI->dump(););
-    PHI->moveBefore(InnerLoopHeader->getFirstNonPHI());
+    PHI->moveBefore(InnerLoopHeader->getFirstNonPHIIt());
     assert(OuterInnerReductions.count(PHI) && "Expected a reduction PHI node");
   }
   for (PHINode *PHI : InnerLoopPHIs) {
     LLVM_DEBUG(dbgs() << "Inner loop reduction PHIs:\n"; PHI->dump(););
-    PHI->moveBefore(OuterLoopHeader->getFirstNonPHI());
+    PHI->moveBefore(OuterLoopHeader->getFirstNonPHIIt());
     assert(OuterInnerReductions.count(PHI) && "Expected a reduction PHI node");
   }
 
@@ -1692,12 +1720,11 @@ bool LoopInterchangeTransform::adjustLoopBranches() {
   // latch. In that case, we need to create LCSSA phis for them, because after
   // interchanging they will be defined in the new inner loop and used in the
   // new outer loop.
-  IRBuilder<> Builder(OuterLoopHeader->getContext());
   SmallVector<Instruction *, 4> MayNeedLCSSAPhis;
   for (Instruction &I :
        make_range(OuterLoopHeader->begin(), std::prev(OuterLoopHeader->end())))
     MayNeedLCSSAPhis.push_back(&I);
-  formLCSSAForInstructions(MayNeedLCSSAPhis, *DT, *LI, SE, Builder);
+  formLCSSAForInstructions(MayNeedLCSSAPhis, *DT, *LI, SE);
 
   return true;
 }
@@ -1716,62 +1743,39 @@ bool LoopInterchangeTransform::adjustLoopLinks() {
   return Changed;
 }
 
-namespace {
-/// Main LoopInterchange Pass.
-struct LoopInterchangeLegacyPass : public LoopPass {
-  static char ID;
-
-  LoopInterchangeLegacyPass() : LoopPass(ID) {
-    initializeLoopInterchangeLegacyPassPass(*PassRegistry::getPassRegistry());
-  }
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<DependenceAnalysisWrapperPass>();
-    AU.addRequired<OptimizationRemarkEmitterWrapperPass>();
-
-    getLoopAnalysisUsage(AU);
-  }
-
-  bool runOnLoop(Loop *L, LPPassManager &LPM) override {
-    if (skipLoop(L))
-      return false;
-
-    auto *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
-    auto *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-    auto *DI = &getAnalysis<DependenceAnalysisWrapperPass>().getDI();
-    auto *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-    auto *ORE = &getAnalysis<OptimizationRemarkEmitterWrapperPass>().getORE();
-    std::unique_ptr<CacheCost> CC = nullptr;
-    return LoopInterchange(SE, LI, DI, DT, CC, ORE).run(L);
-  }
-};
-} // namespace
-
-char LoopInterchangeLegacyPass::ID = 0;
-
-INITIALIZE_PASS_BEGIN(LoopInterchangeLegacyPass, "loop-interchange",
-                      "Interchanges loops for cache reuse", false, false)
-INITIALIZE_PASS_DEPENDENCY(LoopPass)
-INITIALIZE_PASS_DEPENDENCY(DependenceAnalysisWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(OptimizationRemarkEmitterWrapperPass)
-
-INITIALIZE_PASS_END(LoopInterchangeLegacyPass, "loop-interchange",
-                    "Interchanges loops for cache reuse", false, false)
-
-Pass *llvm::createLoopInterchangePass() {
-  return new LoopInterchangeLegacyPass();
-}
-
 PreservedAnalyses LoopInterchangePass::run(LoopNest &LN,
                                            LoopAnalysisManager &AM,
                                            LoopStandardAnalysisResults &AR,
                                            LPMUpdater &U) {
   Function &F = *LN.getParent();
+  SmallVector<Loop *, 8> LoopList(LN.getLoops());
+
+  if (MaxMemInstrCount < 1) {
+    LLVM_DEBUG(dbgs() << "MaxMemInstrCount should be at least 1");
+    return PreservedAnalyses::all();
+  }
+  OptimizationRemarkEmitter ORE(&F);
+
+  // Ensure minimum depth of the loop nest to do the interchange.
+  if (!hasSupportedLoopDepth(LoopList, ORE))
+    return PreservedAnalyses::all();
+  // Ensure computable loop nest.
+  if (!isComputableLoopNest(&AR.SE, LoopList)) {
+    LLVM_DEBUG(dbgs() << "Not valid loop candidate for interchange\n");
+    return PreservedAnalyses::all();
+  }
+
+  ORE.emit([&]() {
+    return OptimizationRemarkAnalysis(DEBUG_TYPE, "Dependence",
+                                      LN.getOutermostLoop().getStartLoc(),
+                                      LN.getOutermostLoop().getHeader())
+           << "Computed dependence info, invoking the transform.";
+  });
 
   DependenceInfo DI(&F, &AR.AA, &AR.SE, &AR.LI);
   std::unique_ptr<CacheCost> CC =
       CacheCost::getCacheCost(LN.getOutermostLoop(), AR, DI);
-  OptimizationRemarkEmitter ORE(&F);
+
   if (!LoopInterchange(&AR.SE, &AR.LI, &DI, &AR.DT, CC, &ORE).run(LN))
     return PreservedAnalyses::all();
   U.markLoopNestChanged(true);

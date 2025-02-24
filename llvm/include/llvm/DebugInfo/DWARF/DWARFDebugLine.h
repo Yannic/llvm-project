@@ -167,6 +167,10 @@ public:
     /// An unsigned integer whose value encodes the applicable instruction set
     /// architecture for the current instruction.
     uint8_t Isa;
+    /// An unsigned integer representing the index of an operation within a
+    /// VLIW instruction. The index of the first operation is 0.
+    /// For non-VLIW architectures, this register will always be 0.
+    uint8_t OpIndex;
     /// A boolean indicating that the current instruction is the beginning of a
     /// statement.
     uint8_t IsStmt : 1,
@@ -205,6 +209,9 @@ public:
     unsigned LastRowIndex;
     bool Empty;
 
+    /// The offset into the line table where this sequence begins
+    uint64_t StmtSeqOffset = UINT64_MAX;
+
     void reset();
 
     static bool orderByHighPC(const Sequence &LHS, const Sequence &RHS) {
@@ -236,10 +243,23 @@ public:
 
     /// Returns the index of the row with file/line info for a given address,
     /// or UnknownRowIndex if there is no such row.
-    uint32_t lookupAddress(object::SectionedAddress Address) const;
+    uint32_t lookupAddress(object::SectionedAddress Address,
+                           bool *IsApproximateLine = nullptr) const;
 
-    bool lookupAddressRange(object::SectionedAddress Address, uint64_t Size,
-                            std::vector<uint32_t> &Result) const;
+    /// Fills the Result argument with the indices of the rows that correspond
+    /// to the address range specified by \p Address and \p Size.
+    ///
+    /// \param Address - The starting address of the range.
+    /// \param Size - The size of the address range.
+    /// \param Result - The vector to fill with row indices.
+    /// \param StmtSequenceOffset - if provided, only rows from the sequence
+    /// starting at the matching offset will be added to the result.
+    ///
+    /// Returns true if any rows were found.
+    bool lookupAddressRange(
+        object::SectionedAddress Address, uint64_t Size,
+        std::vector<uint32_t> &Result,
+        std::optional<uint64_t> StmtSequenceOffset = std::nullopt) const;
 
     bool hasFileAtIndex(uint64_t FileIndex) const {
       return Prologue.hasFileAtIndex(FileIndex);
@@ -263,7 +283,7 @@ public:
     /// Fills the Result argument with the file and line information
     /// corresponding to Address. Returns true on success.
     bool getFileLineInfoForAddress(object::SectionedAddress Address,
-                                   const char *CompDir,
+                                   bool Approximate, const char *CompDir,
                                    DILineInfoSpecifier::FileLineInfoKind Kind,
                                    DILineInfo &Result) const;
 
@@ -297,10 +317,23 @@ public:
     getSourceByIndex(uint64_t FileIndex,
                      DILineInfoSpecifier::FileLineInfoKind Kind) const;
 
-    uint32_t lookupAddressImpl(object::SectionedAddress Address) const;
+    uint32_t lookupAddressImpl(object::SectionedAddress Address,
+                               bool *IsApproximateLine = nullptr) const;
 
-    bool lookupAddressRangeImpl(object::SectionedAddress Address, uint64_t Size,
-                                std::vector<uint32_t> &Result) const;
+    /// Fills the Result argument with the indices of the rows that correspond
+    /// to the address range specified by \p Address and \p Size.
+    ///
+    /// \param Address - The starting address of the range.
+    /// \param Size - The size of the address range.
+    /// \param Result - The vector to fill with row indices.
+    /// \param StmtSequenceOffset - if provided, only rows from the sequence
+    /// starting at the matching offset will be added to the result.
+    ///
+    /// Returns true if any rows were found.
+    bool
+    lookupAddressRangeImpl(object::SectionedAddress Address, uint64_t Size,
+                           std::vector<uint32_t> &Result,
+                           std::optional<uint64_t> StmtSequenceOffset) const;
   };
 
   const LineTable *getLineTable(uint64_t Offset) const;
@@ -355,6 +388,7 @@ public:
   private:
     DWARFUnit *prepareToParse(uint64_t Offset);
     void moveToNextTable(uint64_t OldOffset, const Prologue &P);
+    bool hasValidVersion(uint64_t Offset);
 
     LineToUnitMap LineToUnit;
 
@@ -369,32 +403,40 @@ private:
     ParsingState(struct LineTable *LT, uint64_t TableOffset,
                  function_ref<void(Error)> ErrorHandler);
 
-    void resetRowAndSequence();
+    void resetRowAndSequence(uint64_t Offset);
     void appendRowToMatrix();
 
-    /// Advance the address by the \p OperationAdvance value. \returns the
-    /// amount advanced by.
-    uint64_t advanceAddr(uint64_t OperationAdvance, uint8_t Opcode,
-                         uint64_t OpcodeOffset);
+    struct AddrOpIndexDelta {
+      uint64_t AddrOffset;
+      int16_t OpIndexDelta;
+    };
 
-    struct AddrAndAdjustedOpcode {
+    /// Advance the address and op-index by the \p OperationAdvance value.
+    /// \returns the amount advanced by.
+    AddrOpIndexDelta advanceAddrOpIndex(uint64_t OperationAdvance,
+                                        uint8_t Opcode, uint64_t OpcodeOffset);
+
+    struct OpcodeAdvanceResults {
       uint64_t AddrDelta;
+      int16_t OpIndexDelta;
       uint8_t AdjustedOpcode;
     };
 
-    /// Advance the address as required by the specified \p Opcode.
+    /// Advance the address and op-index as required by the specified \p Opcode.
     /// \returns the amount advanced by and the calculated adjusted opcode.
-    AddrAndAdjustedOpcode advanceAddrForOpcode(uint8_t Opcode,
-                                               uint64_t OpcodeOffset);
+    OpcodeAdvanceResults advanceForOpcode(uint8_t Opcode,
+                                          uint64_t OpcodeOffset);
 
-    struct AddrAndLineDelta {
+    struct SpecialOpcodeDelta {
       uint64_t Address;
       int32_t Line;
+      int16_t OpIndex;
     };
 
-    /// Advance the line and address as required by the specified special \p
-    /// Opcode. \returns the address and line delta.
-    AddrAndLineDelta handleSpecialOpcode(uint8_t Opcode, uint64_t OpcodeOffset);
+    /// Advance the line, address and op-index as required by the specified
+    /// special \p Opcode. \returns the address, op-index and line delta.
+    SpecialOpcodeDelta handleSpecialOpcode(uint8_t Opcode,
+                                           uint64_t OpcodeOffset);
 
     /// Line table we're currently parsing.
     struct LineTable *LineTable;

@@ -65,6 +65,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ImmutableMap.h"
 #include "llvm/ADT/ImmutableSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Casting.h"
@@ -73,6 +74,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/GraphWriter.h"
 #include "llvm/Support/SaveAndRestore.h"
+#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -298,7 +300,7 @@ ProgramStateRef ExprEngine::getInitialState(const LocationContext *InitLoc) {
   }
 
   if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
-    if (!MD->isStatic()) {
+    if (MD->isImplicitObjectMemberFunction()) {
       // Precondition: 'this' is always non-null upon entry to the
       // top-level function.  This is our starting assumption for
       // analyzing an "open" program.
@@ -386,15 +388,19 @@ ProgramStateRef ExprEngine::createTemporaryRegionIfNeeded(
       State = finishObjectConstruction(State, MT, LC);
       State = State->BindExpr(Result, LC, *V);
       return State;
-    } else {
+    } else if (const ValueDecl *VD = MT->getExtendingDecl()) {
       StorageDuration SD = MT->getStorageDuration();
+      assert(SD != SD_FullExpression);
       // If this object is bound to a reference with static storage duration, we
       // put it in a different region to prevent "address leakage" warnings.
       if (SD == SD_Static || SD == SD_Thread) {
-        TR = MRMgr.getCXXStaticTempObjectRegion(Init);
+        TR = MRMgr.getCXXStaticLifetimeExtendedObjectRegion(Init, VD);
       } else {
-        TR = MRMgr.getCXXTempObjectRegion(Init, LC);
+        TR = MRMgr.getCXXLifetimeExtendedObjectRegion(Init, VD, LC);
       }
+    } else {
+      assert(MT->getStorageDuration() == SD_FullExpression);
+      TR = MRMgr.getCXXTempObjectRegion(Init, LC);
     }
   } else {
     TR = MRMgr.getCXXTempObjectRegion(Init, LC);
@@ -988,6 +994,7 @@ void ExprEngine::processCFGElement(const CFGElement E, ExplodedNode *Pred,
       ProcessLoopExit(E.castAs<CFGLoopExit>().getLoopStmt(), Pred);
       return;
     case CFGElement::LifetimeEnds:
+    case CFGElement::CleanupFunction:
     case CFGElement::ScopeBegin:
     case CFGElement::ScopeEnd:
       return;
@@ -1025,6 +1032,7 @@ void ExprEngine::removeDead(ExplodedNode *Pred, ExplodedNodeSet &Out,
                             const LocationContext *LC,
                             const Stmt *DiagnosticStmt,
                             ProgramPoint::Kind K) {
+  llvm::TimeTraceScope TimeScope("ExprEngine::removeDead");
   assert((K == ProgramPoint::PreStmtPurgeDeadSymbolsKind ||
           ReferenceStmt == nullptr || isa<ReturnStmt>(ReferenceStmt))
           && "PostStmt is not generally supported by the SymbolReaper yet");
@@ -1066,8 +1074,6 @@ void ExprEngine::removeDead(ExplodedNode *Pred, ExplodedNodeSet &Out,
       CleanedState, SFC, SymReaper);
 
   // Process any special transfer function for dead symbols.
-  // A tag to track convenience transitions, which can be removed at cleanup.
-  static SimpleProgramPointTag cleanupTag(TagProviderName, "Clean Node");
   // Call checkers with the non-cleaned state so that they could query the
   // values of the soon to be dead symbols.
   ExplodedNodeSet CheckedSet;
@@ -1096,8 +1102,13 @@ void ExprEngine::removeDead(ExplodedNode *Pred, ExplodedNodeSet &Out,
     // generate a transition to that state.
     ProgramStateRef CleanedCheckerSt =
         StateMgr.getPersistentStateWithGDM(CleanedState, CheckerState);
-    Bldr.generateNode(DiagnosticStmt, I, CleanedCheckerSt, &cleanupTag, K);
+    Bldr.generateNode(DiagnosticStmt, I, CleanedCheckerSt, cleanupNodeTag(), K);
   }
+}
+
+const ProgramPointTag *ExprEngine::cleanupNodeTag() {
+  static SimpleProgramPointTag cleanupTag(TagProviderName, "Clean Node");
+  return &cleanupTag;
 }
 
 void ExprEngine::ProcessStmt(const Stmt *currStmt, ExplodedNode *Pred) {
@@ -1197,10 +1208,7 @@ void ExprEngine::ProcessInitializer(const CFGInitializer CFGInit,
         while ((ASE = dyn_cast<ArraySubscriptExpr>(Init)))
           Init = ASE->getBase()->IgnoreImplicit();
 
-        SVal LValue = State->getSVal(Init, stackFrame);
-        if (!Field->getType()->isReferenceType())
-          if (std::optional<Loc> LValueLoc = LValue.getAs<Loc>())
-            InitVal = State->getSVal(*LValueLoc);
+        InitVal = State->getSVal(Init, stackFrame);
 
         // If we fail to get the value for some reason, use a symbolic value.
         if (InitVal.isUnknownOrUndef()) {
@@ -1216,6 +1224,14 @@ void ExprEngine::ProcessInitializer(const CFGInitializer CFGInit,
       PostInitializer PP(BMI, FieldLoc.getAsRegion(), stackFrame);
       evalBind(Tmp, Init, Pred, FieldLoc, InitVal, /*isInit=*/true, &PP);
     }
+  } else if (BMI->isBaseInitializer() && isa<InitListExpr>(Init)) {
+    // When the base class is initialized with an initialization list and the
+    // base class does not have a ctor, there will not be a CXXConstructExpr to
+    // initialize the base region. Hence, we need to make the bind for it.
+    SVal BaseLoc = getStoreManager().evalDerivedToBase(
+        thisVal, QualType(BMI->getBaseClass(), 0), BMI->isBaseVirtual());
+    SVal InitVal = State->getSVal(Init, stackFrame);
+    evalBind(Tmp, Init, Pred, BaseLoc, InitVal, /*isInit=*/true);
   } else {
     assert(BMI->isBaseInitializer() || BMI->isDelegatingInitializer());
     Tmp.insert(Pred);
@@ -1242,7 +1258,7 @@ ExprEngine::prepareStateForArrayDestruction(const ProgramStateRef State,
                                             const QualType &ElementTy,
                                             const LocationContext *LCtx,
                                             SVal *ElementCountVal) {
-  assert(Region != nullptr && "Not-null region expected");	
+  assert(Region != nullptr && "Not-null region expected");
 
   QualType Ty = ElementTy.getDesugaredType(getContext());
   while (const auto *NTy = dyn_cast<ArrayType>(Ty))
@@ -1313,7 +1329,8 @@ void ExprEngine::ProcessNewAllocator(const CXXNewExpr *NE,
   else {
     NodeBuilder Bldr(Pred, Dst, *currBldrCtx);
     const LocationContext *LCtx = Pred->getLocationContext();
-    PostImplicitCall PP(NE->getOperatorNew(), NE->getBeginLoc(), LCtx);
+    PostImplicitCall PP(NE->getOperatorNew(), NE->getBeginLoc(), LCtx,
+                        getCFGElementRef());
     Bldr.generateNode(PP, Pred->getState(), Pred);
   }
   Engine.enqueue(Dst, currBldrCtx->getBlock(), currStmtIdx);
@@ -1361,7 +1378,8 @@ void ExprEngine::ProcessAutomaticObjDtor(const CFGAutomaticObjDtor Dtor,
         static SimpleProgramPointTag PT(
             "ExprEngine", "Skipping automatic 0 length array destruction, "
                           "which shouldn't be in the CFG.");
-        PostImplicitCall PP(DtorDecl, varDecl->getLocation(), LCtx, &PT);
+        PostImplicitCall PP(DtorDecl, varDecl->getLocation(), LCtx,
+                            getCFGElementRef(), &PT);
         NodeBuilder Bldr(Pred, Dst, *currBldrCtx);
         Bldr.generateSink(PP, Pred->getState(), Pred);
         return;
@@ -1378,7 +1396,8 @@ void ExprEngine::ProcessAutomaticObjDtor(const CFGAutomaticObjDtor Dtor,
 
   static SimpleProgramPointTag PT("ExprEngine",
                                   "Prepare for object destruction");
-  PreImplicitCall PP(DtorDecl, varDecl->getLocation(), LCtx, &PT);
+  PreImplicitCall PP(DtorDecl, varDecl->getLocation(), LCtx, getCFGElementRef(),
+                     &PT);
   Pred = Bldr.generateNode(PP, state, Pred);
 
   if (!Pred)
@@ -1406,7 +1425,7 @@ void ExprEngine::ProcessDeleteDtor(const CFGDeleteDtor Dtor,
     const CXXRecordDecl *RD = BTy->getAsCXXRecordDecl();
     const CXXDestructorDecl *Dtor = RD->getDestructor();
 
-    PostImplicitCall PP(Dtor, DE->getBeginLoc(), LCtx);
+    PostImplicitCall PP(Dtor, DE->getBeginLoc(), LCtx, getCFGElementRef());
     NodeBuilder Bldr(Pred, Dst, *currBldrCtx);
     Bldr.generateNode(PP, Pred->getState(), Pred);
     return;
@@ -1439,7 +1458,8 @@ void ExprEngine::ProcessDeleteDtor(const CFGDeleteDtor Dtor,
 
         static SimpleProgramPointTag PT(
             "ExprEngine", "Skipping 0 length array delete destruction");
-        PostImplicitCall PP(getDtorDecl(DTy), DE->getBeginLoc(), LCtx, &PT);
+        PostImplicitCall PP(getDtorDecl(DTy), DE->getBeginLoc(), LCtx,
+                            getCFGElementRef(), &PT);
         NodeBuilder Bldr(Pred, Dst, *currBldrCtx);
         Bldr.generateNode(PP, Pred->getState(), Pred);
         return;
@@ -1453,7 +1473,8 @@ void ExprEngine::ProcessDeleteDtor(const CFGDeleteDtor Dtor,
   NodeBuilder Bldr(Pred, Dst, getBuilderContext());
   static SimpleProgramPointTag PT("ExprEngine",
                                   "Prepare for object destruction");
-  PreImplicitCall PP(getDtorDecl(DTy), DE->getBeginLoc(), LCtx, &PT);
+  PreImplicitCall PP(getDtorDecl(DTy), DE->getBeginLoc(), LCtx,
+                     getCFGElementRef(), &PT);
   Pred = Bldr.generateNode(PP, State, Pred);
 
   if (!Pred)
@@ -1513,7 +1534,8 @@ void ExprEngine::ProcessMemberDtor(const CFGMemberDtor D,
         static SimpleProgramPointTag PT(
             "ExprEngine", "Skipping member 0 length array destruction, which "
                           "shouldn't be in the CFG.");
-        PostImplicitCall PP(DtorDecl, Member->getLocation(), LCtx, &PT);
+        PostImplicitCall PP(DtorDecl, Member->getLocation(), LCtx,
+                            getCFGElementRef(), &PT);
         NodeBuilder Bldr(Pred, Dst, *currBldrCtx);
         Bldr.generateSink(PP, Pred->getState(), Pred);
         return;
@@ -1529,7 +1551,8 @@ void ExprEngine::ProcessMemberDtor(const CFGMemberDtor D,
 
   static SimpleProgramPointTag PT("ExprEngine",
                                   "Prepare for object destruction");
-  PreImplicitCall PP(DtorDecl, Member->getLocation(), LCtx, &PT);
+  PreImplicitCall PP(DtorDecl, Member->getLocation(), LCtx, getCFGElementRef(),
+                     &PT);
   Pred = Bldr.generateNode(PP, State, Pred);
 
   if (!Pred)
@@ -1565,7 +1588,7 @@ void ExprEngine::ProcessTemporaryDtor(const CFGTemporaryDtor D,
     NodeBuilder Bldr(Pred, Dst, *currBldrCtx);
     PostImplicitCall PP(D.getDestructorDecl(getContext()),
                         D.getBindTemporaryExpr()->getBeginLoc(),
-                        Pred->getLocationContext());
+                        Pred->getLocationContext(), getCFGElementRef());
     Bldr.generateNode(PP, State, Pred);
     return;
   }
@@ -1626,10 +1649,8 @@ void ExprEngine::processCleanupTemporaryBranch(const CXXBindTemporaryExpr *BTE,
   ProgramStateRef State = Pred->getState();
   const LocationContext *LC = Pred->getLocationContext();
   if (getObjectUnderConstruction(State, BTE, LC)) {
-    TempDtorBuilder.markInfeasible(false);
     TempDtorBuilder.generateNode(State, true, Pred);
   } else {
-    TempDtorBuilder.markInfeasible(true);
     TempDtorBuilder.generateNode(State, false, Pred);
   }
 }
@@ -1716,6 +1737,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::RecoveryExprClass:
     case Stmt::CXXNoexceptExprClass:
     case Stmt::PackExpansionExprClass:
+    case Stmt::PackIndexingExprClass:
     case Stmt::SubstNonTypeTemplateParmPackExprClass:
     case Stmt::FunctionParmPackExprClass:
     case Stmt::CoroutineBodyStmtClass:
@@ -1734,6 +1756,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OMPForSimdDirectiveClass:
     case Stmt::OMPSectionsDirectiveClass:
     case Stmt::OMPSectionDirectiveClass:
+    case Stmt::OMPScopeDirectiveClass:
     case Stmt::OMPSingleDirectiveClass:
     case Stmt::OMPMasterDirectiveClass:
     case Stmt::OMPCriticalDirectiveClass:
@@ -1753,6 +1776,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OMPScanDirectiveClass:
     case Stmt::OMPOrderedDirectiveClass:
     case Stmt::OMPAtomicDirectiveClass:
+    case Stmt::OMPAssumeDirectiveClass:
     case Stmt::OMPTargetDirectiveClass:
     case Stmt::OMPTargetDataDirectiveClass:
     case Stmt::OMPTargetEnterDataDirectiveClass:
@@ -1788,7 +1812,10 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OMPTargetTeamsDistributeParallelForDirectiveClass:
     case Stmt::OMPTargetTeamsDistributeParallelForSimdDirectiveClass:
     case Stmt::OMPTargetTeamsDistributeSimdDirectiveClass:
+    case Stmt::OMPReverseDirectiveClass:
+    case Stmt::OMPStripeDirectiveClass:
     case Stmt::OMPTileDirectiveClass:
+    case Stmt::OMPInterchangeDirectiveClass:
     case Stmt::OMPInteropDirectiveClass:
     case Stmt::OMPDispatchDirectiveClass:
     case Stmt::OMPMaskedDirectiveClass:
@@ -1798,8 +1825,23 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OMPParallelGenericLoopDirectiveClass:
     case Stmt::OMPTargetParallelGenericLoopDirectiveClass:
     case Stmt::CapturedStmtClass:
+    case Stmt::SYCLKernelCallStmtClass:
+    case Stmt::OpenACCComputeConstructClass:
+    case Stmt::OpenACCLoopConstructClass:
+    case Stmt::OpenACCCombinedConstructClass:
+    case Stmt::OpenACCDataConstructClass:
+    case Stmt::OpenACCEnterDataConstructClass:
+    case Stmt::OpenACCExitDataConstructClass:
+    case Stmt::OpenACCHostDataConstructClass:
+    case Stmt::OpenACCWaitConstructClass:
+    case Stmt::OpenACCInitConstructClass:
+    case Stmt::OpenACCShutdownConstructClass:
+    case Stmt::OpenACCSetConstructClass:
+    case Stmt::OpenACCUpdateConstructClass:
+    case Stmt::OpenACCAtomicConstructClass:
     case Stmt::OMPUnrollDirectiveClass:
-    case Stmt::OMPMetaDirectiveClass: {
+    case Stmt::OMPMetaDirectiveClass:
+    case Stmt::HLSLOutArgExprClass: {
       const ExplodedNode *node = Bldr.generateSink(S, Pred, Pred->getState());
       Engine.addAbortedBlock(node, currBldrCtx->getBlock());
       break;
@@ -1901,6 +1943,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::CXXRewrittenBinaryOperatorClass:
     case Stmt::RequiresExprClass:
     case Expr::CXXParenListInitExprClass:
+    case Stmt::EmbedExprClass:
       // Fall through.
 
     // Cases we intentionally don't evaluate, since they don't need
@@ -1924,10 +1967,11 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::CXXPseudoDestructorExprClass:
     case Stmt::SubstNonTypeTemplateParmExprClass:
     case Stmt::CXXNullPtrLiteralExprClass:
-    case Stmt::OMPArraySectionExprClass:
+    case Stmt::ArraySectionExprClass:
     case Stmt::OMPArrayShapingExprClass:
     case Stmt::OMPIteratorExprClass:
     case Stmt::SYCLUniqueStableNameExprClass:
+    case Stmt::OpenACCAsteriskSizeExprClass:
     case Stmt::TypeTraitExprClass: {
       Bldr.takeNodes(Pred);
       ExplodedNodeSet preVisit;
@@ -2032,11 +2076,17 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
       llvm_unreachable("Support for MatrixSubscriptExpr is not implemented.");
       break;
 
-    case Stmt::GCCAsmStmtClass:
+    case Stmt::GCCAsmStmtClass: {
       Bldr.takeNodes(Pred);
-      VisitGCCAsmStmt(cast<GCCAsmStmt>(S), Pred, Dst);
+      ExplodedNodeSet PreVisit;
+      getCheckerManager().runCheckersForPreStmt(PreVisit, Pred, S, *this);
+      ExplodedNodeSet PostVisit;
+      for (ExplodedNode *const N : PreVisit)
+        VisitGCCAsmStmt(cast<GCCAsmStmt>(S), N, PostVisit);
+      getCheckerManager().runCheckersForPostStmt(Dst, PostVisit, S, *this);
       Bldr.addNodes(Dst);
       break;
+    }
 
     case Stmt::MSAsmStmtClass:
       Bldr.takeNodes(Pred);
@@ -2084,7 +2134,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
           (B->isRelationalOp() || B->isEqualityOp())) {
         ExplodedNodeSet Tmp;
         VisitBinaryOperator(cast<BinaryOperator>(S), Pred, Tmp);
-        evalEagerlyAssumeBinOpBifurcation(Dst, Tmp, cast<Expr>(S));
+        evalEagerlyAssumeBifurcation(Dst, Tmp, cast<Expr>(S));
       }
       else
         VisitBinaryOperator(cast<BinaryOperator>(S), Pred, Dst);
@@ -2100,7 +2150,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
       // valid region.
       const Decl *Callee = OCE->getCalleeDecl();
       if (const auto *MD = dyn_cast_or_null<CXXMethodDecl>(Callee)) {
-        if (MD->isInstance()) {
+        if (MD->isImplicitObjectMemberFunction()) {
           ProgramStateRef State = Pred->getState();
           const LocationContext *LCtx = Pred->getLocationContext();
           ProgramStateRef NewState =
@@ -2114,7 +2164,6 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
           }
         }
       }
-      // FALLTHROUGH
       [[fallthrough]];
     }
 
@@ -2358,7 +2407,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
       if (AMgr.options.ShouldEagerlyAssume && (U->getOpcode() == UO_LNot)) {
         ExplodedNodeSet Tmp;
         VisitUnaryOperator(U, Pred, Tmp);
-        evalEagerlyAssumeBinOpBifurcation(Dst, Tmp, U);
+        evalEagerlyAssumeBifurcation(Dst, Tmp, U);
       }
       else
         VisitUnaryOperator(U, Pred, Dst);
@@ -2496,7 +2545,7 @@ void ExprEngine::processCFGBlockEntrance(const BlockEdge &L,
   if (BlockCount == AMgr.options.maxBlockVisitOnPath - 1 &&
       AMgr.options.ShouldWidenLoops) {
     const Stmt *Term = nodeBuilder.getContext().getBlock()->getTerminatorStmt();
-    if (!isa_and_nonnull<ForStmt, WhileStmt, DoStmt>(Term))
+    if (!isa_and_nonnull<ForStmt, WhileStmt, DoStmt, CXXForRangeStmt>(Term))
       return;
     // Widen.
     const LocationContext *LCtx = Pred->getLocationContext();
@@ -2630,9 +2679,7 @@ static const Stmt *ResolveCondition(const Stmt *Condition,
   // The invariants are still shifting, but it is possible that the
   // last element in a CFGBlock is not a CFGStmt.  Look for the last
   // CFGStmt as the value of the condition.
-  CFGBlock::const_reverse_iterator I = B->rbegin(), E = B->rend();
-  for (; I != E; ++I) {
-    CFGElement Elem = *I;
+  for (CFGElement Elem : llvm::reverse(*B)) {
     std::optional<CFGStmt> CS = Elem.getAs<CFGStmt>();
     if (!CS)
       continue;
@@ -2720,12 +2767,10 @@ assumeCondition(const Stmt *Condition, ExplodedNode *N) {
   return State->assume(V);
 }
 
-void ExprEngine::processBranch(const Stmt *Condition,
-                               NodeBuilderContext& BldCtx,
-                               ExplodedNode *Pred,
-                               ExplodedNodeSet &Dst,
-                               const CFGBlock *DstT,
-                               const CFGBlock *DstF) {
+void ExprEngine::processBranch(
+    const Stmt *Condition, NodeBuilderContext &BldCtx, ExplodedNode *Pred,
+    ExplodedNodeSet &Dst, const CFGBlock *DstT, const CFGBlock *DstF,
+    std::optional<unsigned> IterationsCompletedInLoop) {
   assert((!Condition || !isa<CXXBindTemporaryExpr>(Condition)) &&
          "CXXBindTemporaryExprs are handled by processBindTemporary.");
   const LocationContext *LCtx = Pred->getLocationContext();
@@ -2735,7 +2780,6 @@ void ExprEngine::processBranch(const Stmt *Condition,
   // Check for NULL conditions; e.g. "for(;;)"
   if (!Condition) {
     BranchNodeBuilder NullCondBldr(Pred, Dst, BldCtx, DstT, DstF);
-    NullCondBldr.markInfeasible(false);
     NullCondBldr.generateNode(Pred->getState(), true, Pred);
     return;
   }
@@ -2755,39 +2799,76 @@ void ExprEngine::processBranch(const Stmt *Condition,
   if (CheckersOutSet.empty())
     return;
 
-  BranchNodeBuilder builder(CheckersOutSet, Dst, BldCtx, DstT, DstF);
+  BranchNodeBuilder Builder(CheckersOutSet, Dst, BldCtx, DstT, DstF);
   for (ExplodedNode *PredN : CheckersOutSet) {
     if (PredN->isSink())
       continue;
 
     ProgramStateRef PrevState = PredN->getState();
 
-    ProgramStateRef StTrue, StFalse;
+    ProgramStateRef StTrue = PrevState, StFalse = PrevState;
     if (const auto KnownCondValueAssumption = assumeCondition(Condition, PredN))
       std::tie(StTrue, StFalse) = *KnownCondValueAssumption;
-    else {
-      assert(!isa<ObjCForCollectionStmt>(Condition));
-      builder.generateNode(PrevState, true, PredN);
-      builder.generateNode(PrevState, false, PredN);
-      continue;
-    }
+
     if (StTrue && StFalse)
       assert(!isa<ObjCForCollectionStmt>(Condition));
 
-    // Process the true branch.
-    if (builder.isFeasible(true)) {
-      if (StTrue)
-        builder.generateNode(StTrue, true, PredN);
-      else
-        builder.markInfeasible(true);
+    // We want to ensure consistent behavior between `eagerly-assume=false`,
+    // when the state split is always performed by the `assumeCondition()`
+    // call within this function and `eagerly-assume=true` (the default), when
+    // some conditions (comparison operators, unary negation) can trigger a
+    // state split before this callback. There are some contrived corner cases
+    // that behave differently with and without `eagerly-assume`, but I don't
+    // know about an example that could plausibly appear in "real" code.
+    bool BothFeasible =
+        (StTrue && StFalse) ||
+        didEagerlyAssumeBifurcateAt(PrevState, dyn_cast<Expr>(Condition));
+
+    if (StTrue) {
+      // In a loop, if both branches are feasible (i.e. the analyzer doesn't
+      // understand the loop condition) and two iterations have already been
+      // completed, then don't assume a third iteration because it is a
+      // redundant execution path (unlikely to be different from earlier loop
+      // exits) and can cause false positives if e.g. the loop iterates over a
+      // two-element structure with an opaque condition.
+      //
+      // The iteration count "2" is hardcoded because it's the natural limit:
+      // * the fact that the programmer wrote a loop (and not just an `if`)
+      //   implies that they thought that the loop body might be executed twice;
+      // * however, there are situations where the programmer knows that there
+      //   are at most two iterations but writes a loop that appears to be
+      //   generic, because there is no special syntax for "loop with at most
+      //   two iterations". (This pattern is common in FFMPEG and appears in
+      //   many other projects as well.)
+      bool CompletedTwoIterations = IterationsCompletedInLoop.value_or(0) >= 2;
+      bool SkipTrueBranch = BothFeasible && CompletedTwoIterations;
+
+      // FIXME: This "don't assume third iteration" heuristic partially
+      // conflicts with the widen-loop analysis option (which is off by
+      // default). If we intend to support and stabilize the loop widening,
+      // we must ensure that it 'plays nicely' with this logic.
+      if (!SkipTrueBranch || AMgr.options.ShouldWidenLoops)
+        Builder.generateNode(StTrue, true, PredN);
     }
 
-    // Process the false branch.
-    if (builder.isFeasible(false)) {
-      if (StFalse)
-        builder.generateNode(StFalse, false, PredN);
-      else
-        builder.markInfeasible(false);
+    if (StFalse) {
+      // In a loop, if both branches are feasible (i.e. the analyzer doesn't
+      // understand the loop condition), we are before the first iteration and
+      // the analyzer option `assume-at-least-one-iteration` is set to `true`,
+      // then avoid creating the execution path where the loop is skipped.
+      //
+      // In some situations this "loop is skipped" execution path is an
+      // important corner case that may evade the notice of the developer and
+      // hide significant bugs -- however, there are also many situations where
+      // it's guaranteed that at least one iteration will happen (e.g. some
+      // data structure is always nonempty), but the analyzer cannot realize
+      // this and will produce false positives when it assumes that the loop is
+      // skipped.
+      bool BeforeFirstIteration = IterationsCompletedInLoop == std::optional{0};
+      bool SkipFalseBranch = BothFeasible && BeforeFirstIteration &&
+                             AMgr.options.ShouldAssumeAtLeastOneIteration;
+      if (!SkipFalseBranch)
+        Builder.generateNode(StFalse, false, PredN);
     }
   }
   currBldrCtx = nullptr;
@@ -2810,14 +2891,13 @@ void ExprEngine::processStaticInitializer(const DeclStmt *DS,
   const auto *VD = cast<VarDecl>(DS->getSingleDecl());
   ProgramStateRef state = Pred->getState();
   bool initHasRun = state->contains<InitializedGlobalsSet>(VD);
-  BranchNodeBuilder builder(Pred, Dst, BuilderCtx, DstT, DstF);
+  BranchNodeBuilder Builder(Pred, Dst, BuilderCtx, DstT, DstF);
 
   if (!initHasRun) {
     state = state->add<InitializedGlobalsSet>(VD);
   }
 
-  builder.generateNode(state, initHasRun, Pred);
-  builder.markInfeasible(!initHasRun);
+  Builder.generateNode(state, initHasRun, Pred);
 
   currBldrCtx = nullptr;
 }
@@ -2840,9 +2920,9 @@ void ExprEngine::processIndirectGoto(IndirectGotoNodeBuilder &builder) {
   if (std::optional<loc::GotoLabel> LV = V.getAs<loc::GotoLabel>()) {
     const LabelDecl *L = LV->getLabel();
 
-    for (iterator I = builder.begin(), E = builder.end(); I != E; ++I) {
-      if (I.getLabel() == L) {
-        builder.generateNode(I, state);
+    for (iterator Succ : builder) {
+      if (Succ.getLabel() == L) {
+        builder.generateNode(Succ, state);
         return;
       }
     }
@@ -2861,8 +2941,8 @@ void ExprEngine::processIndirectGoto(IndirectGotoNodeBuilder &builder) {
   // This is really a catch-all.  We don't support symbolics yet.
   // FIXME: Implement dispatch for symbolic pointers.
 
-  for (iterator I = builder.begin(), E = builder.end(); I != E; ++I)
-    builder.generateNode(I, state);
+  for (iterator Succ : builder)
+    builder.generateNode(Succ, state);
 }
 
 void ExprEngine::processBeginOfFunction(NodeBuilderContext &BC,
@@ -3346,7 +3426,7 @@ void ExprEngine::VisitMemberExpr(const MemberExpr *M, ExplodedNode *Pred,
 
       // Handle C++ method calls.
       if (const auto *MD = dyn_cast<CXXMethodDecl>(Member)) {
-        if (MD->isInstance())
+        if (MD->isImplicitObjectMemberFunction())
           state = createTemporaryRegionIfNeeded(state, LCtx, BaseExpr);
 
         SVal MDVal = svalBuilder.getFunctionPointer(MD);
@@ -3461,15 +3541,16 @@ ProgramStateRef ExprEngine::processPointerEscapedOnBind(
   for (const std::pair<SVal, SVal> &LocAndVal : LocAndVals) {
     // Cases (1) and (2).
     const MemRegion *MR = LocAndVal.first.getAsRegion();
-    if (!MR ||
-        !isa<StackSpaceRegion, StaticGlobalSpaceRegion>(MR->getMemorySpace())) {
+    const MemSpaceRegion *Space = MR ? MR->getMemorySpace(State) : nullptr;
+    if (!MR || !isa<StackSpaceRegion, StaticGlobalSpaceRegion>(Space)) {
       Escaped.push_back(LocAndVal.second);
       continue;
     }
 
     // Case (3).
     if (const auto *VR = dyn_cast<VarRegion>(MR->getBaseRegion()))
-      if (VR->hasStackParametersStorage() && VR->getStackFrame()->inTopFrame())
+      if (isa<StackArgumentsSpaceRegion>(Space) &&
+          VR->getStackFrame()->inTopFrame())
         if (const auto *RD = VR->getValueType()->getAsCXXRecordDecl())
           if (!RD->hasTrivialDestructor()) {
             Escaped.push_back(LocAndVal.second);
@@ -3700,23 +3781,26 @@ void ExprEngine::evalLocation(ExplodedNodeSet &Dst,
   BldrTop.addNodes(Tmp);
 }
 
-std::pair<const ProgramPointTag *, const ProgramPointTag*>
-ExprEngine::geteagerlyAssumeBinOpBifurcationTags() {
-  static SimpleProgramPointTag
-         eagerlyAssumeBinOpBifurcationTrue(TagProviderName,
-                                           "Eagerly Assume True"),
-         eagerlyAssumeBinOpBifurcationFalse(TagProviderName,
-                                            "Eagerly Assume False");
-  return std::make_pair(&eagerlyAssumeBinOpBifurcationTrue,
-                        &eagerlyAssumeBinOpBifurcationFalse);
+std::pair<const ProgramPointTag *, const ProgramPointTag *>
+ExprEngine::getEagerlyAssumeBifurcationTags() {
+  static SimpleProgramPointTag TrueTag(TagProviderName, "Eagerly Assume True"),
+      FalseTag(TagProviderName, "Eagerly Assume False");
+
+  return std::make_pair(&TrueTag, &FalseTag);
 }
 
-void ExprEngine::evalEagerlyAssumeBinOpBifurcation(ExplodedNodeSet &Dst,
-                                                   ExplodedNodeSet &Src,
-                                                   const Expr *Ex) {
+/// If the last EagerlyAssume attempt was successful (i.e. the true and false
+/// cases were both feasible), this state trait stores the expression where it
+/// happened; otherwise this holds nullptr.
+REGISTER_TRAIT_WITH_PROGRAMSTATE(LastEagerlyAssumeExprIfSuccessful,
+                                 const Expr *)
+
+void ExprEngine::evalEagerlyAssumeBifurcation(ExplodedNodeSet &Dst,
+                                              ExplodedNodeSet &Src,
+                                              const Expr *Ex) {
   StmtNodeBuilder Bldr(Src, Dst, *currBldrCtx);
 
-  for (const auto Pred : Src) {
+  for (ExplodedNode *Pred : Src) {
     // Test if the previous node was as the same expression.  This can happen
     // when the expression fails to evaluate to anything meaningful and
     // (as an optimization) we don't generate a node.
@@ -3725,31 +3809,40 @@ void ExprEngine::evalEagerlyAssumeBinOpBifurcation(ExplodedNodeSet &Dst,
       continue;
     }
 
-    ProgramStateRef state = Pred->getState();
-    SVal V = state->getSVal(Ex, Pred->getLocationContext());
+    ProgramStateRef State = Pred->getState();
+    State = State->set<LastEagerlyAssumeExprIfSuccessful>(nullptr);
+    SVal V = State->getSVal(Ex, Pred->getLocationContext());
     std::optional<nonloc::SymbolVal> SEV = V.getAs<nonloc::SymbolVal>();
     if (SEV && SEV->isExpression()) {
-      const std::pair<const ProgramPointTag *, const ProgramPointTag*> &tags =
-        geteagerlyAssumeBinOpBifurcationTags();
+      const auto &[TrueTag, FalseTag] = getEagerlyAssumeBifurcationTags();
 
-      ProgramStateRef StateTrue, StateFalse;
-      std::tie(StateTrue, StateFalse) = state->assume(*SEV);
+      auto [StateTrue, StateFalse] = State->assume(*SEV);
+
+      if (StateTrue && StateFalse) {
+        StateTrue = StateTrue->set<LastEagerlyAssumeExprIfSuccessful>(Ex);
+        StateFalse = StateFalse->set<LastEagerlyAssumeExprIfSuccessful>(Ex);
+      }
 
       // First assume that the condition is true.
       if (StateTrue) {
         SVal Val = svalBuilder.makeIntVal(1U, Ex->getType());
         StateTrue = StateTrue->BindExpr(Ex, Pred->getLocationContext(), Val);
-        Bldr.generateNode(Ex, Pred, StateTrue, tags.first);
+        Bldr.generateNode(Ex, Pred, StateTrue, TrueTag);
       }
 
       // Next, assume that the condition is false.
       if (StateFalse) {
         SVal Val = svalBuilder.makeIntVal(0U, Ex->getType());
         StateFalse = StateFalse->BindExpr(Ex, Pred->getLocationContext(), Val);
-        Bldr.generateNode(Ex, Pred, StateFalse, tags.second);
+        Bldr.generateNode(Ex, Pred, StateFalse, FalseTag);
       }
     }
   }
+}
+
+bool ExprEngine::didEagerlyAssumeBifurcateAt(ProgramStateRef State,
+                                             const Expr *Ex) const {
+  return Ex && State->get<LastEagerlyAssumeExprIfSuccessful>() == Ex;
 }
 
 void ExprEngine::VisitGCCAsmStmt(const GCCAsmStmt *A, ExplodedNode *Pred,
@@ -3769,7 +3862,19 @@ void ExprEngine::VisitGCCAsmStmt(const GCCAsmStmt *A, ExplodedNode *Pred,
     assert(!isa<NonLoc>(X)); // Should be an Lval, or unknown, undef.
 
     if (std::optional<Loc> LV = X.getAs<Loc>())
-      state = state->bindLoc(*LV, UnknownVal(), Pred->getLocationContext());
+      state = state->invalidateRegions(*LV, A, currBldrCtx->blockCount(),
+                                       Pred->getLocationContext(),
+                                       /*CausedByPointerEscape=*/true);
+  }
+
+  // Do not reason about locations passed inside inline assembly.
+  for (const Expr *I : A->inputs()) {
+    SVal X = state->getSVal(I, Pred->getLocationContext());
+
+    if (std::optional<Loc> LV = X.getAs<Loc>())
+      state = state->invalidateRegions(*LV, A, currBldrCtx->blockCount(),
+                                       Pred->getLocationContext(),
+                                       /*CausedByPointerEscape=*/true);
   }
 
   Bldr.generateNode(A, Pred, state);
@@ -3795,12 +3900,9 @@ struct DOTGraphTraits<ExplodedGraph*> : public DefaultDOTGraphTraits {
     BugReporter &BR = static_cast<ExprEngine &>(
       N->getState()->getStateManager().getOwningEngine()).getBugReporter();
 
-    const auto EQClasses =
-        llvm::make_range(BR.EQClasses_begin(), BR.EQClasses_end());
-
-    for (const auto &EQ : EQClasses) {
-      for (const auto &I : EQ.getReports()) {
-        const auto *PR = dyn_cast<PathSensitiveBugReport>(I.get());
+    for (const auto &Class : BR.equivalenceClasses()) {
+      for (const auto &Report : Class.getReports()) {
+        const auto *PR = dyn_cast<PathSensitiveBugReport>(Report.get());
         if (!PR)
           continue;
         const ExplodedNode *EN = PR->getErrorNode();
@@ -3877,7 +3979,7 @@ struct DOTGraphTraits<ExplodedGraph*> : public DefaultDOTGraphTraits {
     State->printDOT(Out, N->getLocationContext(), Space);
 
     Out << "\\l}\\l";
-    return Out.str();
+    return Buf;
   }
 };
 
@@ -3898,10 +4000,9 @@ std::string ExprEngine::DumpGraph(bool trim, StringRef Filename) {
     std::vector<const ExplodedNode *> Src;
 
     // Iterate through the reports and get their nodes.
-    for (BugReporter::EQClasses_iterator
-           EI = BR.EQClasses_begin(), EE = BR.EQClasses_end(); EI != EE; ++EI) {
+    for (const auto &Class : BR.equivalenceClasses()) {
       const auto *R =
-          dyn_cast<PathSensitiveBugReport>(EI->getReports()[0].get());
+          dyn_cast<PathSensitiveBugReport>(Class.getReports()[0].get());
       if (!R)
         continue;
       const auto *N = const_cast<ExplodedNode *>(R->getErrorNode());
