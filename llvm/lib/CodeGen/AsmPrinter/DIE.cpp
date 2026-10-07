@@ -53,8 +53,8 @@ void DIEAbbrev::Profile(FoldingSetNodeID &ID) const {
   ID.AddInteger(unsigned(Children));
 
   // For each attribute description.
-  for (unsigned i = 0, N = Data.size(); i < N; ++i)
-    Data[i].Profile(ID);
+  for (const DIEAbbrevData &D : Data)
+    D.Profile(ID);
 }
 
 /// Emit - Print the abbreviation using the specified asm printer.
@@ -67,9 +67,7 @@ void DIEAbbrev::Emit(const AsmPrinter *AP) const {
   AP->emitULEB128((unsigned)Children, dwarf::ChildrenString(Children).data());
 
   // For each attribute description.
-  for (unsigned i = 0, N = Data.size(); i < N; ++i) {
-    const DIEAbbrevData &AttrData = Data[i];
-
+  for (const DIEAbbrevData &AttrData : Data) {
     // Emit attribute type.
     AP->emitULEB128(AttrData.getAttribute(),
                     dwarf::AttributeString(AttrData.getAttribute()).data());
@@ -109,14 +107,12 @@ void DIEAbbrev::print(raw_ostream &O) const {
     << dwarf::ChildrenString(Children)
     << '\n';
 
-  for (unsigned i = 0, N = Data.size(); i < N; ++i) {
-    O << "  "
-      << dwarf::AttributeString(Data[i].getAttribute())
-      << "  "
-      << dwarf::FormEncodingString(Data[i].getForm());
+  for (const DIEAbbrevData &D : Data) {
+    O << "  " << dwarf::AttributeString(D.getAttribute()) << "  "
+      << dwarf::FormEncodingString(D.getForm());
 
-    if (Data[i].getForm() == dwarf::DW_FORM_implicit_const)
-      O << " " << Data[i].getValue();
+    if (D.getForm() == dwarf::DW_FORM_implicit_const)
+      O << " " << D.getValue();
 
     O << '\n';
   }
@@ -143,9 +139,8 @@ DIEAbbrev &DIEAbbrevSet::uniqueAbbreviation(DIE &Die) {
   DIEAbbrev Abbrev = Die.generateAbbrev();
   Abbrev.Profile(ID);
 
-  void *InsertPos;
-  if (DIEAbbrev *Existing =
-          AbbreviationsSet.FindNodeOrInsertPos(ID, InsertPos)) {
+  FoldingSetInsertToken Token;
+  if (DIEAbbrev *Existing = AbbreviationsSet.lookup(ID, Token)) {
     Die.setAbbrevNumber(Existing->getNumber());
     return *Existing;
   }
@@ -157,7 +152,7 @@ DIEAbbrev &DIEAbbrevSet::uniqueAbbreviation(DIE &Die) {
   Die.setAbbrevNumber(Abbreviations.size());
 
   // Store it for lookup.
-  AbbreviationsSet.InsertNode(New, InsertPos);
+  AbbreviationsSet.insert(New, Token);
   return *New;
 }
 
@@ -173,9 +168,7 @@ void DIEAbbrevSet::Emit(const AsmPrinter *AP, MCSection *Section) const {
 // DIE Implementation
 //===----------------------------------------------------------------------===//
 
-DIE *DIE::getParent() const {
-  return Owner.dyn_cast<DIE*>();
-}
+DIE *DIE::getParent() const { return dyn_cast_if_present<DIE *>(Owner); }
 
 DIEAbbrev DIE::generateAbbrev() const {
   DIEAbbrev Abbrev(Tag, hasChildren());
@@ -194,23 +187,16 @@ uint64_t DIE::getDebugSectionOffset() const {
   return Unit->getDebugSectionOffset() + getOffset();
 }
 
-const DIE *DIE::getUnitDie() const {
-  const DIE *p = this;
-  while (p) {
-    if (p->getTag() == dwarf::DW_TAG_compile_unit ||
-        p->getTag() == dwarf::DW_TAG_skeleton_unit ||
-        p->getTag() == dwarf::DW_TAG_type_unit)
-      return p;
-    p = p->getParent();
-  }
+DIEUnit *DIE::getUnit() const {
+  for (const DIE *P = this; P; P = P->getParent())
+    if (auto *Unit = dyn_cast_if_present<DIEUnit *>(P->Owner))
+      return Unit;
   return nullptr;
 }
 
-DIEUnit *DIE::getUnit() const {
-  const DIE *UnitDie = getUnitDie();
-  if (UnitDie)
-    return UnitDie->Owner.dyn_cast<DIEUnit*>();
-  return nullptr;
+const DIE *DIE::getUnitDie() const {
+  const DIEUnit *Unit = getUnit();
+  return Unit ? &Unit->getUnitDie() : nullptr;
 }
 
 DIEValue DIE::findAttribute(dwarf::Attribute Attribute) const {
@@ -311,11 +297,7 @@ unsigned DIE::computeOffsetsAndAbbrevs(const dwarf::FormParams &FormParams,
 //===----------------------------------------------------------------------===//
 DIEUnit::DIEUnit(dwarf::Tag UnitTag) : Die(UnitTag) {
   Die.Owner = this;
-  assert((UnitTag == dwarf::DW_TAG_compile_unit ||
-          UnitTag == dwarf::DW_TAG_skeleton_unit ||
-          UnitTag == dwarf::DW_TAG_type_unit ||
-          UnitTag == dwarf::DW_TAG_partial_unit) &&
-         "expected a unit TAG");
+  assert(dwarf::isUnitType(UnitTag) && "expected a unit TAG");
 }
 
 void DIEValue::emitValue(const AsmPrinter *AP) const {
@@ -385,6 +367,7 @@ void DIEInteger::emitValue(const AsmPrinter *Asm, dwarf::Form Form) const {
   case dwarf::DW_FORM_strx2:
   case dwarf::DW_FORM_addrx2:
   case dwarf::DW_FORM_strx3:
+  case dwarf::DW_FORM_addrx3:
   case dwarf::DW_FORM_strp:
   case dwarf::DW_FORM_ref4:
   case dwarf::DW_FORM_data4:
@@ -477,7 +460,11 @@ unsigned DIEExpr::sizeOf(const dwarf::FormParams &FormParams,
 }
 
 LLVM_DUMP_METHOD
-void DIEExpr::print(raw_ostream &O) const { O << "Expr: " << *Expr; }
+void DIEExpr::print(raw_ostream &O) const {
+  MCTargetOptions Opts;
+  O << "Expr: ";
+  MCAsmInfo(Opts).printExpr(O, *Expr);
+}
 
 //===----------------------------------------------------------------------===//
 // DIELabel Implementation

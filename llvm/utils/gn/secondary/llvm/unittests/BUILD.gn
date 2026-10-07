@@ -2,15 +2,22 @@ import("//llvm/lib/Target/targets.gni")
 
 group("unittests") {
   deps = [
+    "ABI:ABITests",
     "ADT:ADTTests",
     "Analysis:AnalysisTests",
     "AsmParser:AsmParserTests",
     "BinaryFormat:BinaryFormatTests",
     "Bitcode:BitcodeTests",
     "Bitstream:BitstreamTests",
+    "CAS:CASTests",
+    "CGData:CodeGenDataTests",
     "CodeGen:CodeGenTests",
+
+    # FIXME: Figure out how to make pass.
+    # "CodeGen/CGPluginTest",
     "CodeGen/GlobalISel:GlobalISelTests",
     "DWARFLinkerParallel:DWARFLinkerParallelTests",
+    "DebugInfo/BTF:DebugInfoBTFTests",
     "DebugInfo/CodeView:DebugInfoCodeViewTests",
     "DebugInfo/DWARF:DebugInfoDWARFTests",
     "DebugInfo/GSYM:DebugInfoGSYMTests",
@@ -27,6 +34,7 @@ group("unittests") {
     "FileCheck:FileCheckTests",
     "Frontend:LLVMFrontendTests",
     "FuzzMutate:FuzzMutateTests",
+    "HTTP:HTTPTests",
     "IR:IRTests",
     "InterfaceStub:InterfaceStubTests",
     "LineEditor:LineEditorTests",
@@ -38,25 +46,33 @@ group("unittests") {
     "Object:ObjectTests",
     "ObjectYAML:ObjectYAMLTests",
     "Option:OptionTests",
-    "Passes:PassesBindingsTests",
-    "Passes:PluginsTests",
+    "Passes/PassBuilderBindings:PassesBindingsTests",
+    "Passes/Plugins:PluginsTests",
     "ProfileData:ProfileDataTests",
     "Remarks:RemarksTests",
+    "SandboxIR:SandboxIRTests",
     "Support:SupportTests",
     "Support/DynamicLibrary:DynamicLibraryTests",
+    "Support/LSP:LSPTests",
     "TableGen:TableGenTests",
+    "Target:TargetMachineCTests",
     "TargetParser:TargetParserTests",
+    "Telemetry:TelemetryTests",
     "Testing/ADT:TestingADTTests",
     "Testing/Support:TestingSupportTests",
     "TextAPI:TextAPITests",
+    "Transforms/Coroutines:CoroTests",
     "Transforms/IPO:IPOTests",
+    "Transforms/Instrumentation:InstrumentationTests",
     "Transforms/Scalar:ScalarTests",
     "Transforms/Utils:UtilsTests",
     "Transforms/Vectorize:VectorizeTests",
+    "Transforms/Vectorize/SandboxVectorizer:SandboxVectorizerTests",
     "XRay:XRayTests",
     "tools/llvm-cfi-verify:CFIVerifyTests",
     "tools/llvm-exegesis:LLVMExegesisTests",
     "tools/llvm-mca:LLVMMCATests",
+    "tools/llvm-profdata:LLVMProfdataTests",
     "tools/llvm-profgen:LLVMProfgenTests",
     "//llvm/lib/TargetParser",
   ]
@@ -73,18 +89,18 @@ group("unittests") {
   }
   if (llvm_build_AMDGPU) {
     deps += [
-      "MC/AMDGPU:AMDGPUDwarfTests",
+      "MC/AMDGPU:AMDGPUMCTests",
       "Target/AMDGPU:AMDGPUTests",
     ]
   }
   if (llvm_build_ARM) {
-    deps += [
-      "Target/ARM:ARMTests",
-      "tools/llvm-exegesis/ARM:LLVMExegesisARMTests",
-    ]
+    deps += [ "Target/ARM:ARMTests" ]
   }
   if (llvm_build_LoongArch) {
-    deps += [ "Target/LoongArch:LoongArchTests" ]
+    deps += [
+      "MC/LoongArch:LoongArchMCTests",
+      "Target/LoongArch:LoongArchTests",
+    ]
   }
   if (llvm_build_Mips) {
     deps += [ "tools/llvm-exegesis/Mips:LLVMExegesisMipsTests" ]
@@ -93,6 +109,12 @@ group("unittests") {
     deps += [
       "Target/PowerPC:PowerPCTests",
       "tools/llvm-exegesis/PowerPC:LLVMExegesisPowerPCTests",
+    ]
+  }
+  if (llvm_build_RISCV) {
+    deps += [
+      "Target/RISCV:RISCVTests",
+      "tools/llvm-exegesis/RISCV:LLVMExegesisRISCVTests",
     ]
   }
   if (llvm_build_SystemZ) {

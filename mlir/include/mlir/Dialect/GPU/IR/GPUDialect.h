@@ -14,14 +14,18 @@
 #ifndef MLIR_DIALECT_GPU_IR_GPUDIALECT_H
 #define MLIR_DIALECT_GPU_IR_GPUDIALECT_H
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/DLTI/Traits.h"
+#include "mlir/Dialect/GPU/IR/CompilationInterfaces.h"
+#include "mlir/Dialect/GPU/IR/GPUDialectDecl.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Dialect.h"
-#include "mlir/IR/FunctionInterfaces.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/RegionKindInterface.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -43,6 +47,16 @@ class AsyncTokenType
 public:
   // Used for generic hooks in TypeBase.
   using Base::Base;
+
+  static constexpr StringLiteral name = "gpu.async_token";
+};
+
+class NamedBarrierType
+    : public Type::TypeBase<NamedBarrierType, Type, TypeStorage> {
+public:
+  using Base::Base;
+
+  static constexpr StringLiteral name = "gpu.named_barrier";
 };
 
 /// MMAMatrixType storage and uniquing. Array is uniqued based on its shape
@@ -120,11 +134,17 @@ struct MMAMatrixStorageType : public TypeStorage {
 ///
 ///   gpu.subgroup_mma_store_matrix %3, %arg22[%c0, %c0] {leadDimension = 16
 ///           : index}: !gpu.mma_matrix<16x16xf32, "COp">, memref<16x16xf32>
+///
+/// MMA matrices may be memref elements on targets that support storing them,
+/// for example SPIRV can represent arrays of MMA matrices.
 // TODO: consider moving this to ODS.
 class MMAMatrixType
-    : public Type::TypeBase<MMAMatrixType, Type, MMAMatrixStorageType> {
+    : public Type::TypeBase<MMAMatrixType, Type, MMAMatrixStorageType,
+                            MemRefElementTypeInterface::Trait> {
 public:
   using Base::Base;
+
+  static constexpr StringLiteral name = "gpu.mma_matrix";
 
   /// Get MMAMatrixType and verify construction Invariants.
   static MMAMatrixType get(ArrayRef<int64_t> shape, Type elementType,
@@ -141,9 +161,10 @@ public:
 
   /// Verify that shape and elementType are actually allowed for the
   /// MMAMatrixType.
-  static LogicalResult verify(function_ref<InFlightDiagnostic()> emitError,
-                              ArrayRef<int64_t> shape, Type elementType,
-                              StringRef operand);
+  static LogicalResult
+  verifyInvariants(function_ref<InFlightDiagnostic()> emitError,
+                   ArrayRef<int64_t> shape, Type elementType,
+                   StringRef operand);
 
   /// Get number of dims.
   unsigned getNumDims() const;
@@ -163,12 +184,40 @@ public:
 // Adds a `gpu.async.token` to the front of the argument list.
 void addAsyncDependency(Operation *op, Value token);
 
+// Handle types for sparse.
+enum class SparseHandleKind { SpMat, DnTensor, SpGEMMOp };
+
+class SparseDnTensorHandleType
+    : public Type::TypeBase<SparseDnTensorHandleType, Type, TypeStorage> {
+public:
+  using Base =
+      Type::TypeBase<SparseDnTensorHandleType, Type, TypeStorage>::Base;
+  using Base::Base;
+
+  static constexpr StringLiteral name = "gpu.sparse.dntensor_handle";
+};
+
+class SparseSpMatHandleType
+    : public Type::TypeBase<SparseSpMatHandleType, Type, TypeStorage> {
+public:
+  using Base = Type::TypeBase<SparseSpMatHandleType, Type, TypeStorage>::Base;
+  using Base::Base;
+
+  static constexpr StringLiteral name = "gpu.sparse.spmat_handle";
+};
+
+class SparseSpGEMMOpHandleType
+    : public Type::TypeBase<SparseSpGEMMOpHandleType, Type, TypeStorage> {
+public:
+  using Base =
+      Type::TypeBase<SparseSpGEMMOpHandleType, Type, TypeStorage>::Base;
+  using Base::Base;
+
+  static constexpr StringLiteral name = "gpu.sparse.spgemmop_handle";
+};
+
 } // namespace gpu
 } // namespace mlir
-
-#include "mlir/Dialect/GPU/IR/GPUOpsEnums.h.inc"
-
-#include "mlir/Dialect/GPU/IR/GPUOpsDialect.h.inc"
 
 #include "mlir/Dialect/GPU/IR/GPUOpInterfaces.h.inc"
 
@@ -180,4 +229,12 @@ void addAsyncDependency(Operation *op, Value token);
 #define GET_OP_CLASSES
 #include "mlir/Dialect/GPU/IR/GPUOps.h.inc"
 
+namespace mlir::gpu {
+/// Retrieve the constant bounds for a given dimension and dimension kind
+/// from the context surrounding `op`, if known, and return them. This will
+/// check the bounds on an enclosing `gpu.launch`, an enclosing `gpu.func`, and
+/// any `gpu.known_*_size` on other function-like operations, in that order.
+std::optional<uint32_t>
+getKnownDimensionSizeAround(Operation *op, DimensionKind kind, Dimension dim);
+} // namespace mlir::gpu
 #endif // MLIR_DIALECT_GPU_IR_GPUDIALECT_H

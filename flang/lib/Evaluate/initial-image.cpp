@@ -18,51 +18,67 @@ auto InitialImage::Add(ConstantSubscript offset, std::size_t bytes,
   if (offset < 0 || offset + bytes > data_.size()) {
     return OutOfRange;
   } else {
-    auto elements{TotalElementCount(x.shape())};
+    auto optElements{TotalElementCount(x.shape())};
+    if (!optElements) {
+      return TooManyElems;
+    }
+    auto elements{*optElements};
     auto elementBytes{bytes > 0 ? bytes / elements : 0};
     if (elements * elementBytes != bytes) {
       return SizeMismatch;
     } else {
       auto at{x.lbounds()};
+      Result result{OkNoChange};
       for (; elements-- > 0; x.IncrementSubscripts(at)) {
         auto scalar{x.At(at)};
         // TODO: length type parameter values?
         for (const auto &[symbolRef, indExpr] : scalar) {
           const Symbol &component{*symbolRef};
+          Result status{OkNoChange};
           if (component.offset() + component.size() > elementBytes) {
             return SizeMismatch;
           } else if (IsPointer(component)) {
-            AddPointer(offset + component.offset(), indExpr.value());
+            status = AddPointer(offset + component.offset(), indExpr.value());
           } else if (IsAllocatable(component) || IsAutomatic(component)) {
             return NotAConstant;
           } else {
-            Result added{Add(offset + component.offset(), component.size(),
-                indExpr.value(), context)};
-            if (added != Ok) {
-              return added;
-            }
+            status = Add(offset + component.offset(), component.size(),
+                indExpr.value(), context);
+          }
+          if (status == Ok) {
+            result = Ok;
+          } else if (status != OkNoChange) {
+            return status;
           }
         }
         offset += elementBytes;
       }
+      return result;
     }
-    return Ok;
   }
 }
 
-void InitialImage::AddPointer(
-    ConstantSubscript offset, const Expr<SomeType> &pointer) {
-  pointers_.emplace(offset, pointer);
+auto InitialImage::AddPointer(
+    ConstantSubscript offset, const Expr<SomeType> &pointer) -> Result {
+  auto [iter, isNew]{pointers_.emplace(offset, pointer)};
+  return !isNew && iter->second == pointer ? OkNoChange : Ok;
 }
 
-void InitialImage::Incorporate(ConstantSubscript toOffset,
+bool InitialImage::Incorporate(ConstantSubscript toOffset,
     const InitialImage &from, ConstantSubscript fromOffset,
     ConstantSubscript bytes) {
   CHECK(from.pointers_.empty()); // pointers are not allowed in EQUIVALENCE
   CHECK(fromOffset >= 0 && bytes >= 0 &&
       static_cast<std::size_t>(fromOffset + bytes) <= from.size());
   CHECK(static_cast<std::size_t>(toOffset + bytes) <= size());
-  std::memcpy(&data_[toOffset], &from.data_[fromOffset], bytes);
+  auto *dest{&data_[toOffset]};
+  const auto *source{&from.data_[fromOffset]};
+  if (std::memcmp(dest, source, bytes) != 0) {
+    std::memcpy(dest, source, bytes);
+    return true;
+  } else {
+    return false; // no change
+  }
 }
 
 // Classes used with common::SearchTypes() to (re)construct Constant<> values
@@ -73,10 +89,11 @@ public:
   using Result = std::optional<Expr<SomeType>>;
   using Types = AllTypes;
   AsConstantHelper(FoldingContext &context, const DynamicType &type,
-      const ConstantSubscripts &extents, const InitialImage &image,
-      bool padWithZero = false, ConstantSubscript offset = 0)
-      : context_{context}, type_{type}, image_{image}, extents_{extents},
-        padWithZero_{padWithZero}, offset_{offset} {
+      std::optional<std::int64_t> charLength, const ConstantSubscripts &extents,
+      const InitialImage &image, bool padWithZero = false,
+      ConstantSubscript offset = 0)
+      : context_{context}, type_{type}, charLength_{charLength}, image_{image},
+        extents_{extents}, padWithZero_{padWithZero}, offset_{offset} {
     CHECK(!type.IsPolymorphic());
   }
   template <typename T> Result Test() {
@@ -90,10 +107,12 @@ public:
     }
     using Const = Constant<T>;
     using Scalar = typename Const::Element;
-    std::size_t elements{TotalElementCount(extents_)};
+    std::optional<uint64_t> optElements{TotalElementCount(extents_)};
+    CHECK(optElements);
+    uint64_t elements{*optElements};
     std::vector<Scalar> typedValue(elements);
-    auto elemBytes{
-        ToInt64(type_.MeasureSizeInBytes(context_, GetRank(extents_) > 0))};
+    auto elemBytes{ToInt64(type_.MeasureSizeInBytes(
+        context_, GetRank(extents_) > 0, charLength_))};
     CHECK(elemBytes && *elemBytes >= 0);
     std::size_t stride{static_cast<std::size_t>(*elemBytes)};
     CHECK(offset_ + elements * stride <= image_.data_.size() || padWithZero_);
@@ -114,16 +133,23 @@ public:
             for (std::size_t j{0}; j < elements; ++j, at += stride) {
               if (Result value{image_.AsConstantPointer(at)}) {
                 typedValue[j].emplace(component, std::move(*value));
+              } else {
+                typedValue[j].emplace(component, Expr<SomeType>{NullPointer{}});
               }
             }
-          } else if (!IsAllocatable(component)) {
+          } else if (IsAllocatable(component)) {
+            // Lowering needs an explicit NULL() for allocatables
+            for (std::size_t j{0}; j < elements; ++j, at += stride) {
+              typedValue[j].emplace(component, Expr<SomeType>{NullPointer{}});
+            }
+          } else {
             auto componentType{DynamicType::From(component)};
             CHECK(componentType.has_value());
             auto componentExtents{GetConstantExtents(context_, component)};
             CHECK(componentExtents.has_value());
             for (std::size_t j{0}; j < elements; ++j, at += stride) {
               if (Result value{image_.AsConstant(context_, *componentType,
-                      *componentExtents, padWithZero_, at)}) {
+                      std::nullopt, *componentExtents, padWithZero_, at)}) {
                 typedValue[j].emplace(component, std::move(*value));
               }
             }
@@ -134,54 +160,55 @@ public:
           Const{derived, std::move(typedValue), std::move(extents_)});
     } else if constexpr (T::category == TypeCategory::Character) {
       auto length{static_cast<ConstantSubscript>(stride) / T::kind};
+      llvm::SmallVector<char, 256> buffer;
+      const char *data{GetTailPaddedData(offset_, elements * stride, buffer)};
       for (std::size_t j{0}; j < elements; ++j) {
-        using Char = typename Scalar::value_type;
-        auto at{static_cast<std::size_t>(offset_ + j * stride)};
-        auto chunk{length};
-        if (at + chunk > image_.data_.size()) {
-          CHECK(padWithZero_);
-          if (at >= image_.data_.size()) {
-            chunk = 0;
-          } else {
-            chunk = image_.data_.size() - at;
-          }
-        }
-        if (chunk > 0) {
-          const Char *data{reinterpret_cast<const Char *>(&image_.data_[at])};
-          typedValue[j].assign(data, chunk);
-        }
-        if (chunk < length && padWithZero_) {
-          typedValue[j].append(length - chunk, Char{});
-        }
+        typedValue[j] = value::Character<T::kind>::FromRawBytes(
+            data + j * stride, length * T::kind);
       }
       return AsGenericExpr(
           Const{length, std::move(typedValue), std::move(extents_)});
     } else {
       // Lengthless intrinsic type
-      CHECK(sizeof(Scalar) <= stride);
-      for (std::size_t j{0}; j < elements; ++j) {
-        auto at{static_cast<std::size_t>(offset_ + j * stride)};
-        std::size_t chunk{sizeof(Scalar)};
-        if (at + chunk > image_.data_.size()) {
-          CHECK(padWithZero_);
-          if (at >= image_.data_.size()) {
-            chunk = 0;
-          } else {
-            chunk = image_.data_.size() - at;
-          }
-        }
-        // TODO endianness
-        if (chunk > 0) {
-          std::memcpy(&typedValue[j], &image_.data_[at], chunk);
-        }
-      }
+      llvm::SmallVector<char, 256> buffer;
+      const char *data{GetTailPaddedData(offset_,
+          elements == 0
+              ? 0
+              : (elements - 1) * stride + evaluate::Scalar<T>::bytesStored(),
+          buffer)};
+      // TODO endianness
+      LoadSerialValues(
+          data, llvm::MutableArrayRef<evaluate::Scalar<T>>(typedValue), stride);
       return AsGenericExpr(Const{std::move(typedValue), std::move(extents_)});
     }
   }
 
 private:
+  /// Returns the image's bytes, extended with zero bytes when a value is being
+  /// built whose representation reaches past the end of the image.  That
+  /// happens when TRANSFER() is folded with a MOLD= whose representation is
+  /// longer than SOURCE=, and when deserializing a scalar accesses more bytes
+  /// than its element size because its host representation is padded (e.g.,
+  /// REAL(10)).  F2023 16.9.212 leaves the bytes beyond SOURCE= processor
+  /// dependent; flang zero-fills them, as the runtime does.
+  const char *GetTailPaddedData(std::size_t offset, std::size_t bytes,
+      llvm::SmallVectorImpl<char> &buffer) const {
+    if (bytes + offset <= image_.data_.size()) {
+      // If no padding is needed, use original data without copy
+      return image_.data_.data() + offset;
+    }
+    CHECK(padWithZero_);
+    buffer.assign(bytes, 0);
+    if (offset < image_.data_.size()) {
+      std::memcpy(buffer.data(), image_.data_.data() + offset,
+          image_.data_.size() - offset);
+    }
+    return buffer.data();
+  }
+
   FoldingContext &context_;
   const DynamicType &type_;
+  std::optional<std::int64_t> charLength_;
   const InitialImage &image_;
   ConstantSubscripts extents_; // a copy
   bool padWithZero_;
@@ -189,10 +216,11 @@ private:
 };
 
 std::optional<Expr<SomeType>> InitialImage::AsConstant(FoldingContext &context,
-    const DynamicType &type, const ConstantSubscripts &extents,
-    bool padWithZero, ConstantSubscript offset) const {
-  return common::SearchTypes(
-      AsConstantHelper{context, type, extents, *this, padWithZero, offset});
+    const DynamicType &type, std::optional<std::int64_t> charLength,
+    const ConstantSubscripts &extents, bool padWithZero,
+    ConstantSubscript offset) const {
+  return common::SearchTypes(AsConstantHelper{
+      context, type, charLength, extents, *this, padWithZero, offset});
 }
 
 std::optional<Expr<SomeType>> InitialImage::AsConstantPointer(

@@ -13,34 +13,90 @@
 #ifndef LLVM_CLANG_BASIC_CODEGENOPTIONS_H
 #define LLVM_CLANG_BASIC_CODEGENOPTIONS_H
 
-#include "clang/Basic/DebugInfoOptions.h"
+#include "clang/Basic/CFProtectionOptions.h"
+#include "clang/Basic/PointerAuthOptions.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Basic/XRayInstr.h"
 #include "llvm/ADT/FloatingPointMode.h"
+#include "llvm/Frontend/Debug/Options.h"
+#include "llvm/Frontend/Driver/CodeGenOptions.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
+namespace llvm {
+class PassBuilder;
+}
 namespace clang {
+
+/// A target's ABI policy for whether a class's vtable can be assumed to have
+/// a unique address program-wide. This is the basis for the exact dynamic_cast
+/// optimization (and, where a vtable is not assumed unique, for whether it may
+/// be marked unnamed_addr so the platform can duplicate it).
+enum class VTableUniquenessKind {
+  /// Every vtable has a single address program-wide.
+  AlwaysUnique,
+  /// A vtable with strong linkage (e.g., a class with a key function) is
+  /// unique, but a vague-linkage (weak) vtable may be duplicated by the
+  /// platform and so has no unique address.
+  UniqueIfStrongLinkage,
+};
 
 /// Bitfields of CodeGenOptions, split out from CodeGenOptions to ensure
 /// that this large collection of bitfields is a trivial class type.
 class CodeGenOptionsBase {
   friend class CompilerInvocation;
+  friend class CompilerInvocationBase;
 
 public:
-#define CODEGENOPT(Name, Bits, Default) unsigned Name : Bits;
-#define ENUM_CODEGENOPT(Name, Type, Bits, Default)
+  /// For ASTs produced with different option value, signifies their level of
+  /// compatibility.
+  enum class CompatibilityKind {
+    /// Does affect the construction of the AST in a way that does prevent
+    /// module interoperability.
+    NotCompatible,
+    /// Does affect the construction of the AST in a way that doesn't prevent
+    /// interoperability (that is, the value can be different between an
+    /// explicit module and the user of that module).
+    Compatible,
+    /// Does not affect the construction of the AST in any way (that is, the
+    /// value can be different between an implicit module and the user of that
+    /// module).
+    Benign,
+  };
+
+  using CFBranchLabelSchemeKind = clang::CFBranchLabelSchemeKind;
+  using ProfileInstrKind = llvm::driver::ProfileInstrKind;
+  using AsanDetectStackUseAfterReturnMode =
+      llvm::AsanDetectStackUseAfterReturnMode;
+  using AsanDtorKind = llvm::AsanDtorKind;
+  using VectorLibrary = llvm::driver::VectorLibrary;
+  using ZeroCallUsedRegsKind = llvm::ZeroCallUsedRegs::ZeroCallUsedRegsKind;
+  using WinX64EHUnwindMode = llvm::WinX64EHUnwindMode;
+  using ControlFlowGuardMechanism = llvm::ControlFlowGuardMechanism;
+
+  using DebugCompressionType = llvm::DebugCompressionType;
+  using EmitDwarfUnwindType = llvm::EmitDwarfUnwindType;
+  using DebugTemplateNamesKind = llvm::codegenoptions::DebugTemplateNamesKind;
+  using DebugInfoKind = llvm::codegenoptions::DebugInfoKind;
+  using DebuggerKind = llvm::DebuggerKind;
+  using RelocSectionSymType = llvm::RelocSectionSymType;
+
+#define CODEGENOPT(Name, Bits, Default, Compatibility) unsigned Name : Bits;
+#define ENUM_CODEGENOPT(Name, Type, Bits, Default, Compatibility)
 #include "clang/Basic/CodeGenOptions.def"
 
 protected:
-#define CODEGENOPT(Name, Bits, Default)
-#define ENUM_CODEGENOPT(Name, Type, Bits, Default) unsigned Name : Bits;
+#define CODEGENOPT(Name, Bits, Default, Compatibility)
+#define ENUM_CODEGENOPT(Name, Type, Bits, Default, Compatibility)              \
+  unsigned Name : Bits;
 #include "clang/Basic/CodeGenOptions.def"
 };
 
@@ -52,16 +108,6 @@ public:
     NormalInlining,     // Use the standard function inlining pass.
     OnlyHintInlining,   // Inline only (implicitly) hinted functions.
     OnlyAlwaysInlining  // Only run the always inlining pass.
-  };
-
-  enum VectorLibrary {
-    NoLibrary,         // Don't use any vector library.
-    Accelerate,        // Use the Accelerate framework.
-    LIBMVEC,           // GLIBC vector math library.
-    MASSV,             // IBM MASS vector library.
-    SVML,              // Intel short vector math library.
-    SLEEF,             // SLEEF SIMD Library for Evaluating Elementary Functions.
-    Darwin_libsystem_m // Use Darwin's libsytem_m vector functions.
   };
 
   enum ObjCDispatchMethodKind {
@@ -83,19 +129,17 @@ public:
     SRCK_InRegs    // Small structs in registers (-freg-struct-return).
   };
 
-  enum ProfileInstrKind {
-    ProfileNone,       // Profile instrumentation is turned off.
-    ProfileClangInstr, // Clang instrumentation to generate execution counts
-                       // to use with PGO.
-    ProfileIRInstr,    // IR level PGO instrumentation in LLVM.
-    ProfileCSIRInstr, // IR level PGO context sensitive instrumentation in LLVM.
-  };
-
   enum EmbedBitcodeKind {
     Embed_Off,      // No embedded bitcode.
     Embed_All,      // Embed both bitcode and commandline in the output.
     Embed_Bitcode,  // Embed just the bitcode in the output.
     Embed_Marker    // Embed a marker as a placeholder for bitcode.
+  };
+
+  enum class ExtendVariableLivenessKind {
+    None,
+    This,
+    All,
   };
 
   enum InlineAsmDialectKind {
@@ -107,22 +151,18 @@ public:
     DSH_MD5,
     DSH_SHA1,
     DSH_SHA256,
+    DSH_NONE,
   };
 
   // This field stores one of the allowed values for the option
   // -fbasic-block-sections=.  The allowed values with this option are:
-  // {"labels", "all", "list=<file>", "none"}.
+  // {"all", "list=<file>", "none"}.
   //
-  // "labels":      Only generate basic block symbols (labels) for all basic
-  //                blocks, do not generate unique sections for basic blocks.
-  //                Use the machine basic block id in the symbol name to
-  //                associate profile info from virtual address to machine
-  //                basic block.
   // "all" :        Generate basic block sections for all basic blocks.
   // "list=<file>": Generate basic block sections for a subset of basic blocks.
   //                The functions and the machine basic block ids are specified
   //                in the file.
-  // "none":        Disable sections/labels for basic blocks.
+  // "none":        Disable sections for basic blocks.
   std::string BBSections;
 
   // If set, override the default value of MCAsmInfo::BinutilsVersion. If
@@ -132,15 +172,23 @@ public:
   std::string BinutilsVersion;
 
   enum class FramePointerKind {
-    None,        // Omit all frame pointers.
-    NonLeaf,     // Keep non-leaf frame pointers.
-    All,         // Keep all frame pointers.
+    NonLeafNoReserve, // Keep non-leaf frame pointers, allow the FP to be used
+                      // as a GPR in leaf functions.
+    None,             // Omit all frame pointers.
+    Reserved,         // Maintain valid frame pointer chain.
+    NonLeaf, // Keep non-leaf frame pointers, don't allow the FP to be used as a
+             // GPR in leaf functions.
+    All,     // Keep all frame pointers.
   };
 
   static StringRef getFramePointerKindName(FramePointerKind Kind) {
     switch (Kind) {
     case FramePointerKind::None:
       return "none";
+    case FramePointerKind::Reserved:
+      return "reserved";
+    case FramePointerKind::NonLeafNoReserve:
+      return "non-leaf-no-reserve";
     case FramePointerKind::NonLeaf:
       return "non-leaf";
     case FramePointerKind::All:
@@ -148,6 +196,40 @@ public:
     }
 
     llvm_unreachable("invalid FramePointerKind");
+  }
+
+  /// Possible exception handling behavior.
+  enum class ExceptionHandlingKind {
+    Default,
+    None,
+    SjLj,
+    WinEH,
+    DwarfCFI,
+    Wasm,
+    Emscripten
+  };
+
+  /// Translate a clang ExceptionHandlingKind into the corresponding LLVM
+  /// ExceptionHandling model.
+  static llvm::ExceptionHandling
+  toExceptionHandling(ExceptionHandlingKind Kind) {
+    switch (Kind) {
+    case ExceptionHandlingKind::Default:
+      return llvm::ExceptionHandling::Default;
+    case ExceptionHandlingKind::None:
+      return llvm::ExceptionHandling::None;
+    case ExceptionHandlingKind::SjLj:
+      return llvm::ExceptionHandling::SjLj;
+    case ExceptionHandlingKind::WinEH:
+      return llvm::ExceptionHandling::WinEH;
+    case ExceptionHandlingKind::DwarfCFI:
+      return llvm::ExceptionHandling::DwarfCFI;
+    case ExceptionHandlingKind::Wasm:
+      return llvm::ExceptionHandling::Wasm;
+    case ExceptionHandlingKind::Emscripten:
+      return llvm::ExceptionHandling::Emscripten;
+    }
+    llvm_unreachable("invalid ExceptionHandlingKind");
   }
 
   enum class SwiftAsyncFramePointerKind {
@@ -163,8 +245,44 @@ public:
     Never,    // No loop is assumed to be finite.
   };
 
+  enum AssignmentTrackingOpts {
+    Disabled,
+    Enabled,
+    Forced,
+  };
+
+  enum SanitizeDebugTrapReasonKind {
+    None,  ///< Trap Messages are omitted. This offers the smallest debug info
+           ///< size but at the cost of making traps hard to debug.
+    Basic, ///< Trap Message is fixed per SanitizerKind. Produces smaller debug
+           ///< info than `Detailed` but is not as helpful for debugging.
+    Detailed, ///< Trap Message includes more context (e.g. the expression being
+              ///< overflowed). This is more helpful for debugging but produces
+              ///< larger debug info than `Basic`.
+  };
+
+  enum class BoolFromMem {
+    Strict,   ///< In-memory bool values are assumed to be 0 or 1, and any other
+              ///< value is UB.
+    Truncate, ///< Convert in-memory bools to i1 by checking if the least
+              ///< significant bit is 1.
+    NonZero,  ///< Convert in-memory bools to i1 by checking if any bit is set
+              ///< to 1.
+    NonStrictDefault = NonZero
+  };
+
+  enum class NewPMEnablementLevel {
+    Auto,         // Use the target dependent default.
+    ForceEnable,  // Always enable regardless of the target default.
+    ForceDisable, // Always disable regardless of the target default.
+  };
+
   /// The code model to use (-mcmodel).
   std::string CodeModel;
+
+  /// The code model-specific large data threshold to use
+  /// (-mlarge-data-threshold).
+  uint64_t LargeDataThreshold;
 
   /// The filename with path we use for coverage data files. The runtime
   /// allows further manipulation with the GCOV_PREFIX and GCOV_PREFIX_STRIP
@@ -181,7 +299,7 @@ public:
   std::string ProfileExcludeFiles;
 
   /// The version string to put into coverage files.
-  char CoverageVersion[4];
+  char CoverageVersion[4] = {'0', '0', '0', '0'};
 
   /// Enable additional debugging information.
   std::string DebugPass;
@@ -200,8 +318,19 @@ public:
   /// if non-empty.
   std::string RecordCommandLine;
 
-  std::map<std::string, std::string> DebugPrefixMap;
-  std::map<std::string, std::string> CoveragePrefixMap;
+  /// The string containing the commandline for the dx.source.args metadata,
+  /// if non-empty.
+  std::string HLSLRecordCommandLine;
+
+  /// The vector contains parsed commandline for the dx.source.args metadata,
+  /// if parsing was successful.
+  llvm::SmallVector<llvm::SmallString<8>> HLSLParsedCommandLine;
+
+  llvm::SmallVector<std::pair<std::string, std::string>, 0> DebugPrefixMap;
+
+  /// Prefix replacement map for source-based code coverage to remap source
+  /// file paths in coverage mapping.
+  llvm::SmallVector<std::pair<std::string, std::string>, 0> CoveragePrefixMap;
 
   /// The ABI to use for passing floating point arguments.
   std::string FloatABI;
@@ -267,11 +396,18 @@ public:
   /// -fprofile-generate, and -fcs-profile-generate.
   std::string InstrProfileOutput;
 
+  /// Name of the patchable function entry section with
+  /// -fpatchable-function-entry.
+  std::string PatchableFunctionEntrySection;
+
   /// Name of the profile file to use with -fprofile-sample-use.
   std::string SampleProfileFile;
 
   /// Name of the profile file to use as output for with -fmemory-profile.
   std::string MemoryProfileOutput;
+
+  /// Name of the profile file to use as input for -fmemory-profile-use.
+  std::string MemoryProfileUsePath;
 
   /// Name of the profile file to use as input for -fprofile-instr-use
   std::string ProfileInstrumentUsePath;
@@ -292,9 +428,13 @@ public:
   /// Prefix to use for -save-temps output.
   std::string SaveTempsFilePrefix;
 
-  /// Name of file passed with -fcuda-include-gpubinary option to forward to
-  /// CUDA runtime back-end for incorporating them into host-side object file.
-  std::string CudaGpuBinaryFileName;
+  /// Prefix to use for -save-dynamic-debugging-temps output.
+  std::string SaveDynDbgTempsFilePrefix;
+
+  /// Name of file passed with -foffload-include-binary option to forward to
+  /// offloading runtime back-end for incorporating them into host-side object
+  /// file.
+  std::string OffloadBinaryToEmbedFile;
 
   /// List of filenames passed in using the -fembed-offload-object option. These
   /// are offloading binaries containing device images and metadata.
@@ -315,6 +455,10 @@ public:
   /// -fsymbol-partition (see https://lld.llvm.org/Partitions.html).
   std::string SymbolPartition;
 
+  /// If non-empty, allow the compiler to assume that the given source file
+  /// identifier is unique at link time.
+  std::string UniqueSourceFileIdentifier;
+
   enum RemarkKind {
     RK_Missing,            // Remark argument not present on the command line.
     RK_Enabled,            // Remark enabled via '-Rgroup'.
@@ -326,12 +470,12 @@ public:
 
   /// Optimization remark with an optional regular expression pattern.
   struct OptRemark {
-    RemarkKind Kind;
+    RemarkKind Kind = RK_Missing;
     std::string Pattern;
     std::shared_ptr<llvm::Regex> Regex;
 
     /// By default, optimization remark is missing.
-    OptRemark() : Kind(RK_Missing), Regex(nullptr) {}
+    OptRemark() = default;
 
     /// Returns true iff the optimization remark holds a valid regular
     /// expression.
@@ -362,15 +506,27 @@ public:
   /// transformation.
   OptRemark OptimizationRemarkAnalysis;
 
-  /// Set of files defining the rules for the symbol rewriting.
-  std::vector<std::string> RewriteMapFiles;
-
   /// Set of sanitizer checks that are non-fatal (i.e. execution should be
   /// continued when possible).
   SanitizerSet SanitizeRecover;
 
   /// Set of sanitizer checks that trap rather than diagnose.
   SanitizerSet SanitizeTrap;
+
+  /// Set of sanitizer checks that can merge handlers (smaller code size at
+  /// the expense of debuggability).
+  SanitizerSet SanitizeMergeHandlers;
+
+  /// Set of thresholds in a range [0.0, 1.0]: the top hottest code responsible
+  /// for the given fraction of PGO counters will be excluded from sanitization
+  /// (0.0 [default] to skip none, 1.0 to skip all).
+  SanitizerMaskCutoffs SanitizeSkipHotCutoffs;
+
+  /// Set of sanitizer checks, for which the instrumentation will be annotated
+  /// with extra debug info.
+  SanitizerSet SanitizeAnnotateDebugInfo;
+
+  std::optional<double> AllowRuntimeCheckSkipHotCutoff;
 
   /// List of backend command-line options for -fembed-bitcode.
   std::vector<uint8_t> CmdArgs;
@@ -379,6 +535,9 @@ public:
   std::vector<std::string> NoBuiltinFuncs;
 
   std::vector<std::string> Reciprocals;
+
+  /// Configuration for pointer-signing.
+  PointerAuthOptions PointerAuth;
 
   /// The preferred width for auto-vectorization transforms. This is intended to
   /// override default transforms based on the width of the architected vector
@@ -392,6 +551,15 @@ public:
 
   /// List of dynamic shared object files to be loaded as pass plugins.
   std::vector<std::string> PassPlugins;
+
+  /// List of pass builder callbacks.
+  std::vector<std::function<void(llvm::PassBuilder &)>> PassBuilderCallbacks;
+
+  /// List of global variables explicitly specified by the user as toc-data.
+  std::vector<std::string> TocDataVarsUserSpecified;
+
+  /// List of global variables that over-ride the toc-data default.
+  std::vector<std::string> NoTocDataVars;
 
   /// Path to allowlist file specifying which objects
   /// (files, functions) should exclusively be instrumented
@@ -417,10 +585,18 @@ public:
   /// coverage pass should actually not be instrumented.
   std::vector<std::string> SanitizeCoverageIgnorelistFiles;
 
+  /// Path to ignorelist file specifying which objects
+  /// (files, functions) listed for instrumentation by sanitizer
+  /// binary metadata pass should not be instrumented.
+  std::vector<std::string> SanitizeMetadataIgnorelistFiles;
+
+  /// Hash algorithm to use for KCFI type IDs.
+  llvm::KCFIHashAlgorithm SanitizeKcfiHash;
+
   /// Name of the stack usage file (i.e., .su file) if user passes
   /// -fstack-usage. If empty, it can be implied that -fstack-usage is not
   /// passed on the command line.
-  std::string StackUsageOutput;
+  std::string StackUsageFile;
 
   /// Executable and command-line used to create a given CompilerInvocation.
   /// Most of the time this will be the full -cc1 command.
@@ -449,11 +625,21 @@ public:
   /// The name of a file to use with \c .secure_log_unique directives.
   std::string AsSecureLogFile;
 
+  /// A list of functions that are replacable by the loader.
+  std::vector<std::string> LoaderReplaceableFunctionNames;
+  /// The name of a file that contains functions which will be compiled for
+  /// hotpatching. See -fms-secure-hotpatch-functions-file.
+  std::string MSSecureHotPatchFunctionsFile;
+
+  /// A list of functions which will be compiled for hotpatching.
+  /// See -fms-secure-hotpatch-functions-list.
+  std::vector<std::string> MSSecureHotPatchFunctionsList;
+
 public:
   // Define accessors/mutators for code generation options of enumeration type.
-#define CODEGENOPT(Name, Bits, Default)
-#define ENUM_CODEGENOPT(Name, Type, Bits, Default) \
-  Type get##Name() const { return static_cast<Type>(Name); } \
+#define CODEGENOPT(Name, Bits, Default, Compatibility)
+#define ENUM_CODEGENOPT(Name, Type, Bits, Default, Compatibility)              \
+  Type get##Name() const { return static_cast<Type>(Name); }                   \
   void set##Name(Type Value) { Name = static_cast<unsigned>(Value); }
 #include "clang/Basic/CodeGenOptions.def"
 
@@ -463,43 +649,72 @@ public:
     return NoBuiltinFuncs;
   }
 
+  bool hasSjLjExceptions() const {
+    return getExceptionHandling() == ExceptionHandlingKind::SjLj;
+  }
+
+  bool hasSEHExceptions() const {
+    return getExceptionHandling() == ExceptionHandlingKind::WinEH;
+  }
+
+  bool hasDWARFExceptions() const {
+    return getExceptionHandling() == ExceptionHandlingKind::DwarfCFI;
+  }
+
+  bool hasWasmExceptions() const {
+    return getExceptionHandling() == ExceptionHandlingKind::Wasm;
+  }
+
+  bool hasEmscriptenExceptions() const {
+    return getExceptionHandling() == ExceptionHandlingKind::Emscripten;
+  }
+
   /// Check if Clang profile instrumenation is on.
   bool hasProfileClangInstr() const {
-    return getProfileInstr() == ProfileClangInstr;
+    return getProfileInstr() ==
+           llvm::driver::ProfileInstrKind::ProfileClangInstr;
   }
 
   /// Check if IR level profile instrumentation is on.
   bool hasProfileIRInstr() const {
-    return getProfileInstr() == ProfileIRInstr;
+    return getProfileInstr() == llvm::driver::ProfileInstrKind::ProfileIRInstr;
   }
 
   /// Check if CS IR level profile instrumentation is on.
   bool hasProfileCSIRInstr() const {
-    return getProfileInstr() == ProfileCSIRInstr;
+    return getProfileInstr() ==
+           llvm::driver::ProfileInstrKind::ProfileCSIRInstr;
+  }
+
+  /// Check if any form of instrumentation is on.
+  bool hasProfileInstr() const {
+    return getProfileInstr() != llvm::driver::ProfileInstrKind::ProfileNone;
   }
 
   /// Check if Clang profile use is on.
   bool hasProfileClangUse() const {
-    return getProfileUse() == ProfileClangInstr;
+    return getProfileUse() == llvm::driver::ProfileInstrKind::ProfileClangInstr;
   }
 
   /// Check if IR level profile use is on.
   bool hasProfileIRUse() const {
-    return getProfileUse() == ProfileIRInstr ||
-           getProfileUse() == ProfileCSIRInstr;
+    return getProfileUse() == llvm::driver::ProfileInstrKind::ProfileIRInstr ||
+           getProfileUse() == llvm::driver::ProfileInstrKind::ProfileCSIRInstr;
   }
 
   /// Check if CSIR profile use is on.
-  bool hasProfileCSIRUse() const { return getProfileUse() == ProfileCSIRInstr; }
+  bool hasProfileCSIRUse() const {
+    return getProfileUse() == llvm::driver::ProfileInstrKind::ProfileCSIRInstr;
+  }
 
   /// Check if type and variable info should be emitted.
   bool hasReducedDebugInfo() const {
-    return getDebugInfo() >= codegenoptions::DebugInfoConstructor;
+    return getDebugInfo() >= llvm::codegenoptions::DebugInfoConstructor;
   }
 
   /// Check if maybe unused type info should be emitted.
   bool hasMaybeUnusedDebugInfo() const {
-    return getDebugInfo() >= codegenoptions::UnusedTypeInfo;
+    return getDebugInfo() >= llvm::codegenoptions::UnusedTypeInfo;
   }
 
   // Check if any one of SanitizeCoverage* is enabled.
@@ -514,6 +729,39 @@ public:
     return SanitizeBinaryMetadataCovered || SanitizeBinaryMetadataAtomics ||
            SanitizeBinaryMetadataUAR;
   }
+
+  /// Reset all of the options that are not considered when building a
+  /// module.
+  void resetNonModularOptions(StringRef ModuleFormat);
+
+  // Is the given function name one of the functions that can be replaced by the
+  // loader?
+  bool isLoaderReplaceableFunctionName(StringRef FuncName) const {
+    return llvm::is_contained(LoaderReplaceableFunctionNames, FuncName);
+  }
+
+  /// Are we building at -O1 or higher?
+  bool isOptimizedBuild() const { return OptimizationLevel > 0; }
+
+  /// When loading a bool from a storage unit larger than i1, should it
+  /// be converted to i1 by comparing to 0 or by truncating to i1?
+  bool isConvertingBoolWithCmp0() const {
+    switch (getLoadBoolFromMem()) {
+    case BoolFromMem::Strict:
+      return !isOptimizedBuild();
+
+    case BoolFromMem::Truncate:
+      return false;
+
+    case BoolFromMem::NonZero:
+      return true;
+    }
+    llvm_unreachable("Unknown BoolFromMem enum");
+  }
+
+  /// Remap specified path prefix using provided DebugPrefixMap map.
+  /// Returns updated path or unchanged if no substitution was found.
+  std::string remapDebugPathPrefix(StringRef Path) const;
 };
 
 }  // end namespace clang

@@ -6,15 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC_SYS_STAT_SENDFILE_H
-#define LLVM_LIBC_SRC_SYS_STAT_SENDFILE_H
+#ifndef LLVM_LIBC_SRC_SYS_SENDFILE_SENDFILE_H
+#define LLVM_LIBC_SRC_SYS_SENDFILE_SENDFILE_H
 
-#include <sys/sendfile.h>
+#include "hdr/types/off_t.h"
+#include "hdr/types/size_t.h"
+#include "hdr/types/ssize_t.h"
+#include "src/__support/macros/config.h"
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 ssize_t sendfile(int, int, off_t *, size_t);
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC_SYS_STAT_SENDFILE_H
+#endif // LLVM_LIBC_SRC_SYS_SENDFILE_SENDFILE_H

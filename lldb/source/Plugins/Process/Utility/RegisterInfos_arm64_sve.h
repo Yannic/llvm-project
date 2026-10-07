@@ -311,6 +311,7 @@ static uint32_t g_contained_z31[] = {sve_z31, LLDB_INVALID_REGNUM};
   {                                                                            \
     #vreg, nullptr, 16, 0, lldb::eEncodingVector, lldb::eFormatVectorOfUInt8,  \
         VREG_KIND(vreg), g_contained_##zreg, g_sve_##vreg##_invalidates,       \
+        nullptr,                                                               \
   }
 
 // Defines S and D pseudo registers mapping over corresponding vector register
@@ -318,20 +319,21 @@ static uint32_t g_contained_z31[] = {sve_z31, LLDB_INVALID_REGNUM};
   {                                                                            \
     #reg, nullptr, size, 0, lldb::eEncodingIEEE754, lldb::eFormatFloat,        \
         LLDB_KIND(fpu_##reg), g_contained_##zreg, g_sve_##reg##_invalidates,   \
+        nullptr,                                                               \
   }
 
 // Defines a Z vector register with 16-byte default size
 #define DEFINE_ZREG(reg)                                                       \
   {                                                                            \
     #reg, nullptr, 16, 0, lldb::eEncodingVector, lldb::eFormatVectorOfUInt8,   \
-        SVE_REG_KIND(reg), nullptr, nullptr,                                   \
+        SVE_REG_KIND(reg), nullptr, nullptr, nullptr,                          \
   }
 
 // Defines a P vector register with 2-byte default size
 #define DEFINE_PREG(reg)                                                       \
   {                                                                            \
     #reg, nullptr, 2, 0, lldb::eEncodingVector, lldb::eFormatVectorOfUInt8,    \
-        SVE_REG_KIND(reg), nullptr, nullptr,                                   \
+        SVE_REG_KIND(reg), nullptr, nullptr, nullptr,                          \
   }
 
 static lldb_private::RegisterInfo g_register_infos_arm64_sve_le[] = {
@@ -371,8 +373,7 @@ static lldb_private::RegisterInfo g_register_infos_arm64_sve_le[] = {
     DEFINE_GPR64_ALT(sp, x31, LLDB_REGNUM_GENERIC_SP),
     DEFINE_GPR64(pc, LLDB_REGNUM_GENERIC_PC),
 
-    // DEFINE_MISC_REGS(name, size, TYPE, lldb kind)
-    DEFINE_MISC_REGS(cpsr, 4, GPR, gpr_cpsr),
+    DEFINE_GPR_CPSR,
 
     // DEFINE_GPR32(name, parent name)
     DEFINE_GPR32(w0, x0),
@@ -506,9 +507,9 @@ static lldb_private::RegisterInfo g_register_infos_arm64_sve_le[] = {
     DEFINE_FPU_PSEUDO_SVE(d30, 8, z30),
     DEFINE_FPU_PSEUDO_SVE(d31, 8, z31),
 
-    // DEFINE_MISC_REGS(name, size, TYPE, lldb kind)
-    DEFINE_MISC_REGS(fpsr, 4, FPU, fpu_fpsr),
-    DEFINE_MISC_REGS(fpcr, 4, FPU, fpu_fpcr),
+    // DEFINE_MISC_LLDB_REGS(name, size, TYPE, lldb kind)
+    DEFINE_MISC_LLDB_REGS(fpsr, 4, FPU, fpu_fpsr),
+    DEFINE_MISC_LLDB_REGS(fpcr, 4, FPU, fpu_fpcr),
 
     DEFINE_MISC_REGS(vg, 8, VG, sve_vg),
     // DEFINE_ZREG(name)

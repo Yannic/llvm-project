@@ -23,6 +23,7 @@
 namespace llvm {
 
 #if LLVM_ENABLE_ABI_BREAKING_CHECKS
+#define LLVM_DEBUGEPOCHBASE_HANDLEBASE_EMPTYBASE
 
 /// A base class for data structure classes wishing to make iterators
 /// ("handles") pointing into themselves fail-fast.  When building without
@@ -70,6 +71,15 @@ public:
     /// HandleBase instance.
     bool isHandleInSync() const { return *EpochAddress == EpochAtCreation; }
 
+    /// Returns true if this handle and RHS can be compared. Both must be either
+    /// default-constructed or point into the same container and no mutation
+    /// has occurred since they were created.
+    bool isComparableWith(const HandleBase &RHS) const {
+      return (!EpochAddress || isHandleInSync()) &&
+             (!RHS.EpochAddress || RHS.isHandleInSync()) &&
+             EpochAddress == RHS.EpochAddress;
+    }
+
     /// Returns a pointer to the epoch word stored in the data structure
     /// this handle points into.  Can be used to check if two iterators point
     /// into the same data structure.
@@ -78,6 +88,11 @@ public:
 };
 
 #else
+#ifdef _MSC_VER
+#define LLVM_DEBUGEPOCHBASE_HANDLEBASE_EMPTYBASE __declspec(empty_bases)
+#else
+#define LLVM_DEBUGEPOCHBASE_HANDLEBASE_EMPTYBASE
+#endif // _MSC_VER
 
 class DebugEpochBase {
 public:
@@ -88,6 +103,7 @@ public:
     HandleBase() = default;
     explicit HandleBase(const DebugEpochBase *) {}
     bool isHandleInSync() const { return true; }
+    bool isComparableWith(const HandleBase &) const { return true; }
     const void *getEpochAddress() const { return nullptr; }
   };
 };

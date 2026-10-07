@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <concepts>
 #include <functional>
 #include <ranges>
@@ -66,8 +67,8 @@ static_assert(!HasGenerateNIter<int*, UninvocableGen>);
 // !indirectly_writable<O, invoke_result_t<F&>>
 static_assert(!HasGenerateNIter<int*, IntPtrGen>);
 
-template <class Iter, size_t N, class Gen>
-constexpr void test_one(std::array<int, N> in, size_t n, Gen gen, std::array<int, N> expected) {
+template <class Iter, std::size_t N, class Gen>
+constexpr void test_one(std::array<int, N> in, std::size_t n, Gen gen, std::array<int, N> expected) {
   assert(n <= N);
 
   auto begin = Iter(in.data());
@@ -91,6 +92,20 @@ constexpr void test_iter() {
   test_one<Iter>(std::array{-10, -20, -30, -40, -50}, 3, gen, {1, 2, 3, -40, -50});
   // Longer sequence, n = 5.
   test_one<Iter>(std::array<int, 5>{}, 5, gen, {1, 2, 3, 4, 5});
+
+  { // A negative count is a no-op that returns the unchanged iterator.
+    // Regression test for https://llvm.org/PR193613.
+    std::array in{-10, -20, -30};
+    int called        = 0;
+    auto counting_gen = [&called] {
+      ++called;
+      return 42;
+    };
+    std::same_as<Iter> decltype(auto) result = std::ranges::generate_n(Iter(in.data()), -5, counting_gen);
+    assert(base(result) == in.data());
+    assert(called == 0);
+    assert((in == std::array{-10, -20, -30}));
+  }
 }
 
 constexpr void test_iterators() {
@@ -120,8 +135,8 @@ constexpr bool test() {
 
     int gen_invocations = 0;
     auto gen = [&gen_invocations] { ++gen_invocations; return AssignedOnce(); };
-    constexpr size_t N1 = 10;
-    constexpr size_t N2 = N1 / 2;
+    constexpr std::size_t N1 = 10;
+    constexpr std::size_t N2 = N1 / 2;
     std::array<AssignedOnce, N1> in;
 
     auto result = std::ranges::generate_n(in.begin(), N2, gen);
@@ -129,7 +144,6 @@ constexpr bool test() {
     assert(std::ranges::none_of(std::ranges::subrange(result, in.end()), &AssignedOnce::assigned));
     assert(gen_invocations == N2);
   }
-
 
   return true;
 }

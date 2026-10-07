@@ -8,10 +8,10 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: no-localization
-// UNSUPPORTED: libcpp-has-no-incomplete-format
+// UNSUPPORTED: GCC-ALWAYS_INLINE-FIXME
 
-// TODO FMT It seems GCC uses too much memory in the CI and fails.
-// UNSUPPORTED: gcc-12
+// TODO FMT This test should not require std::to_chars(floating-point)
+// XFAIL: availability-fp_to_chars-missing
 
 // REQUIRES: locale.fr_FR.UTF-8
 // REQUIRES: locale.ja_JP.UTF-8
@@ -76,21 +76,6 @@ static void test() {
   assert(stream_c_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(255), 1}) ==
          SV("255 is not a valid weekday[1]"));
 
-#if defined(__APPLE__)
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(0), 1}) == SV("Dim[1]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(1), 2}) == SV("Lun[2]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(2), 3}) == SV("Mar[3]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(3), 4}) == SV("Mer[4]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(4), 5}) == SV("Jeu[5]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(5), 0}) ==
-         SV("Ven[0 is not a valid index]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(6), 6}) ==
-         SV("Sam[6 is not a valid index]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(7), 7}) ==
-         SV("Dim[7 is not a valid index]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(255), 1}) ==
-         SV("255 is not a valid weekday[1]"));
-#else  // defined(__APPLE__)
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(0), 1}) == SV("dim.[1]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(1), 2}) == SV("lun.[2]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(2), 3}) == SV("mar.[3]"));
@@ -102,7 +87,6 @@ static void test() {
          SV("sam.[6 is not a valid index]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(7), 7}) ==
          SV("dim.[7 is not a valid index]"));
-#endif // defined(__APPLE__)
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(8), 0}) ==
          SV("8 is not a valid weekday[0 is not a valid index]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_indexed{std::chrono::weekday(255), 1}) ==

@@ -1,6 +1,9 @@
 add_mlir_dialect_library(MLIRNVGPUTransforms
+  CreateAsyncGroups.cpp
+  MemoryAccessOpInterfacesImpl.cpp
   OptimizeSharedMemory.cpp
-  MmaSyncTF32Transform.cpp  
+  MmaSyncTF32Transform.cpp
+  Utils.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/NVGPU
@@ -10,7 +13,7 @@ add_mlir_dialect_library(MLIRNVGPUTransforms
 
   LINK_LIBS PUBLIC
   MLIRArithDialect
-  MLIRGPUOps
+  MLIRGPUDialect
   MLIRIR
   MLIRMemRefDialect
   MLIRNVGPUDialect

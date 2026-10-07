@@ -1,9 +1,11 @@
 %header %{
+#include "llvm/Support/ErrorExtras.h"
 
 template <typename T> void PushSBClass(lua_State * L, T * obj);
 
 // This function is called from Lua::CallBreakpointCallback
-llvm::Expected<bool> lldb_private::LLDBSwigLuaBreakpointCallbackFunction(
+llvm::Expected<bool>
+lldb_private::lua::SWIGBridge::LLDBSwigLuaBreakpointCallbackFunction(
     lua_State * L, lldb::StackFrameSP stop_frame_sp,
     lldb::BreakpointLocationSP bp_loc_sp,
     const StructuredDataImpl &extra_args_impl) {
@@ -25,9 +27,7 @@ llvm::Expected<bool> lldb_private::LLDBSwigLuaBreakpointCallbackFunction(
   // Call into the Lua callback passing 'sb_frame' and 'sb_bp_loc'.
   // Expects a boolean return.
   if (lua_pcall(L, nargs, 1, 0) != LUA_OK) {
-    llvm::Error E = llvm::make_error<llvm::StringError>(
-        llvm::formatv("{0}\n", lua_tostring(L, -1)),
-        llvm::inconvertibleErrorCode());
+    llvm::Error E = llvm::createStringErrorV("{0}\n", lua_tostring(L, -1));
     // Pop error message from the stack.
     lua_pop(L, 1);
     return std::move(E);
@@ -41,7 +41,8 @@ llvm::Expected<bool> lldb_private::LLDBSwigLuaBreakpointCallbackFunction(
 }
 
 // This function is called from Lua::CallWatchpointCallback
-llvm::Expected<bool> lldb_private::LLDBSwigLuaWatchpointCallbackFunction(
+llvm::Expected<bool>
+lldb_private::lua::SWIGBridge::LLDBSwigLuaWatchpointCallbackFunction(
     lua_State * L, lldb::StackFrameSP stop_frame_sp, lldb::WatchpointSP wp_sp) {
   lldb::SBFrame sb_frame(stop_frame_sp);
   lldb::SBWatchpoint sb_wp(wp_sp);
@@ -54,9 +55,7 @@ llvm::Expected<bool> lldb_private::LLDBSwigLuaWatchpointCallbackFunction(
   // Call into the Lua callback passing 'sb_frame' and 'sb_wp'.
   // Expects a boolean return.
   if (lua_pcall(L, nargs, 1, 0) != LUA_OK) {
-    llvm::Error E = llvm::make_error<llvm::StringError>(
-        llvm::formatv("{0}\n", lua_tostring(L, -1)),
-        llvm::inconvertibleErrorCode());
+    llvm::Error E = llvm::createStringErrorV("{0}\n", lua_tostring(L, -1));
     // Pop error message from the stack.
     lua_pop(L, 1);
     return std::move(E);

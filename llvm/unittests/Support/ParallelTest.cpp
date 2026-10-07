@@ -12,8 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Parallel.h"
+#include "llvm/Config/llvm-config.h" // for LLVM_ENABLE_THREADS
+#include "llvm/Support/ThreadPool.h"
 #include "gtest/gtest.h"
-#include <array>
 #include <random>
 
 uint32_t array[1024 * 1024];
@@ -65,17 +66,17 @@ TEST(Parallel, TransformReduce) {
 
   // Check that we handle non-divisible task sizes as above.
   uint32_t range[2050];
-  std::fill(std::begin(range), std::end(range), 1);
+  llvm::fill(range, 1);
   sum = parallelTransformReduce(range, 0U, std::plus<uint32_t>(), identity);
   EXPECT_EQ(sum, 2050U);
 
-  std::fill(std::begin(range), std::end(range), 2);
+  llvm::fill(range, 2);
   sum = parallelTransformReduce(range, 0U, std::plus<uint32_t>(), identity);
   EXPECT_EQ(sum, 4100U);
 
   // Avoid one large task.
   uint32_t range2[3060];
-  std::fill(std::begin(range2), std::end(range2), 1);
+  llvm::fill(range2, 1);
   sum = parallelTransformReduce(range2, 0U, std::plus<uint32_t>(), identity);
   EXPECT_EQ(sum, 3060U);
 }
@@ -91,5 +92,34 @@ TEST(Parallel, ForEachError) {
   std::string errText = toString(std::move(e));
   EXPECT_EQ(errText, std::string("asdf\nasdf\nasdf"));
 }
+
+#if LLVM_ENABLE_THREADS
+TEST(Parallel, NestedTaskGroup) {
+  parallel::TaskGroup tg;
+  EXPECT_TRUE(tg.isParallel() || (parallel::strategy.ThreadsRequested == 1));
+
+  tg.spawn([&]() {
+    parallel::TaskGroup nestedTG;
+    EXPECT_TRUE(nestedTG.isParallel() ||
+                (parallel::strategy.ThreadsRequested == 1));
+  });
+}
+
+// Verify nested parallelFor doesn't deadlock. This is a simplified version of
+// the pattern from https://reviews.llvm.org/D61115 that originally motivated
+// serializing nested TaskGroups. With work-stealing in helpSync(), nested
+// parallelism now works without deadlock.
+TEST(Parallel, NestedParallelFor) {
+  std::atomic<uint32_t> count{0};
+  parallelFor(0, 8, [&](size_t i) {
+    parallelFor(0, 8, [&](size_t j) {
+      parallelFor(0, 8, [&](size_t k) {
+        count.fetch_add(1, std::memory_order_relaxed);
+      });
+    });
+  });
+  EXPECT_EQ(count.load(), 512u);
+}
+#endif
 
 #endif

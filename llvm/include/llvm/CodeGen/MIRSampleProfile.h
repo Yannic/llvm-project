@@ -14,9 +14,11 @@
 #ifndef LLVM_CODEGEN_MIRSAMPLEPROFILE_H
 #define LLVM_CODEGEN_MIRSAMPLEPROFILE_H
 
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/Support/Discriminator.h"
+#include "llvm/Support/VirtualFileSystemFwd.h"
 #include <memory>
 #include <string>
 
@@ -29,7 +31,7 @@ class Module;
 using namespace sampleprof;
 
 class MIRProfileLoader;
-class MIRProfileLoaderPass : public MachineFunctionPass {
+class LLVM_ABI MIRProfileLoaderPass : public MachineFunctionPass {
   MachineFunction *MF;
   std::string ProfileFileName;
   FSDiscriminatorPass P;
@@ -41,7 +43,8 @@ public:
   /// FS bits will only use the '1' bits in the Mask.
   MIRProfileLoaderPass(std::string FileName = "",
                        std::string RemappingFileName = "",
-                       FSDiscriminatorPass P = FSDiscriminatorPass::Pass1);
+                       FSDiscriminatorPass P = FSDiscriminatorPass::Pass1,
+                       IntrusiveRefCntPtr<vfs::FileSystem> FS = nullptr);
 
   /// getMachineFunction - Return the last machine function computed.
   const MachineFunction *getMachineFunction() const { return MF; }
@@ -49,7 +52,6 @@ public:
   StringRef getPassName() const override { return "SampleFDO loader in MIR"; }
 
 private:
-  void init(MachineFunction &MF);
   bool runOnMachineFunction(MachineFunction &) override;
   bool doInitialization(Module &M) override;
   void getAnalysisUsage(AnalysisUsage &AU) const override;

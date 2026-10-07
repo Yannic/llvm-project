@@ -15,33 +15,51 @@
 #include "AMDGPUCombinerHelper.h"
 #include "AMDGPULegalizerInfo.h"
 #include "GCNSubtarget.h"
-#include "MCTargetDesc/AMDGPUMCTargetDesc.h"
 #include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/Combiner.h"
 #include "llvm/CodeGen/GlobalISel/CombinerHelper.h"
 #include "llvm/CodeGen/GlobalISel/CombinerInfo.h"
-#include "llvm/CodeGen/GlobalISel/GISelKnownBits.h"
+#include "llvm/CodeGen/GlobalISel/GIMatchTableExecutorImpl.h"
+#include "llvm/CodeGen/GlobalISel/GISelValueTracking.h"
 #include "llvm/CodeGen/GlobalISel/MIPatternMatch.h"
 #include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
+#include "llvm/CodeGen/MachinePassManager.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/Target/TargetMachine.h"
+
+#define GET_GICOMBINER_DEPS
+#include "AMDGPUGenPreLegalizeGICombiner.inc"
+#undef GET_GICOMBINER_DEPS
 
 #define DEBUG_TYPE "amdgpu-prelegalizer-combiner"
 
 using namespace llvm;
 using namespace MIPatternMatch;
+namespace {
 
-class AMDGPUPreLegalizerCombinerHelper {
+#define GET_GICOMBINER_TYPES
+#include "AMDGPUGenPreLegalizeGICombiner.inc"
+#undef GET_GICOMBINER_TYPES
+
+class AMDGPUPreLegalizerCombinerImpl : public Combiner {
 protected:
-  MachineIRBuilder &B;
-  MachineFunction &MF;
-  MachineRegisterInfo &MRI;
-  AMDGPUCombinerHelper &Helper;
+  const AMDGPUPreLegalizerCombinerImplRuleConfig &RuleConfig;
+  const GCNSubtarget &STI;
+  const AMDGPUCombinerHelper Helper;
 
 public:
-  AMDGPUPreLegalizerCombinerHelper(MachineIRBuilder &B,
-                                   AMDGPUCombinerHelper &Helper)
-      : B(B), MF(B.getMF()), MRI(*B.getMRI()), Helper(Helper){};
+  AMDGPUPreLegalizerCombinerImpl(
+      MachineFunction &MF, CombinerInfo &CInfo, GISelValueTracking &VT,
+      GISelCSEInfo *CSEInfo,
+      const AMDGPUPreLegalizerCombinerImplRuleConfig &RuleConfig,
+      const GCNSubtarget &STI, MachineDominatorTree *MDT,
+      const LegalizerInfo *LI);
+
+  static const char *getName() { return "AMDGPUPreLegalizerCombinerImpl"; }
+
+  bool tryCombineAllImpl(MachineInstr &MI) const;
+  bool tryCombineAll(MachineInstr &I) const override;
 
   struct ClampI64ToI16MatchInfo {
     int64_t Cmp1 = 0;
@@ -49,17 +67,49 @@ public:
     Register Origin;
   };
 
-  bool matchClampI64ToI16(MachineInstr &MI, MachineRegisterInfo &MRI,
-                          MachineFunction &MF,
-                          ClampI64ToI16MatchInfo &MatchInfo);
+  bool matchClampI64ToI16(MachineInstr &MI, const MachineRegisterInfo &MRI,
+                          const MachineFunction &MF,
+                          ClampI64ToI16MatchInfo &MatchInfo) const;
 
   void applyClampI64ToI16(MachineInstr &MI,
-                          const ClampI64ToI16MatchInfo &MatchInfo);
+                          const ClampI64ToI16MatchInfo &MatchInfo) const;
+
+private:
+#define GET_GICOMBINER_CLASS_MEMBERS
+#define AMDGPUSubtarget GCNSubtarget
+#include "AMDGPUGenPreLegalizeGICombiner.inc"
+#undef GET_GICOMBINER_CLASS_MEMBERS
+#undef AMDGPUSubtarget
 };
 
-bool AMDGPUPreLegalizerCombinerHelper::matchClampI64ToI16(
-    MachineInstr &MI, MachineRegisterInfo &MRI, MachineFunction &MF,
-    ClampI64ToI16MatchInfo &MatchInfo) {
+#define GET_GICOMBINER_IMPL
+#define AMDGPUSubtarget GCNSubtarget
+#include "AMDGPUGenPreLegalizeGICombiner.inc"
+#undef AMDGPUSubtarget
+#undef GET_GICOMBINER_IMPL
+
+AMDGPUPreLegalizerCombinerImpl::AMDGPUPreLegalizerCombinerImpl(
+    MachineFunction &MF, CombinerInfo &CInfo, GISelValueTracking &VT,
+    GISelCSEInfo *CSEInfo,
+    const AMDGPUPreLegalizerCombinerImplRuleConfig &RuleConfig,
+    const GCNSubtarget &STI, MachineDominatorTree *MDT, const LegalizerInfo *LI)
+    : Combiner(MF, CInfo, &VT, CSEInfo), RuleConfig(RuleConfig), STI(STI),
+      Helper(Observer, B, /*IsPreLegalize*/ true, &VT, MDT, LI, STI),
+#define GET_GICOMBINER_CONSTRUCTOR_INITS
+#include "AMDGPUGenPreLegalizeGICombiner.inc"
+#undef GET_GICOMBINER_CONSTRUCTOR_INITS
+{
+}
+
+bool AMDGPUPreLegalizerCombinerImpl::tryCombineAll(MachineInstr &MI) const {
+  if (tryCombineAllImpl(MI))
+    return true;
+  return false;
+}
+
+bool AMDGPUPreLegalizerCombinerImpl::matchClampI64ToI16(
+    MachineInstr &MI, const MachineRegisterInfo &MRI, const MachineFunction &MF,
+    ClampI64ToI16MatchInfo &MatchInfo) const {
   assert(MI.getOpcode() == TargetOpcode::G_TRUNC && "Invalid instruction!");
 
   // Try to find a pattern where an i64 value should get clamped to short.
@@ -73,22 +123,20 @@ bool AMDGPUPreLegalizerCombinerHelper::matchClampI64ToI16(
 
   Register Base;
 
-  auto IsApplicableForCombine = [&MatchInfo]() -> bool {
-    const auto Cmp1 = MatchInfo.Cmp1;
-    const auto Cmp2 = MatchInfo.Cmp2;
-    const auto Diff = std::abs(Cmp2 - Cmp1);
+  // Lo must not exceed Hi: with inverted bounds smin(smax(X, Lo), Hi) is
+  // constant, but the med3 built below would still clamp X to [Hi, Lo].
+  auto IsApplicableForCombine = [&MatchInfo](bool OuterIsMin) -> bool {
+    const int64_t Lo = OuterIsMin ? MatchInfo.Cmp2 : MatchInfo.Cmp1;
+    const int64_t Hi = OuterIsMin ? MatchInfo.Cmp1 : MatchInfo.Cmp2;
 
-    // If the difference between both comparison values is 0 or 1, there is no
-    // need to clamp.
-    if (Diff == 0 || Diff == 1)
-      return false;
-
+    // Range-check first so Hi - Lo below can't overflow.
     const int64_t Min = std::numeric_limits<int16_t>::min();
     const int64_t Max = std::numeric_limits<int16_t>::max();
+    if (Lo < Min || Lo > Max || Hi < Min || Hi > Max)
+      return false;
 
-    // Check if the comparison values are between SHORT_MIN and SHORT_MAX.
-    return ((Cmp2 >= Cmp1 && Cmp1 >= Min && Cmp2 <= Max) ||
-            (Cmp1 >= Cmp2 && Cmp1 <= Max && Cmp2 >= Min));
+    // Reject inverted bounds, and bounds so close there is no need to clamp.
+    return Hi - Lo > 1;
   };
 
   // Try to match a combination of min / max MIR opcodes.
@@ -96,7 +144,7 @@ bool AMDGPUPreLegalizerCombinerHelper::matchClampI64ToI16(
                m_GSMin(m_Reg(Base), m_ICst(MatchInfo.Cmp1)))) {
     if (mi_match(Base, MRI,
                  m_GSMax(m_Reg(MatchInfo.Origin), m_ICst(MatchInfo.Cmp2)))) {
-      return IsApplicableForCombine();
+      return IsApplicableForCombine(/*OuterIsMin=*/true);
     }
   }
 
@@ -104,7 +152,7 @@ bool AMDGPUPreLegalizerCombinerHelper::matchClampI64ToI16(
                m_GSMax(m_Reg(Base), m_ICst(MatchInfo.Cmp1)))) {
     if (mi_match(Base, MRI,
                  m_GSMin(m_Reg(MatchInfo.Origin), m_ICst(MatchInfo.Cmp2)))) {
-      return IsApplicableForCombine();
+      return IsApplicableForCombine(/*OuterIsMin=*/false);
     }
   }
 
@@ -118,17 +166,14 @@ bool AMDGPUPreLegalizerCombinerHelper::matchClampI64ToI16(
 // This can be efficiently written as following:
 // v_cvt_pk_i16_i32 v0, v0, v1
 // v_med3_i32 v0, Clamp_Min, v0, Clamp_Max
-void AMDGPUPreLegalizerCombinerHelper::applyClampI64ToI16(
-    MachineInstr &MI, const ClampI64ToI16MatchInfo &MatchInfo) {
+void AMDGPUPreLegalizerCombinerImpl::applyClampI64ToI16(
+    MachineInstr &MI, const ClampI64ToI16MatchInfo &MatchInfo) const {
 
   Register Src = MatchInfo.Origin;
-  assert(MI.getParent()->getParent()->getRegInfo().getType(Src) ==
-         LLT::scalar(64));
-  const LLT S32 = LLT::scalar(32);
+  assert(MI.getMF()->getRegInfo().getType(Src) == LLT::scalar(64));
+  const LLT I32 = LLT::integer(32);
 
-  B.setInstrAndDebugLoc(MI);
-
-  auto Unmerge = B.buildUnmerge(S32, Src);
+  auto Unmerge = B.buildUnmerge(I32, Src);
 
   assert(MI.getOpcode() != AMDGPU::G_AMDGPU_CVT_PK_I16_I32);
 
@@ -139,13 +184,13 @@ void AMDGPUPreLegalizerCombinerHelper::applyClampI64ToI16(
 
   auto MinBoundary = std::min(MatchInfo.Cmp1, MatchInfo.Cmp2);
   auto MaxBoundary = std::max(MatchInfo.Cmp1, MatchInfo.Cmp2);
-  auto MinBoundaryDst = B.buildConstant(S32, MinBoundary);
-  auto MaxBoundaryDst = B.buildConstant(S32, MaxBoundary);
+  auto MinBoundaryDst = B.buildConstant(I32, MinBoundary);
+  auto MaxBoundaryDst = B.buildConstant(I32, MaxBoundary);
 
-  auto Bitcast = B.buildBitcast({S32}, CvtPk);
+  auto Bitcast = B.buildBitcast({I32}, CvtPk);
 
   auto Med3 = B.buildInstr(
-      AMDGPU::G_AMDGPU_SMED3, {S32},
+      AMDGPU::G_AMDGPU_SMED3, {I32},
       {MinBoundaryDst.getReg(0), Bitcast.getReg(0), MaxBoundaryDst.getReg(0)},
       MI.getFlags());
 
@@ -154,81 +199,47 @@ void AMDGPUPreLegalizerCombinerHelper::applyClampI64ToI16(
   MI.eraseFromParent();
 }
 
-class AMDGPUPreLegalizerCombinerHelperState {
-protected:
-  AMDGPUCombinerHelper &Helper;
-  AMDGPUPreLegalizerCombinerHelper &PreLegalizerHelper;
+static bool runCombiner(MachineFunction &MF,
+                        function_ref<GISelCSEInfo *()> GetCSEInfo,
+                        function_ref<GISelValueTracking *()> GetVT,
+                        function_ref<MachineDominatorTree *()> GetMDT,
+                        bool EnableOpt) {
+  AMDGPUPreLegalizerCombinerImplRuleConfig RuleConfig;
+  if (!RuleConfig.parseCommandLineOption())
+    reportFatalUsageError("Invalid rule identifier");
 
-public:
-  AMDGPUPreLegalizerCombinerHelperState(
-      AMDGPUCombinerHelper &Helper,
-      AMDGPUPreLegalizerCombinerHelper &PreLegalizerHelper)
-      : Helper(Helper), PreLegalizerHelper(PreLegalizerHelper) {}
-};
+  // If the ISel pipeline failed, do not bother running that pass.
+  if (MF.getProperties().hasFailedISel())
+    return false;
 
-#define AMDGPUPRELEGALIZERCOMBINERHELPER_GENCOMBINERHELPER_DEPS
-#include "AMDGPUGenPreLegalizeGICombiner.inc"
-#undef AMDGPUPRELEGALIZERCOMBINERHELPER_GENCOMBINERHELPER_DEPS
+  const GCNSubtarget &STI = MF.getSubtarget<GCNSubtarget>();
+  const Function &F = MF.getFunction();
+  CombinerInfo CInfo(/*AllowIllegalOps=*/true, /*ShouldLegalizeIllegal=*/false,
+                     nullptr, EnableOpt, F.hasOptSize(), F.hasMinSize());
+  // Disable fixed-point iteration to reduce compile-time
+  CInfo.MaxIterations = 1;
+  CInfo.ObserverLvl = CombinerInfo::ObserverLevel::SinglePass;
+  // This is the first Combiner, so the input IR might contain dead
+  // instructions.
+  CInfo.EnableFullDCE = true;
 
-namespace {
-#define AMDGPUPRELEGALIZERCOMBINERHELPER_GENCOMBINERHELPER_H
-#include "AMDGPUGenPreLegalizeGICombiner.inc"
-#undef AMDGPUPRELEGALIZERCOMBINERHELPER_GENCOMBINERHELPER_H
-
-class AMDGPUPreLegalizerCombinerInfo final : public CombinerInfo {
-  GISelKnownBits *KB;
-  MachineDominatorTree *MDT;
-
-public:
-  AMDGPUGenPreLegalizerCombinerHelperRuleConfig GeneratedRuleCfg;
-
-  AMDGPUPreLegalizerCombinerInfo(bool EnableOpt, bool OptSize, bool MinSize,
-                                  GISelKnownBits *KB, MachineDominatorTree *MDT)
-      : CombinerInfo(/*AllowIllegalOps*/ true, /*ShouldLegalizeIllegal*/ false,
-                     /*LegalizerInfo*/ nullptr, EnableOpt, OptSize, MinSize),
-        KB(KB), MDT(MDT) {
-    if (!GeneratedRuleCfg.parseCommandLineOption())
-      report_fatal_error("Invalid rule identifier");
-  }
-
-  bool combine(GISelChangeObserver &Observer, MachineInstr &MI,
-               MachineIRBuilder &B) const override;
-};
-
-bool AMDGPUPreLegalizerCombinerInfo::combine(GISelChangeObserver &Observer,
-                                              MachineInstr &MI,
-                                              MachineIRBuilder &B) const {
-  const auto *LI = MI.getMF()->getSubtarget().getLegalizerInfo();
-  AMDGPUCombinerHelper Helper(Observer, B, /*IsPreLegalize*/ true, KB, MDT, LI);
-  AMDGPUPreLegalizerCombinerHelper PreLegalizerHelper(B, Helper);
-  AMDGPUGenPreLegalizerCombinerHelper Generated(GeneratedRuleCfg, Helper,
-                                                PreLegalizerHelper);
-
-  if (Generated.tryCombineAll(Observer, MI, B))
-    return true;
-
-  switch (MI.getOpcode()) {
-  case TargetOpcode::G_CONCAT_VECTORS:
-    return Helper.tryCombineConcatVectors(MI);
-  case TargetOpcode::G_SHUFFLE_VECTOR:
-    return Helper.tryCombineShuffleVector(MI);
-  }
-
-  return false;
+  GISelValueTracking *VT = GetVT();
+  GISelCSEInfo *CSEInfo = GetCSEInfo();
+  MachineDominatorTree *MDT = GetMDT();
+  AMDGPUPreLegalizerCombinerImpl Impl(MF, CInfo, *VT, CSEInfo, RuleConfig, STI,
+                                      MDT, STI.getLegalizerInfo());
+  return Impl.combineMachineInstrs();
 }
-
-#define AMDGPUPRELEGALIZERCOMBINERHELPER_GENCOMBINERHELPER_CPP
-#include "AMDGPUGenPreLegalizeGICombiner.inc"
-#undef AMDGPUPRELEGALIZERCOMBINERHELPER_GENCOMBINERHELPER_CPP
 
 // Pass boilerplate
 // ================
 
-class AMDGPUPreLegalizerCombiner : public MachineFunctionPass {
+class AMDGPUPreLegalizerCombinerLegacy : public MachineFunctionPass {
 public:
   static char ID;
 
-  AMDGPUPreLegalizerCombiner(bool IsOptNone = false);
+  AMDGPUPreLegalizerCombinerLegacy(bool IsOptLevelNone = false)
+      : MachineFunctionPass(ID), IsOptLevelNone(IsOptLevelNone) {}
 
   StringRef getPassName() const override {
     return "AMDGPUPreLegalizerCombiner";
@@ -237,20 +248,21 @@ public:
   bool runOnMachineFunction(MachineFunction &MF) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override;
+
 private:
-  bool IsOptNone;
+  bool IsOptLevelNone;
 };
 } // end anonymous namespace
 
-void AMDGPUPreLegalizerCombiner::getAnalysisUsage(AnalysisUsage &AU) const {
+void AMDGPUPreLegalizerCombinerLegacy::getAnalysisUsage(
+    AnalysisUsage &AU) const {
   AU.addRequired<TargetPassConfig>();
   AU.setPreservesCFG();
   getSelectionDAGFallbackAnalysisUsage(AU);
-  AU.addRequired<GISelKnownBitsAnalysis>();
-  AU.addPreserved<GISelKnownBitsAnalysis>();
-  if (!IsOptNone) {
-    AU.addRequired<MachineDominatorTree>();
-    AU.addPreserved<MachineDominatorTree>();
+  AU.addRequired<GISelValueTrackingAnalysisLegacy>();
+  AU.addPreserved<GISelValueTrackingAnalysisLegacy>();
+  if (!IsOptLevelNone) {
+    AU.addRequired<MachineDominatorTreeWrapperPass>();
   }
 
   AU.addRequired<GISelCSEAnalysisWrapperPass>();
@@ -258,45 +270,65 @@ void AMDGPUPreLegalizerCombiner::getAnalysisUsage(AnalysisUsage &AU) const {
   MachineFunctionPass::getAnalysisUsage(AU);
 }
 
-AMDGPUPreLegalizerCombiner::AMDGPUPreLegalizerCombiner(bool IsOptNone)
-  : MachineFunctionPass(ID), IsOptNone(IsOptNone) {
-  initializeAMDGPUPreLegalizerCombinerPass(*PassRegistry::getPassRegistry());
-}
-
-bool AMDGPUPreLegalizerCombiner::runOnMachineFunction(MachineFunction &MF) {
-  if (MF.getProperties().hasProperty(
-          MachineFunctionProperties::Property::FailedISel))
-    return false;
-  auto *TPC = &getAnalysis<TargetPassConfig>();
+bool AMDGPUPreLegalizerCombinerLegacy::runOnMachineFunction(
+    MachineFunction &MF) {
   const Function &F = MF.getFunction();
   bool EnableOpt =
-      MF.getTarget().getOptLevel() != CodeGenOpt::None && !skipFunction(F);
-  GISelKnownBits *KB = &getAnalysis<GISelKnownBitsAnalysis>().get(MF);
-  MachineDominatorTree *MDT =
-      IsOptNone ? nullptr : &getAnalysis<MachineDominatorTree>();
-  AMDGPUPreLegalizerCombinerInfo PCInfo(EnableOpt, F.hasOptSize(),
-                                        F.hasMinSize(), KB, MDT);
-  // Enable CSE.
-  GISelCSEAnalysisWrapper &Wrapper =
-      getAnalysis<GISelCSEAnalysisWrapperPass>().getCSEWrapper();
-  auto *CSEInfo = &Wrapper.get(TPC->getCSEConfig());
-
-  Combiner C(PCInfo, TPC);
-  return C.combineMachineInstrs(MF, CSEInfo);
+      MF.getTarget().getOptLevel() != CodeGenOptLevel::None && !skipFunction(F);
+  return runCombiner(
+      MF,
+      [&]() {
+        // Enable CSE.
+        GISelCSEAnalysisWrapper &Wrapper =
+            getAnalysis<GISelCSEAnalysisWrapperPass>().getCSEWrapper();
+        return &Wrapper.get(getAnalysis<TargetPassConfig>().getCSEConfig());
+      },
+      [&]() {
+        return &getAnalysis<GISelValueTrackingAnalysisLegacy>().get(MF);
+      },
+      [&]() -> MachineDominatorTree * {
+        return IsOptLevelNone ? nullptr
+                              : &getAnalysis<MachineDominatorTreeWrapperPass>()
+                                     .getDomTree();
+      },
+      EnableOpt);
 }
 
-char AMDGPUPreLegalizerCombiner::ID = 0;
-INITIALIZE_PASS_BEGIN(AMDGPUPreLegalizerCombiner, DEBUG_TYPE,
+char AMDGPUPreLegalizerCombinerLegacy::ID = 0;
+INITIALIZE_PASS_BEGIN(AMDGPUPreLegalizerCombinerLegacy, DEBUG_TYPE,
                       "Combine AMDGPU machine instrs before legalization",
                       false, false)
 INITIALIZE_PASS_DEPENDENCY(TargetPassConfig)
-INITIALIZE_PASS_DEPENDENCY(GISelKnownBitsAnalysis)
-INITIALIZE_PASS_END(AMDGPUPreLegalizerCombiner, DEBUG_TYPE,
+INITIALIZE_PASS_DEPENDENCY(GISelValueTrackingAnalysisLegacy)
+INITIALIZE_PASS_END(AMDGPUPreLegalizerCombinerLegacy, DEBUG_TYPE,
                     "Combine AMDGPU machine instrs before legalization", false,
                     false)
 
-namespace llvm {
-FunctionPass *createAMDGPUPreLegalizeCombiner(bool IsOptNone) {
-  return new AMDGPUPreLegalizerCombiner(IsOptNone);
+FunctionPass *
+llvm::createAMDGPUPreLegalizeCombinerLegacyPass(bool IsOptLevelNone) {
+  return new AMDGPUPreLegalizerCombinerLegacy(IsOptLevelNone);
 }
-} // end namespace llvm
+
+PreservedAnalyses
+AMDGPUPreLegalizerCombinerPass::run(MachineFunction &MF,
+                                    MachineFunctionAnalysisManager &MFAM) {
+  bool IsOptLevelNone = MF.getTarget().getOptLevel() == CodeGenOptLevel::None ||
+                        shouldSkipOptimizationForOptBisect(MF.getFunction());
+
+  if (!runCombiner(
+          MF, [&]() { return MFAM.getResult<GISelCSEAnalysis>(MF).get(); },
+          [&]() { return &MFAM.getResult<GISelValueTrackingAnalysis>(MF); },
+          [&]() -> MachineDominatorTree * {
+            return IsOptLevelNone
+                       ? nullptr
+                       : &MFAM.getResult<MachineDominatorTreeAnalysis>(MF);
+          },
+          /*EnableOpt=*/!IsOptLevelNone))
+    return PreservedAnalyses::all();
+
+  PreservedAnalyses PA = getMachineFunctionPassPreservedAnalyses();
+  PA.preserveSet<CFGAnalyses>();
+  PA.preserve<GISelValueTrackingAnalysis>();
+  PA.preserve<GISelCSEAnalysis>();
+  return PA;
+}

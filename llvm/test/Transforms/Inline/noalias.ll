@@ -19,7 +19,7 @@ entry:
   ret void
 }
 
-; CHECK-LABEL: define void @foo(ptr nocapture %a, ptr nocapture readonly %c) #0 {
+; CHECK-LABEL: define void @foo(ptr captures(none) %a, ptr readonly captures(none) %c) #0 {
 ; CHECK: entry:
 ; CHECK:   call void @llvm.experimental.noalias.scope.decl
 ; CHECK:   [[TMP0:%.+]] = load float, ptr %c, align 4, !noalias !0
@@ -50,7 +50,7 @@ entry:
   ret void
 }
 
-; CHECK-LABEL: define void @foo2(ptr nocapture %a, ptr nocapture %b, ptr nocapture readonly %c) #0 {
+; CHECK-LABEL: define void @foo2(ptr captures(none) %a, ptr captures(none) %b, ptr readonly captures(none) %c) #0 {
 ; CHECK: entry:
 ; CHECK:   call void @llvm.experimental.noalias.scope.decl(metadata !3)
 ; CHECK:   call void @llvm.experimental.noalias.scope.decl(metadata !6)
@@ -69,10 +69,10 @@ attributes #0 = { nounwind uwtable }
 
 ; CHECK: !0 = !{!1}
 ; CHECK: !1 = distinct !{!1, !2, !"hello: %a"}
-; CHECK: !2 = distinct !{!2, !"hello"}
+; CHECK: !2 = distinct !{!2, i1 false, !"hello"}
 ; CHECK: !3 = !{!4}
 ; CHECK: !4 = distinct !{!4, !5, !"hello2: %a"}
-; CHECK: !5 = distinct !{!5, !"hello2"}
+; CHECK: !5 = distinct !{!5, i1 false, !"hello2"}
 ; CHECK: !6 = !{!7}
 ; CHECK: !7 = distinct !{!7, !5, !"hello2: %b"}
 ; CHECK: !8 = !{!4, !7}

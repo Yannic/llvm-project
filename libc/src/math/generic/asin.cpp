@@ -7,16 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/math/asin.h"
-#include "src/math/asinf.h"
+#include "src/__support/math/asin.h"
 
-#include "src/__support/common.h"
+namespace LIBC_NAMESPACE_DECL {
 
-namespace __llvm_libc {
+LLVM_LIBC_FUNCTION(double, asin, (double x)) { return math::asin(x); }
 
-LLVM_LIBC_FUNCTION(double, asin, (double x)) {
-  // Place-holder implementation for double precision asin function.
-  // TODO: Implement correctly rounded asin function for double precision.
-  return static_cast<double>(asinf(static_cast<float>(x)));
-}
-
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

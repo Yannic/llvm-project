@@ -461,6 +461,62 @@ func.func @partial_hoist_multiple_loop_dependency(
 
 // -----
 
+// CHECK-LABEL: func @no_hoist_parallel
+func.func @no_hoist_parallel(
+    %lb: index,
+    %ub: index,
+    %step: index) {
+  scf.parallel (%i) = (%lb) to (%ub) step (%step) {
+      %0 = memref.alloc() : memref<2xf32>
+      scf.reduce
+  }
+  return
+}
+
+//      CHECK: memref.alloc
+// CHECK-NEXT: scf.reduce
+
+// -----
+
+// CHECK-LABEL: func @no_hoist_affine_parallel
+func.func @no_hoist_affine_parallel(%out: memref<2xindex>) {
+  %c0 = arith.constant 0 : index
+  affine.parallel (%i) = (0) to (2) {
+    %buffer = memref.alloc() : memref<1xindex>
+    memref.store %i, %buffer[%c0] : memref<1xindex>
+    %value = memref.load %buffer[%c0] : memref<1xindex>
+    memref.store %value, %out[%i] : memref<2xindex>
+  }
+  return
+}
+
+//  CHECK-NOT: memref.alloc
+//      CHECK: affine.parallel
+// CHECK-NEXT: %[[ALLOC:.*]] = memref.alloc()
+// CHECK-NEXT: memref.store {{.*}}, %[[ALLOC]]
+// CHECK-NEXT: %[[VALUE:.*]] = memref.load %[[ALLOC]]
+// CHECK-NEXT: memref.store %[[VALUE]]
+//  CHECK-NOT: memref.alloc
+//      CHECK: return
+// CHECK-NEXT: }
+
+// -----
+
+func.func @no_hoist_forall(
+    %lb: index,
+    %ub: index,
+    %step: index) {
+  scf.forall (%i) = (%lb) to (%ub) step (%step) {
+      %1 = memref.alloc() : memref<2xf32>
+  }
+  return
+}
+
+//      CHECK: scf.forall
+// CHECK-NEXT: memref.alloc
+
+// -----
+
 // Test with allocas to ensure that op is also considered.
 
 // CHECK-LABEL: func @hoist_alloca
@@ -487,3 +543,27 @@ func.func @hoist_alloca(
 //      CHECK: %[[ALLOCA0:.*]] = memref.alloca({{.*}})
 // CHECK-NEXT: %[[ALLOCA1:.*]] = memref.alloca({{.*}})
 // CHECK-NEXT: {{.*}} = scf.for
+
+// -----
+
+// A nested entry block can be reachable even when its enclosing block is not.
+// CHECK-LABEL: func @loop_unreachable_parent(
+// CHECK: return
+// CHECK: ^bb1:
+// CHECK: %[[ALLOC:.*]] = memref.alloc()
+// CHECK-NEXT: scf.while
+// CHECK-NEXT: memref.store {{.*}}, %[[ALLOC]]
+func.func @loop_unreachable_parent() {
+  return
+^dead:
+  %c0 = arith.constant 0 : index
+  %false = arith.constant false
+  scf.while : () -> () {
+    %buffer = memref.alloc() : memref<1xindex>
+    memref.store %c0, %buffer[%c0] : memref<1xindex>
+    scf.condition(%false)
+  } do {
+    scf.yield
+  }
+  return
+}

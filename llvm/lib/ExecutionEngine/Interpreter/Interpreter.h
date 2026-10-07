@@ -119,7 +119,8 @@ public:
 
   // Opcode Implementations
   void visitReturnInst(ReturnInst &I);
-  void visitBranchInst(BranchInst &I);
+  void visitUncondBrInst(UncondBrInst &I);
+  void visitCondBrInst(CondBrInst &I);
   void visitSwitchInst(SwitchInst &I);
   void visitIndirectBrInst(IndirectBrInst &I);
 
@@ -224,8 +225,6 @@ private:  // Helper functions
                                    ExecutionContext &SF);
   GenericValue executeBitCastInst(Value *SrcVal, Type *DstTy,
                                   ExecutionContext &SF);
-  GenericValue executeCastOperation(Instruction::CastOps opcode, Value *SrcVal,
-                                    Type *Ty, ExecutionContext &SF);
   void popStackAndReturnValueToCaller(Type *RetTy, GenericValue Result);
 
 };

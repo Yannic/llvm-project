@@ -1,4 +1,4 @@
-//===--- RedundantDeclarationCheck.cpp - clang-tidy------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -15,14 +15,18 @@ using namespace clang::ast_matchers;
 
 namespace clang::tidy::readability {
 
+namespace {
+
 AST_MATCHER(FunctionDecl, doesDeclarationForceExternallyVisibleDefinition) {
   return Node.doesDeclarationForceExternallyVisibleDefinition();
 }
 
+} // namespace
+
 RedundantDeclarationCheck::RedundantDeclarationCheck(StringRef Name,
                                                      ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
-      IgnoreMacros(Options.getLocalOrGlobal("IgnoreMacros", true)) {}
+      IgnoreMacros(Options.get("IgnoreMacros", true)) {}
 
 void RedundantDeclarationCheck::storeOptions(
     ClangTidyOptions::OptionMap &Opts) {
@@ -35,7 +39,8 @@ void RedundantDeclarationCheck::registerMatchers(MatchFinder *Finder) {
                       functionDecl(unless(anyOf(
                           isDefinition(), isDefaulted(),
                           doesDeclarationForceExternallyVisibleDefinition(),
-                          hasAncestor(friendDecl()))))))
+                          hasAncestor(friendDecl()))))),
+                optionally(hasParent(linkageSpecDecl().bind("extern"))))
           .bind("Decl"),
       this);
 }
@@ -74,13 +79,21 @@ void RedundantDeclarationCheck::check(const MatchFinder::MatchResult &Result) {
     }
   }
 
-  SourceLocation EndLoc = Lexer::getLocForEndOfToken(
+  const SourceLocation EndLoc = Lexer::getLocForEndOfToken(
       D->getSourceRange().getEnd(), 0, SM, Result.Context->getLangOpts());
   {
-    auto Diag = diag(D->getLocation(), "redundant %0 declaration") << D;
-    if (!MultiVar && !DifferentHeaders)
-      Diag << FixItHint::CreateRemoval(
-          SourceRange(D->getSourceRange().getBegin(), EndLoc));
+    const auto Diag = diag(D->getLocation(), "redundant %0 declaration") << D;
+    if (!MultiVar && !DifferentHeaders) {
+      SourceLocation BeginLoc;
+      if (const auto *Extern =
+              Result.Nodes.getNodeAs<LinkageSpecDecl>("extern");
+          Extern && !Extern->hasBraces())
+        BeginLoc = Extern->getExternLoc();
+      else
+        BeginLoc = D->getSourceRange().getBegin();
+
+      Diag << FixItHint::CreateRemoval(SourceRange(BeginLoc, EndLoc));
+    }
   }
   diag(Prev->getLocation(), "previously declared here", DiagnosticIDs::Note);
 }

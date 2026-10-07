@@ -119,7 +119,7 @@ define i32 @test8(ptr %p) {
 ; ordering imposed.
 define i32 @test9() {
 ; CHECK-LABEL: @test9(
-; CHECK-NEXT:    store i32 poison, ptr null, align 4294967296
+; CHECK-NEXT:    store i1 true, ptr poison, align 1
 ; CHECK-NEXT:    ret i32 poison
 ;
   %x = load atomic i32, ptr null unordered, align 4
@@ -128,7 +128,7 @@ define i32 @test9() {
 
 define i32 @test9_no_null_opt() #0 {
 ; CHECK-LABEL: @test9_no_null_opt(
-; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null unordered, align 4294967296
+; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null unordered, align 4
 ; CHECK-NEXT:    ret i32 [[X]]
 ;
   %x = load atomic i32, ptr null unordered, align 4
@@ -138,7 +138,7 @@ define i32 @test9_no_null_opt() #0 {
 ; FIXME: Could also fold
 define i32 @test10() {
 ; CHECK-LABEL: @test10(
-; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null monotonic, align 4294967296
+; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null monotonic, align 4
 ; CHECK-NEXT:    ret i32 [[X]]
 ;
   %x = load atomic i32, ptr null monotonic, align 4
@@ -147,7 +147,7 @@ define i32 @test10() {
 
 define i32 @test10_no_null_opt() #0 {
 ; CHECK-LABEL: @test10_no_null_opt(
-; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null monotonic, align 4294967296
+; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null monotonic, align 4
 ; CHECK-NEXT:    ret i32 [[X]]
 ;
   %x = load atomic i32, ptr null monotonic, align 4
@@ -157,7 +157,7 @@ define i32 @test10_no_null_opt() #0 {
 ; Would this be legal to fold?  Probably?
 define i32 @test11() {
 ; CHECK-LABEL: @test11(
-; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null seq_cst, align 4294967296
+; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null seq_cst, align 4
 ; CHECK-NEXT:    ret i32 [[X]]
 ;
   %x = load atomic i32, ptr null seq_cst, align 4
@@ -166,7 +166,7 @@ define i32 @test11() {
 
 define i32 @test11_no_null_opt() #0 {
 ; CHECK-LABEL: @test11_no_null_opt(
-; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null seq_cst, align 4294967296
+; CHECK-NEXT:    [[X:%.*]] = load atomic i32, ptr null seq_cst, align 4
 ; CHECK-NEXT:    ret i32 [[X]]
 ;
   %x = load atomic i32, ptr null seq_cst, align 4
@@ -177,7 +177,7 @@ define i32 @test11_no_null_opt() #0 {
 ; ordering imposed.
 define i32 @test12() {
 ; CHECK-LABEL: @test12(
-; CHECK-NEXT:    store atomic i32 poison, ptr null unordered, align 4294967296
+; CHECK-NEXT:    store atomic i32 poison, ptr null unordered, align 4
 ; CHECK-NEXT:    ret i32 0
 ;
   store atomic i32 0, ptr null unordered, align 4
@@ -186,7 +186,7 @@ define i32 @test12() {
 
 define i32 @test12_no_null_opt() #0 {
 ; CHECK-LABEL: @test12_no_null_opt(
-; CHECK-NEXT:    store atomic i32 0, ptr null unordered, align 4294967296
+; CHECK-NEXT:    store atomic i32 0, ptr null unordered, align 4
 ; CHECK-NEXT:    ret i32 0
 ;
   store atomic i32 0, ptr null unordered, align 4
@@ -196,7 +196,7 @@ define i32 @test12_no_null_opt() #0 {
 ; FIXME: Could also fold
 define i32 @test13() {
 ; CHECK-LABEL: @test13(
-; CHECK-NEXT:    store atomic i32 0, ptr null monotonic, align 4294967296
+; CHECK-NEXT:    store atomic i32 0, ptr null monotonic, align 4
 ; CHECK-NEXT:    ret i32 0
 ;
   store atomic i32 0, ptr null monotonic, align 4
@@ -205,7 +205,7 @@ define i32 @test13() {
 
 define i32 @test13_no_null_opt() #0 {
 ; CHECK-LABEL: @test13_no_null_opt(
-; CHECK-NEXT:    store atomic i32 0, ptr null monotonic, align 4294967296
+; CHECK-NEXT:    store atomic i32 0, ptr null monotonic, align 4
 ; CHECK-NEXT:    ret i32 0
 ;
   store atomic i32 0, ptr null monotonic, align 4
@@ -215,7 +215,7 @@ define i32 @test13_no_null_opt() #0 {
 ; Would this be legal to fold?  Probably?
 define i32 @test14() {
 ; CHECK-LABEL: @test14(
-; CHECK-NEXT:    store atomic i32 0, ptr null seq_cst, align 4294967296
+; CHECK-NEXT:    store atomic i32 0, ptr null seq_cst, align 4
 ; CHECK-NEXT:    ret i32 0
 ;
   store atomic i32 0, ptr null seq_cst, align 4
@@ -224,7 +224,7 @@ define i32 @test14() {
 
 define i32 @test14_no_null_opt() #0 {
 ; CHECK-LABEL: @test14_no_null_opt(
-; CHECK-NEXT:    store atomic i32 0, ptr null seq_cst, align 4294967296
+; CHECK-NEXT:    store atomic i32 0, ptr null seq_cst, align 4
 ; CHECK-NEXT:    ret i32 0
 ;
   store atomic i32 0, ptr null seq_cst, align 4
@@ -450,6 +450,147 @@ define void @volatile_load_from_constant_global() {
 ;
   load volatile i32, ptr @c, align 4
   ret void
+}
+
+define i64 @load_elementwise_bitcast(ptr %p) {
+; CHECK-LABEL: @load_elementwise_bitcast(
+; CHECK-NEXT:    [[V:%.*]] = load atomic elementwise <2 x i32>, ptr [[P:%.*]] unordered, align 8
+; CHECK-NEXT:    [[R:%.*]] = bitcast <2 x i32> [[V]] to i64
+; CHECK-NEXT:    ret i64 [[R]]
+;
+  %v = load atomic elementwise <2 x i32>, ptr %p unordered, align 8
+  %r = bitcast <2 x i32> %v to i64
+  ret i64 %r
+}
+
+define void @store_elementwise_bitcast(ptr %p, i64 %v) {
+; CHECK-LABEL: @store_elementwise_bitcast(
+; CHECK-NEXT:    [[R:%.*]] = bitcast i64 [[V:%.*]] to <2 x i32>
+; CHECK-NEXT:    store atomic elementwise <2 x i32> [[R]], ptr [[P:%.*]] unordered, align 8
+; CHECK-NEXT:    ret void
+;
+  %r = bitcast i64 %v to <2 x i32>
+  store atomic elementwise <2 x i32> %r, ptr %p unordered, align 8
+  ret void
+}
+
+define void @store_merge_elementwise_different_element_size(
+; CHECK-LABEL: @store_merge_elementwise_different_element_size(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br i1 [[C:%.*]], label [[THEN:%.*]], label [[ELSE:%.*]]
+; CHECK:       then:
+; CHECK-NEXT:    store atomic elementwise <2 x i64> [[B:%.*]], ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    br label [[END:%.*]]
+; CHECK:       else:
+; CHECK-NEXT:    store atomic elementwise <4 x i32> [[A:%.*]], ptr [[P]] unordered, align 16
+; CHECK-NEXT:    br label [[END]]
+; CHECK:       end:
+; CHECK-NEXT:    ret void
+;
+  ptr %p, i1 %c, <4 x i32> %a, <2 x i64> %b) {
+entry:
+  br i1 %c, label %then, label %else
+then:
+  store atomic elementwise <2 x i64> %b, ptr %p unordered, align 16
+  br label %end
+else:
+  store atomic elementwise <4 x i32> %a, ptr %p unordered, align 16
+  br label %end
+end:
+  ret void
+}
+
+define void @store_merge_elementwise_same_element_size(
+; CHECK-LABEL: @store_merge_elementwise_same_element_size(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br i1 [[C:%.*]], label [[THEN:%.*]], label [[ELSE:%.*]]
+; CHECK:       then:
+; CHECK-NEXT:    [[TMP0:%.*]] = bitcast <4 x float> [[B:%.*]] to <4 x i32>
+; CHECK-NEXT:    br label [[END:%.*]]
+; CHECK:       else:
+; CHECK-NEXT:    br label [[END]]
+; CHECK:       end:
+; CHECK-NEXT:    [[STOREMERGE:%.*]] = phi <4 x i32> [ [[A:%.*]], [[ELSE]] ], [ [[TMP0]], [[THEN]] ]
+; CHECK-NEXT:    store atomic elementwise <4 x i32> [[STOREMERGE]], ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    ret void
+;
+  ptr %p, i1 %c, <4 x i32> %a, <4 x float> %b) {
+entry:
+  br i1 %c, label %then, label %else
+then:
+  store atomic elementwise <4 x float> %b, ptr %p unordered, align 16
+  br label %end
+else:
+  store atomic elementwise <4 x i32> %a, ptr %p unordered, align 16
+  br label %end
+end:
+  ret void
+}
+
+declare void @use_v2i64(<2 x i64>) memory(none)
+declare void @use_v4i32(<4 x i32>) memory(none)
+
+define <4 x i32> @load_cse_elementwise_different_element_size(ptr %p) {
+; CHECK-LABEL: @load_cse_elementwise_different_element_size(
+; CHECK-NEXT:    [[A:%.*]] = load atomic elementwise <2 x i64>, ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    call void @use_v2i64(<2 x i64> [[A]])
+; CHECK-NEXT:    [[B_CAST:%.*]] = load atomic elementwise <4 x i32>, ptr [[P]] unordered, align 16
+; CHECK-NEXT:    ret <4 x i32> [[B_CAST]]
+;
+  %a = load atomic elementwise <2 x i64>, ptr %p unordered, align 16
+  call void @use_v2i64(<2 x i64> %a)
+  %b = load atomic elementwise <4 x i32>, ptr %p unordered, align 16
+  ret <4 x i32> %b
+}
+
+define <4 x float> @load_cse_elementwise_same_element_size(ptr %p) {
+; CHECK-LABEL: @load_cse_elementwise_same_element_size(
+; CHECK-NEXT:    [[A:%.*]] = load atomic elementwise <4 x i32>, ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    call void @use_v4i32(<4 x i32> [[A]])
+; CHECK-NEXT:    [[B_CAST:%.*]] = bitcast <4 x i32> [[A]] to <4 x float>
+; CHECK-NEXT:    ret <4 x float> [[B_CAST]]
+;
+  %a = load atomic elementwise <4 x i32>, ptr %p unordered, align 16
+  call void @use_v4i32(<4 x i32> %a)
+  %b = load atomic elementwise <4 x float>, ptr %p unordered, align 16
+  ret <4 x float> %b
+}
+
+define <4 x i32> @store_to_load_elementwise_different_element_size(
+; CHECK-LABEL: @store_to_load_elementwise_different_element_size(
+; CHECK-NEXT:    store atomic elementwise <2 x i64> [[A:%.*]], ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    [[B_CAST:%.*]] = load atomic elementwise <4 x i32>, ptr [[P]] unordered, align 16
+; CHECK-NEXT:    ret <4 x i32> [[B_CAST]]
+;
+  ptr %p, <2 x i64> %a) {
+  store atomic elementwise <2 x i64> %a, ptr %p unordered, align 16
+  %b = load atomic elementwise <4 x i32>, ptr %p unordered, align 16
+  ret <4 x i32> %b
+}
+
+define <4 x float> @store_to_load_elementwise_same_element_size(
+; CHECK-LABEL: @store_to_load_elementwise_same_element_size(
+; CHECK-NEXT:    store atomic elementwise <4 x i32> [[A:%.*]], ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    [[B_CAST:%.*]] = bitcast <4 x i32> [[A]] to <4 x float>
+; CHECK-NEXT:    ret <4 x float> [[B_CAST]]
+;
+  ptr %p, <4 x i32> %a) {
+  store atomic elementwise <4 x i32> %a, ptr %p unordered, align 16
+  %b = load atomic elementwise <4 x float>, ptr %p unordered, align 16
+  ret <4 x float> %b
+}
+
+define <4 x i32> @load_cse_whole_to_elementwise(ptr %p) {
+; CHECK-LABEL: @load_cse_whole_to_elementwise(
+; CHECK-NEXT:    [[A:%.*]] = load atomic <4 x i32>, ptr [[P:%.*]] unordered, align 16
+; CHECK-NEXT:    call void @use_v4i32(<4 x i32> [[A]])
+; CHECK-NEXT:    [[B:%.*]] = load atomic elementwise <4 x i32>, ptr [[P]] unordered, align 16
+; CHECK-NEXT:    ret <4 x i32> [[B]]
+;
+  %a = load atomic <4 x i32>, ptr %p unordered, align 16
+  call void @use_v4i32(<4 x i32> %a)
+  %b = load atomic elementwise <4 x i32>, ptr %p unordered, align 16
+  ret <4 x i32> %b
 }
 
 attributes #0 = { null_pointer_is_valid }

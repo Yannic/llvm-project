@@ -18,13 +18,11 @@
 #include "Writer.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include <unordered_map>
 
 namespace llvm {
 class DWARFUnit;
@@ -108,13 +106,11 @@ public:
   void writeTo(uint8_t *buf) const override {}
 };
 
-// This is the base class for the GOT and TLVPointer sections, which are nearly
-// functionally identical -- they will both be populated by dyld with addresses
-// to non-lazily-loaded dylib symbols. The main difference is that the
-// TLVPointerSection stores references to thread-local variables.
-class NonLazyPointerSectionBase : public SyntheticSection {
+// The __got section, populated by dyld with addresses to non-lazily-loaded
+// dylib symbols, including TLV descriptors.
+class GotSection final : public SyntheticSection {
 public:
-  NonLazyPointerSectionBase(const char *segname, const char *name);
+  GotSection();
   const llvm::SetVector<const Symbol *> &getEntries() const { return entries; }
   bool isNeeded() const override { return !entries.empty(); }
   uint64_t getSize() const override {
@@ -128,16 +124,6 @@ public:
 
 private:
   llvm::SetVector<const Symbol *> entries;
-};
-
-class GotSection final : public NonLazyPointerSectionBase {
-public:
-  GotSection();
-};
-
-class TlvPointerSection final : public NonLazyPointerSectionBase {
-public:
-  TlvPointerSection();
 };
 
 struct Location {
@@ -315,6 +301,19 @@ public:
   Defined *dyldPrivate = nullptr;
 };
 
+class ObjCSelRefsHelper {
+public:
+  static void initialize();
+  static void cleanup();
+
+  static ConcatInputSection *getSelRef(StringRef methname);
+  static ConcatInputSection *makeSelRef(StringRef methname);
+
+private:
+  static llvm::DenseMap<llvm::CachedHashStringRef, ConcatInputSection *>
+      methnameToSelref;
+};
+
 // Objective-C stubs are hoisted objc_msgSend calls per selector called in the
 // program. Apple Clang produces undefined symbols to each stub, such as
 // '_objc_msgSend$foo', which are then synthesized by the linker. The stubs
@@ -332,11 +331,19 @@ public:
   void setUp();
 
   static constexpr llvm::StringLiteral symbolPrefix = "_objc_msgSend$";
+  static bool isObjCStubSymbol(Symbol *sym);
+  static StringRef getMethname(Symbol *sym);
+  ArrayRef<Defined *> getSymbols() const { return symbols; }
+
+  /// Stably sort the stubs by \p priorities and reassign their offsets. Must
+  /// run before addresses are assigned.
+  void sortSymbols(const llvm::DenseMap<const Symbol *, int> &priorities);
 
 private:
+  size_t getStubSize() const;
+
   std::vector<Defined *> symbols;
-  std::vector<uint32_t> offsets;
-  int objcMsgSendGotIndex = 0;
+  Symbol *objcMsgSend = nullptr;
 };
 
 // Note that this section may also be targeted by non-lazy bindings. In
@@ -432,6 +439,7 @@ private:
   // match its behavior here since some tools depend on it.
   // Consequently, the empty string will be at index 1, not zero.
   std::vector<StringRef> strings{" "};
+  llvm::DenseMap<llvm::CachedHashStringRef, uint32_t> stringMap;
   size_t size = 2;
 };
 
@@ -470,6 +478,7 @@ private:
   void emitEndSourceStab();
   void emitObjectFileStab(ObjFile *);
   void emitEndFunStab(Defined *);
+  Defined *getFuncBodySym(Defined *);
   void emitStabs();
 
 protected:
@@ -533,18 +542,6 @@ public:
   void writeHashes(uint8_t *buf) const;
 };
 
-class BitcodeBundleSection final : public SyntheticSection {
-public:
-  BitcodeBundleSection();
-  uint64_t getSize() const override { return xarSize; }
-  void finalize() override;
-  void writeTo(uint8_t *buf) const override;
-
-private:
-  llvm::SmallString<261> xarPath;
-  uint64_t xarSize;
-};
-
 class CStringSection : public SyntheticSection {
 public:
   CStringSection(const char *name);
@@ -566,18 +563,10 @@ public:
   uint64_t getSize() const override { return size; }
   void finalizeContents() override;
   void writeTo(uint8_t *buf) const override;
-
-  struct StringOffset {
-    uint8_t trailingZeros;
-    uint64_t outSecOff = UINT64_MAX;
-
-    explicit StringOffset(uint8_t zeros) : trailingZeros(zeros) {}
-  };
-
-  StringOffset getStringOffset(StringRef str) const;
+  uint64_t getStringOffset(StringRef str) const;
 
 private:
-  llvm::DenseMap<llvm::CachedHashStringRef, StringOffset> stringOffsetMap;
+  llvm::DenseMap<llvm::CachedHashStringRef, uint64_t> stringOffsetMap;
   size_t size = 0;
 };
 
@@ -624,15 +613,10 @@ public:
 private:
   std::vector<WordLiteralInputSection *> inputs;
 
-  template <class T> struct Hasher {
-    llvm::hash_code operator()(T v) const { return llvm::hash_value(v); }
-  };
-  // We're using unordered_map instead of DenseMap here because we need to
-  // support all possible integer values -- there are no suitable tombstone
-  // values for DenseMap.
-  std::unordered_map<UInt128, uint64_t, Hasher<UInt128>> literal16Map;
-  std::unordered_map<uint64_t, uint64_t> literal8Map;
-  std::unordered_map<uint32_t, uint64_t> literal4Map;
+  // Literal values can be any bit pattern.
+  llvm::DenseMap<UInt128, uint64_t> literal16Map;
+  llvm::DenseMap<uint64_t, uint64_t> literal8Map;
+  llvm::DenseMap<uint32_t, uint64_t> literal4Map;
 };
 
 class ObjCImageInfoSection final : public SyntheticSection {
@@ -680,6 +664,54 @@ public:
 
 private:
   std::vector<ConcatInputSection *> sections;
+};
+
+// This SyntheticSection is for the __objc_methlist section, which contains
+// relative method lists if the -objc_relative_method_lists option is enabled.
+class ObjCMethListSection final : public SyntheticSection {
+public:
+  ObjCMethListSection();
+
+  static bool isMethodList(const ConcatInputSection *isec);
+  void addInput(ConcatInputSection *isec) { inputs.push_back(isec); }
+  std::vector<ConcatInputSection *> getInputs() { return inputs; }
+
+  void setUp();
+  void finalize() override;
+  bool isNeeded() const override { return !inputs.empty(); }
+  uint64_t getSize() const override { return sectionSize; }
+  void writeTo(uint8_t *bufStart) const override;
+
+private:
+  void readMethodListHeader(const uint8_t *buf, uint32_t &structSizeAndFlags,
+                            uint32_t &structCount) const;
+  void writeMethodListHeader(uint8_t *buf, uint32_t structSizeAndFlags,
+                             uint32_t structCount) const;
+  uint32_t computeRelativeMethodListSize(uint32_t absoluteMethodListSize) const;
+  void writeRelativeOffsetForIsec(const ConcatInputSection *isec, uint8_t *buf,
+                                  uint32_t &inSecOff, uint32_t &outSecOff,
+                                  bool useSelRef) const;
+  uint32_t writeRelativeMethodList(const ConcatInputSection *isec,
+                                   uint8_t *buf) const;
+
+  static constexpr uint32_t methodListHeaderSize =
+      /*structSizeAndFlags*/ sizeof(uint32_t) +
+      /*structCount*/ sizeof(uint32_t);
+  // Relative method lists are supported only for 3-pointer method lists
+  static constexpr uint32_t pointersPerStruct = 3;
+  // The runtime identifies relative method lists via this magic value
+  static constexpr uint32_t relMethodHeaderFlag = 0x80000000;
+  // In the method list header, the first 2 bytes are the size of struct
+  static constexpr uint32_t structSizeMask = 0x0000FFFF;
+  // In the method list header, the last 2 bytes are the flags for the struct
+  static constexpr uint32_t structFlagsMask = 0xFFFF0000;
+  // Relative method lists have 4 byte alignment as all data in the InputSection
+  // is 4 byte
+  static constexpr uint32_t relativeOffsetSize = sizeof(uint32_t);
+
+  // The output size of the __objc_methlist section, computed during finalize()
+  uint32_t sectionSize = 0;
+  std::vector<ConcatInputSection *> inputs;
 };
 
 // Chained fixups are a replacement for classic dyld opcodes. In this format,
@@ -790,6 +822,9 @@ void writeChainedFixup(uint8_t *buf, const Symbol *sym, int64_t addend);
 struct InStruct {
   const uint8_t *bufferStart = nullptr;
   MachHeaderSection *header = nullptr;
+  /// The list of cstring sections. Note that this includes \p cStringSection
+  /// and \p objcMethnameSection already.
+  llvm::SmallVector<CStringSection *> cStringSections;
   CStringSection *cStringSection = nullptr;
   DeduplicatedCStringSection *objcMethnameSection = nullptr;
   WordLiteralSection *wordLiteralSection = nullptr;
@@ -799,17 +834,36 @@ struct InStruct {
   LazyBindingSection *lazyBinding = nullptr;
   ExportSection *exports = nullptr;
   GotSection *got = nullptr;
-  TlvPointerSection *tlvPointers = nullptr;
   LazyPointerSection *lazyPointers = nullptr;
   StubsSection *stubs = nullptr;
   StubHelperSection *stubHelper = nullptr;
   ObjCStubsSection *objcStubs = nullptr;
-  ConcatInputSection *objcSelrefs = nullptr;
   UnwindInfoSection *unwindInfo = nullptr;
   ObjCImageInfoSection *objCImageInfo = nullptr;
   ConcatInputSection *imageLoaderCache = nullptr;
   InitOffsetsSection *initOffsets = nullptr;
+  ObjCMethListSection *objcMethList = nullptr;
   ChainedFixupsSection *chainedFixups = nullptr;
+
+  CStringSection *getOrCreateCStringSection(StringRef name,
+                                            bool forceDedupStrings = false) {
+    auto [it, didEmplace] =
+        cStringSectionMap.try_emplace(name, cStringSections.size());
+    if (!didEmplace)
+      return cStringSections[it->getValue()];
+
+    std::string &nameData = *make<std::string>(name);
+    CStringSection *sec;
+    if (config->dedupStrings || forceDedupStrings)
+      sec = make<DeduplicatedCStringSection>(nameData.c_str());
+    else
+      sec = make<CStringSection>(nameData.c_str());
+    cStringSections.push_back(sec);
+    return sec;
+  }
+
+private:
+  llvm::StringMap<unsigned> cStringSectionMap;
 };
 
 extern InStruct in;

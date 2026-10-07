@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14
-// XFAIL: use_system_cxx_lib && target={{.+}}-apple-macosx10.{{9|10|11|12|13|14|15}}
-// XFAIL: use_system_cxx_lib && target={{.+}}-apple-macosx{{11.0|12.0}}
+// TODO: Change to XFAIL once https://llvm.org/PR40995 is fixed
+// UNSUPPORTED: availability-pmr-missing
 
 // <unordered_map>
 
@@ -23,8 +23,8 @@
 int main(int, char**) {
   {
     // Check that std::pmr::unordered_map is usable without <memory_resource>.
-    std::pmr::unordered_map<int, int> m;
-    std::pmr::unordered_multimap<int, int> mm;
+    [[maybe_unused]] std::pmr::unordered_map<int, int> m;
+    [[maybe_unused]] std::pmr::unordered_multimap<int, int> mm;
   }
 
   return 0;

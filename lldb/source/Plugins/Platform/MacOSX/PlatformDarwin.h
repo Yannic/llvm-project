@@ -10,12 +10,12 @@
 #define LLDB_SOURCE_PLUGINS_PLATFORM_MACOSX_PLATFORMDARWIN_H
 
 #include "Plugins/Platform/POSIX/PlatformPOSIX.h"
-#include "lldb/Core/FileSpecList.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/ProcessLaunchInfo.h"
 #include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/FileSpec.h"
+#include "lldb/Utility/FileSpecList.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StructuredData.h"
 #include "lldb/Utility/XcodeSDK.h"
@@ -23,9 +23,9 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/VersionTuple.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <mutex>
 #include <optional>
@@ -51,7 +51,7 @@ public:
   static lldb::PlatformSP CreateInstance(bool force, const ArchSpec *arch);
 
   static void DebuggerInitialize(lldb_private::Debugger &debugger);
-  
+
   static void Initialize();
 
   static void Terminate();
@@ -67,15 +67,20 @@ public:
   Status ResolveSymbolFile(Target &target, const ModuleSpec &sym_spec,
                            FileSpec &sym_file) override;
 
-  FileSpecList
-  LocateExecutableScriptingResources(Target *target, Module &module,
-                                     Stream *feedback_stream) override;
+  llvm::SmallDenseMap<FileSpec, LoadScriptFromSymFile>
+  LocateExecutableScriptingResourcesForPlatform(
+      Target *target, Module &module_spec, Stream &feedback_stream) override;
 
-  Status GetSharedModule(const ModuleSpec &module_spec, Process *process,
+  bool IsSymbolFileTrusted(Module &module) override;
+
+  Status GetSharedModule(const ModuleSpec &module_spec, Target &target,
                          lldb::ModuleSP &module_sp,
-                         const FileSpecList *module_search_paths_ptr,
                          llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules,
                          bool *did_create_ptr) override;
+
+  Status GetModuleFromSharedCaches(
+      const ModuleSpec &module_spec, Target &target, lldb::ModuleSP &module_sp,
+      llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules, bool *did_create_ptr);
 
   size_t GetSoftwareBreakpointTrapOpcode(Target &target,
                                          BreakpointSite *bp_site) override;
@@ -103,12 +108,12 @@ public:
 
   bool SupportsModules() override { return true; }
 
-  ConstString GetFullNameForDylib(ConstString basename) override;
+  std::string GetFullNameForDylib(llvm::StringRef basename) override;
 
   FileSpec LocateExecutable(const char *basename) override;
 
   Status LaunchProcess(ProcessLaunchInfo &launch_info) override;
-  
+
   Args GetExtraStartupCommands() override;
 
   static std::tuple<llvm::VersionTuple, llvm::StringRef>
@@ -117,12 +122,53 @@ public:
   llvm::Expected<StructuredData::DictionarySP>
   FetchExtendedCrashInformation(Process &process) override;
 
-  /// Return the toolchain directory the current LLDB instance is located in.
-  static FileSpec GetCurrentToolchainDirectory();
+  /// The generic implementation parses the SDKs out of debug info, but only
+  /// Darwin SDKs come in public and internal flavors, so detecting a conflict
+  /// between the two is done here.
+  llvm::Expected<std::pair<XcodeSDKAndSysroot, bool>>
+  GetSDKPathFromDebugInfo(Module &module) override;
+  using Platform::GetSDKPathFromDebugInfo;
 
-  /// Return the command line tools directory the current LLDB instance is
-  /// located in.
-  static FileSpec GetCurrentCommandLineToolsDirectory();
+  llvm::Expected<std::string>
+  ResolveSDKPathFromDebugInfo(Module &module) override;
+
+  llvm::Expected<std::string>
+  ResolveSDKPathFromDebugInfo(CompileUnit &unit) override;
+
+  /// Resolve an XcodeSDK to an on-disk path under a Progress event.
+  static llvm::Expected<FileSpec> ResolveXcodeSDK(const XcodeSDK &sdk);
+
+  /// Same, but prefer the sysroot the SDK was used from when it exists on
+  /// this machine.
+  static llvm::Expected<FileSpec>
+  ResolveXcodeSDK(const XcodeSDKAndSysroot &sdk);
+
+  /// Helper function for \c LocateExecutableScriptingResources
+  /// which gathers FileSpecs for executable scripts (currently
+  /// just Python) from a .dSYM Python directory.
+  ///
+  /// \param[out] feedback_stream Any warnings/errors are printed into this
+  /// stream.
+  ///
+  /// \param[in] module_spec FileSpec of the Module for which to locate
+  /// scripting resources.
+  ///
+  /// \param[in] target Target which owns the ScriptInterpreter which is
+  /// eventually used for loading the scripting resources.
+  ///
+  /// \param[in] symfile_spec FileSpec for the SymbolFile inside the Module's
+  /// dSYM directory. The scripting resources are loaded from the adjacent
+  /// Resources directory in the same dSYM.
+  /// E.g., \c /path/to/.dSYM/Contents/Resources/DWARF/a.out
+  ///
+  static llvm::SmallDenseMap<FileSpec, LoadScriptFromSymFile>
+  LocateExecutableScriptingResourcesFromDSYM(Stream &feedback_stream,
+                                             FileSpec module_spec,
+                                             const Target &target,
+                                             const FileSpec &symfile_spec);
+
+  llvm::Expected<FileSpecList>
+  GetSafeAutoLoadPaths(const Target &target) const override;
 
 protected:
   static const char *GetCompatibleArch(ArchSpec::Core core, size_t idx);
@@ -138,7 +184,7 @@ protected:
     uint64_t abort_cause;      // unsigned int
   };
 
-  /// Extract the `__crash_info` annotations from each of of the target's
+  /// Extract the `__crash_info` annotations from each of the target's
   /// modules.
   ///
   /// If the platform have a crashed processes with a `__crash_info` section,
@@ -184,12 +230,8 @@ protected:
                                              XcodeSDK::Type sdk_type);
 
   Status FindBundleBinaryInExecSearchPaths(
-      const ModuleSpec &module_spec, Process *process,
-      lldb::ModuleSP &module_sp, const FileSpecList *module_search_paths_ptr,
+      const ModuleSpec &module_spec, Target &target, lldb::ModuleSP &module_sp,
       llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules, bool *did_create_ptr);
-
-  static std::string FindComponentInPath(llvm::StringRef path,
-                                         llvm::StringRef component);
 
   // The OSType where lldb is running.
   static llvm::Triple::OSType GetHostOSType();

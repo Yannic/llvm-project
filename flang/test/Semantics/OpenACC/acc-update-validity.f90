@@ -38,7 +38,7 @@ program openacc_update_validity
   !ERROR: At most one ASYNC clause can appear on the UPDATE directive
   !$acc update host(aa, bb) async(1) async(2)
 
-  !$acc update self(bb, cc(:)) wait(1)
+  !$acc update self(bb, cc(:,:)) wait(1)
 
   !ERROR: SELF clause on the UPDATE directive must have a var-list
   !$acc update self
@@ -53,15 +53,78 @@ program openacc_update_validity
 
   !$acc update host(bb) device_type(*) wait
 
-  !$acc update self(cc) device_type(1,2) async device_type(3) wait
+  !$acc update self(cc) device_type(host,multicore) async device_type(*) wait
 
   !ERROR: At most one IF clause can appear on the UPDATE directive
   !$acc update device(aa) if(.true.) if(ifCondition)
 
-  !ERROR: At most one IF_PRESENT clause can appear on the UPDATE directive
+  ! OK
   !$acc update device(bb) if_present if_present
 
   !ERROR: Clause IF is not allowed after clause DEVICE_TYPE on the UPDATE directive
   !$acc update device(i) device_type(*) if(.TRUE.)
+
+  !$acc parallel
+  !ERROR: Directive UPDATE may not be called within a compute region
+  !$acc update device(a)
+  !$acc end parallel
+
+  !$acc serial
+  !ERROR: Directive UPDATE may not be called within a compute region
+  !$acc update device(a)
+  !$acc end serial
+
+  !$acc kernels
+  !ERROR: Directive UPDATE may not be called within a compute region
+  !$acc update device(a)
+  !$acc end kernels
+
+  !$acc parallel
+  !$acc loop
+  do i = 1, N
+    !ERROR: Directive UPDATE may not be called within a compute region
+    !$acc update device(a)
+    a(i) = 3.14d0
+  end do
+  !$acc end parallel
+
+  !$acc serial
+  !$acc loop
+  do i = 1, N
+    !ERROR: Directive UPDATE may not be called within a compute region
+    !$acc update device(a)
+    a(i) = 3.14d0
+  end do
+  !$acc end serial
+
+  !$acc kernels
+  !$acc loop
+  do i = 1, N
+    !ERROR: Directive UPDATE may not be called within a compute region
+    !$acc update device(a)
+    a(i) = 3.14d0
+  end do
+  !$acc end kernels
+
+  !$acc parallel loop
+  do i = 1, N
+    !ERROR: Directive UPDATE may not be called within a compute region
+    !$acc update device(a)
+    a(i) = 3.14d0
+  end do
+
+  !$acc serial loop
+  do i = 1, N
+    !ERROR: Directive UPDATE may not be called within a compute region
+    !$acc update device(a)
+    a(i) = 3.14d0
+  end do
+
+  !$acc kernels loop
+  do i = 1, N
+    !ERROR: Directive UPDATE may not be called within a compute region
+    !$acc update device(a)
+    a(i) = 3.14d0
+  end do
 
 end program openacc_update_validity

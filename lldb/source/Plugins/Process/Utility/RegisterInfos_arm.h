@@ -32,6 +32,10 @@ using namespace lldb_private;
 #error FPSCR_OFFSET must be defined before including this header file
 #endif
 
+#ifndef TLS_OFFSET
+#error TLS_OFFSET must be defined before including this header file
+#endif
+
 #ifndef EXC_OFFSET
 #error EXC_OFFSET_NAME must be defined before including this header file
 #endif
@@ -145,6 +149,8 @@ enum {
   fpu_q13,
   fpu_q14,
   fpu_q15,
+
+  tls_tpidruro,
 
   exc_exception,
   exc_fsr,
@@ -350,7 +356,7 @@ static uint32_t g_q15_contained[] = {fpu_q15, LLDB_INVALID_REGNUM};
     #name, nullptr, size, FPU_OFFSET(offset), eEncodingIEEE754, eFormatFloat,  \
         {LLDB_INVALID_REGNUM, dwarf_##name, LLDB_INVALID_REGNUM,               \
          LLDB_INVALID_REGNUM, fpu_##name },                                    \
-         g_##qreg##_contained, g_##name##_invalidates,                         \
+         g_##qreg##_contained, g_##name##_invalidates, nullptr,                \
   }
 
 #define FPU_QREG(name, offset)                                                 \
@@ -359,17 +365,10 @@ static uint32_t g_q15_contained[] = {fpu_q15, LLDB_INVALID_REGNUM};
         eFormatVectorOfUInt8,                                                  \
         {LLDB_INVALID_REGNUM, dwarf_##name, LLDB_INVALID_REGNUM,               \
          LLDB_INVALID_REGNUM, fpu_##name },                                    \
-         nullptr, g_##name##_invalidates,                                      \
+         nullptr, g_##name##_invalidates, nullptr,                             \
   }
 
 static RegisterInfo g_register_infos_arm[] = {
-    //  NAME         ALT     SZ   OFFSET          ENCODING          FORMAT
-    //  EH_FRAME             DWARF                GENERIC
-    //  PROCESS PLUGIN       LLDB NATIVE      VALUE REGS      INVALIDATE REGS
-    //  ===========  ======= ==   ==============  ================
-    //  ====================    ===================  ===================
-    //  ==========================  ===================  =============
-    //  ==============  =================
     {
         "r0",
         nullptr,
@@ -379,6 +378,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r0, dwarf_r0, LLDB_REGNUM_GENERIC_ARG1, LLDB_INVALID_REGNUM,
          gpr_r0},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -393,6 +393,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_r1},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "r2",
@@ -403,6 +404,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r2, dwarf_r2, LLDB_REGNUM_GENERIC_ARG3, LLDB_INVALID_REGNUM,
          gpr_r2},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -417,6 +419,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_r3},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "r4",
@@ -427,6 +430,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r4, dwarf_r4, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          gpr_r4},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -441,6 +445,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_r5},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "r6",
@@ -451,6 +456,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r6, dwarf_r6, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          gpr_r6},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -465,6 +471,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_r7},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "r8",
@@ -475,6 +482,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r8, dwarf_r8, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          gpr_r8},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -489,6 +497,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_r9},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "r10",
@@ -499,6 +508,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r10, dwarf_r10, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          gpr_r10},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -513,6 +523,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_r11},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "r12",
@@ -523,6 +534,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_r12, dwarf_r12, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          gpr_r12},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -537,6 +549,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_sp},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "lr",
@@ -547,6 +560,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_lr, dwarf_lr, LLDB_REGNUM_GENERIC_RA, LLDB_INVALID_REGNUM,
          gpr_lr},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -561,6 +575,7 @@ static RegisterInfo g_register_infos_arm[] = {
          gpr_pc},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "cpsr",
@@ -571,6 +586,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {ehframe_cpsr, dwarf_cpsr, LLDB_REGNUM_GENERIC_FLAGS,
          LLDB_INVALID_REGNUM, gpr_cpsr},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -617,6 +633,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          LLDB_INVALID_REGNUM, fpu_fpscr},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -672,6 +689,20 @@ static RegisterInfo g_register_infos_arm[] = {
     FPU_QREG(q15, 60),
 
     {
+        "tpidruro",
+        nullptr,
+        4,
+        TLS_OFFSET,
+        eEncodingUint,
+        eFormatHex,
+        {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_REGNUM_GENERIC_TP,
+         LLDB_INVALID_REGNUM, tls_tpidruro},
+        nullptr,
+        nullptr,
+        nullptr,
+    },
+
+    {
         "exception",
         nullptr,
         4,
@@ -680,6 +711,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          LLDB_INVALID_REGNUM, exc_exception},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -694,6 +726,7 @@ static RegisterInfo g_register_infos_arm[] = {
          LLDB_INVALID_REGNUM, exc_fsr},
         nullptr,
         nullptr,
+        nullptr,
     },
     {
         "far",
@@ -704,6 +737,7 @@ static RegisterInfo g_register_infos_arm[] = {
         eFormatHex,
         {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
          LLDB_INVALID_REGNUM, exc_far},
+        nullptr,
         nullptr,
         nullptr,
     },

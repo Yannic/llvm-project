@@ -227,67 +227,59 @@ CompilerType PlatformNetBSD::GetSiginfoType(const llvm::Triple &triple) {
   CompilerType &lwpid_type = int_type;
 
   CompilerType sigval_type = ast->CreateRecordType(
-      nullptr, OptionalClangModuleID(), lldb::eAccessPublic, "__lldb_sigval_t",
-      clang::TTK_Union, lldb::eLanguageTypeC);
+      nullptr, OptionalClangModuleID(), "__lldb_sigval_t",
+      llvm::to_underlying(clang::TagTypeKind::Union), lldb::eLanguageTypeC);
   ast->StartTagDeclarationDefinition(sigval_type);
-  ast->AddFieldToRecordType(sigval_type, "sival_int", int_type,
-                            lldb::eAccessPublic, 0);
-  ast->AddFieldToRecordType(sigval_type, "sival_ptr", voidp_type,
-                            lldb::eAccessPublic, 0);
+  ast->AddFieldToRecordType(sigval_type, "sival_int", int_type, 0);
+  ast->AddFieldToRecordType(sigval_type, "sival_ptr", voidp_type, 0);
   ast->CompleteTagDeclarationDefinition(sigval_type);
 
   CompilerType ptrace_option_type = ast->CreateRecordType(
-      nullptr, OptionalClangModuleID(), lldb::eAccessPublic, "",
-      clang::TTK_Union, lldb::eLanguageTypeC);
+      nullptr, OptionalClangModuleID(), "",
+      llvm::to_underlying(clang::TagTypeKind::Union), lldb::eLanguageTypeC);
   ast->StartTagDeclarationDefinition(ptrace_option_type);
-  ast->AddFieldToRecordType(ptrace_option_type, "_pe_other_pid", pid_type,
-                            lldb::eAccessPublic, 0);
-  ast->AddFieldToRecordType(ptrace_option_type, "_pe_lwp", lwpid_type,
-                            lldb::eAccessPublic, 0);
+  ast->AddFieldToRecordType(ptrace_option_type, "_pe_other_pid", pid_type, 0);
+  ast->AddFieldToRecordType(ptrace_option_type, "_pe_lwp", lwpid_type, 0);
   ast->CompleteTagDeclarationDefinition(ptrace_option_type);
 
   // siginfo_t
   CompilerType siginfo_type = ast->CreateRecordType(
-      nullptr, OptionalClangModuleID(), lldb::eAccessPublic, "__lldb_siginfo_t",
-      clang::TTK_Union, lldb::eLanguageTypeC);
+      nullptr, OptionalClangModuleID(), "__lldb_siginfo_t",
+      llvm::to_underlying(clang::TagTypeKind::Union), lldb::eLanguageTypeC);
   ast->StartTagDeclarationDefinition(siginfo_type);
 
   // struct _ksiginfo
   CompilerType ksiginfo_type = ast->CreateRecordType(
-      nullptr, OptionalClangModuleID(), lldb::eAccessPublic, "",
-      clang::TTK_Struct, lldb::eLanguageTypeC);
+      nullptr, OptionalClangModuleID(), "",
+      llvm::to_underlying(clang::TagTypeKind::Struct), lldb::eLanguageTypeC);
   ast->StartTagDeclarationDefinition(ksiginfo_type);
-  ast->AddFieldToRecordType(ksiginfo_type, "_signo", int_type,
-                            lldb::eAccessPublic, 0);
-  ast->AddFieldToRecordType(ksiginfo_type, "_code", int_type,
-                            lldb::eAccessPublic, 0);
-  ast->AddFieldToRecordType(ksiginfo_type, "_errno", int_type,
-                            lldb::eAccessPublic, 0);
+  ast->AddFieldToRecordType(ksiginfo_type, "_signo", int_type, 0);
+  ast->AddFieldToRecordType(ksiginfo_type, "_code", int_type, 0);
+  ast->AddFieldToRecordType(ksiginfo_type, "_errno", int_type, 0);
 
   // the structure is padded on 64-bit arches to fix alignment
   if (triple.isArch64Bit())
-    ast->AddFieldToRecordType(ksiginfo_type, "__pad0", int_type,
-                              lldb::eAccessPublic, 0);
+    ast->AddFieldToRecordType(ksiginfo_type, "__pad0", int_type, 0);
 
   // union used to hold the signal data
   CompilerType union_type = ast->CreateRecordType(
-      nullptr, OptionalClangModuleID(), lldb::eAccessPublic, "",
-      clang::TTK_Union, lldb::eLanguageTypeC);
+      nullptr, OptionalClangModuleID(), "",
+      llvm::to_underlying(clang::TagTypeKind::Union), lldb::eLanguageTypeC);
   ast->StartTagDeclarationDefinition(union_type);
 
   ast->AddFieldToRecordType(
       union_type, "_rt",
-      ast->CreateStructForIdentifier(ConstString(),
+      ast->CreateStructForIdentifier(llvm::StringRef(),
                                      {
                                          {"_pid", pid_type},
                                          {"_uid", uid_type},
                                          {"_value", sigval_type},
                                      }),
-      lldb::eAccessPublic, 0);
+      0);
 
   ast->AddFieldToRecordType(
       union_type, "_child",
-      ast->CreateStructForIdentifier(ConstString(),
+      ast->CreateStructForIdentifier(llvm::StringRef(),
                                      {
                                          {"_pid", pid_type},
                                          {"_uid", uid_type},
@@ -295,55 +287,53 @@ CompilerType PlatformNetBSD::GetSiginfoType(const llvm::Triple &triple) {
                                          {"_utime", clock_type},
                                          {"_stime", clock_type},
                                      }),
-      lldb::eAccessPublic, 0);
+      0);
 
   ast->AddFieldToRecordType(
       union_type, "_fault",
-      ast->CreateStructForIdentifier(ConstString(),
+      ast->CreateStructForIdentifier(llvm::StringRef(),
                                      {
                                          {"_addr", voidp_type},
                                          {"_trap", int_type},
                                          {"_trap2", int_type},
                                          {"_trap3", int_type},
                                      }),
-      lldb::eAccessPublic, 0);
+      0);
 
   ast->AddFieldToRecordType(
       union_type, "_poll",
-      ast->CreateStructForIdentifier(ConstString(),
+      ast->CreateStructForIdentifier(llvm::StringRef(),
                                      {
                                          {"_band", long_type},
                                          {"_fd", int_type},
                                      }),
-      lldb::eAccessPublic, 0);
+      0);
 
   ast->AddFieldToRecordType(union_type, "_syscall",
                             ast->CreateStructForIdentifier(
-                                ConstString(),
+                                llvm::StringRef(),
                                 {
                                     {"_sysnum", int_type},
                                     {"_retval", int_type.GetArrayType(2)},
                                     {"_error", int_type},
                                     {"_args", long_long_type.GetArrayType(8)},
                                 }),
-                            lldb::eAccessPublic, 0);
+                            0);
 
   ast->AddFieldToRecordType(
       union_type, "_ptrace_state",
-      ast->CreateStructForIdentifier(ConstString(),
+      ast->CreateStructForIdentifier(llvm::StringRef(),
                                      {
                                          {"_pe_report_event", int_type},
                                          {"_option", ptrace_option_type},
                                      }),
-      lldb::eAccessPublic, 0);
+      0);
 
   ast->CompleteTagDeclarationDefinition(union_type);
-  ast->AddFieldToRecordType(ksiginfo_type, "_reason", union_type,
-                            lldb::eAccessPublic, 0);
+  ast->AddFieldToRecordType(ksiginfo_type, "_reason", union_type, 0);
 
   ast->CompleteTagDeclarationDefinition(ksiginfo_type);
-  ast->AddFieldToRecordType(siginfo_type, "_info", ksiginfo_type,
-                            lldb::eAccessPublic, 0);
+  ast->AddFieldToRecordType(siginfo_type, "_info", ksiginfo_type, 0);
 
   ast->CompleteTagDeclarationDefinition(siginfo_type);
   return siginfo_type;

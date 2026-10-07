@@ -3,32 +3,43 @@ set(LLVM_LINK_COMPONENTS
   Support
   )
 
-setup_host_tool(clang-tidy-confusable-chars-gen CLANG_TIDY_CONFUSABLE_CHARS_GEN clang_tidy_confusable_chars_gen clang_tidy_confusable_chars_gen_target)
-
 add_subdirectory(ConfusableTable)
 
+setup_host_tool(clang-tidy-confusable-chars-gen CLANG_TIDY_CONFUSABLE_CHARS_GEN clang_tidy_confusable_chars_gen clang_tidy_confusable_chars_gen_target)
+
+include_directories(BEFORE "${CMAKE_CURRENT_SOURCE_DIR}/../../include-cleaner/include")
 
 add_custom_command(
     OUTPUT Confusables.inc
     COMMAND ${clang_tidy_confusable_chars_gen} ${CMAKE_CURRENT_SOURCE_DIR}/ConfusableTable/confusables.txt ${CMAKE_CURRENT_BINARY_DIR}/Confusables.inc
-    DEPENDS ${clang_tidy_confusable_chars_gen_target} ConfusableTable/confusables.txt)
+    DEPENDS ${clang_tidy_confusable_chars_gen_target} ${clang_tidy_confusable_chars_gen} ConfusableTable/confusables.txt)
 
 add_custom_target(genconfusable DEPENDS Confusables.inc)
+set_target_properties(genconfusable PROPERTIES FOLDER "Clang Tools Extra/Sourcegenning")
 
-add_clang_library(clangTidyMiscModule
-  ConstCorrectnessCheck.cpp
-  DefinitionsInHeadersCheck.cpp
+add_clang_library(clangTidyMiscModule STATIC
+  AnonymousNamespaceInHeaderCheck.cpp
   ConfusableIdentifierCheck.cpp
+  ConstCorrectnessCheck.cpp
+  CoroutineHostileRAIICheck.cpp
+  DefinitionsInHeadersCheck.cpp
+  ExplicitConstructorCheck.cpp
+  HeaderIncludeCycleCheck.cpp
+  IncludeCleanerCheck.cpp
   MiscTidyModule.cpp
-  MisleadingBidirectional.cpp
-  MisleadingIdentifier.cpp
+  MisleadingBidirectionalCheck.cpp
+  MisleadingIdentifierCheck.cpp
   MisplacedConstCheck.cpp
+  MultipleInheritanceCheck.cpp
   NewDeleteOverloadsCheck.cpp
   NoRecursionCheck.cpp
-  NonCopyableObjects.cpp
+  NonCopyableObjectsCheck.cpp
   NonPrivateMemberVariablesInClassesCheck.cpp
+  OverrideWithDifferentVisibilityCheck.cpp
+  PredictableRandCheck.cpp
   RedundantExpressionCheck.cpp
   StaticAssertCheck.cpp
+  StaticInitializationCycleCheck.cpp
   ThrowByValueCatchByReferenceCheck.cpp
   UnconventionalAssignOperatorCheck.cpp
   UniqueptrResetReleaseCheck.cpp
@@ -36,15 +47,16 @@ add_clang_library(clangTidyMiscModule
   UnusedParametersCheck.cpp
   UnusedUsingDeclsCheck.cpp
   UseAnonymousNamespaceCheck.cpp
+  UseInternalLinkageCheck.cpp
 
   LINK_LIBS
-  clangAnalysis
   clangTidy
   clangTidyUtils
 
   DEPENDS
   omp_gen
   genconfusable
+  ClangDriverOptions
   )
 
 clang_target_link_libraries(clangTidyMiscModule
@@ -53,7 +65,14 @@ clang_target_link_libraries(clangTidyMiscModule
   clangAST
   clangASTMatchers
   clangBasic
+  clangFormat
   clangLex
   clangSerialization
   clangTooling
+  clangToolingInclusions
+  clangToolingInclusionsStdlib
+  )
+target_link_libraries(clangTidyMiscModule
+  PRIVATE
+  clangIncludeCleaner
   )

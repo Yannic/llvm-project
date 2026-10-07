@@ -9,12 +9,13 @@
 #ifndef LLVM_LIBC_SRC_TERMIOS_TCSETATTR_H
 #define LLVM_LIBC_SRC_TERMIOS_TCSETATTR_H
 
-#include <termios.h>
+#include "hdr/types/struct_termios.h"
+#include "src/__support/macros/config.h"
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
-int tcsetattr(int fd, int actions, const struct termios *t);
+int tcsetattr(int fd, int actions, const termios *t);
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL
 
 #endif // LLVM_LIBC_SRC_TERMIOS_TCSETATTR_H

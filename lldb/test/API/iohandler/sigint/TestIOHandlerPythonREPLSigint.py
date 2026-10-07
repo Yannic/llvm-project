@@ -9,10 +9,10 @@ from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 from lldbsuite.test.lldbpexpect import PExpectTest
 
-class TestCase(PExpectTest):
 
+class TestCase(PExpectTest):
     def start_python_repl(self):
-        """ Starts up the embedded Python REPL."""
+        """Starts up the embedded Python REPL."""
         self.launch()
         # Start the embedded Python REPL via the 'script' command.
         self.child.send("script -l python --\n")
@@ -22,10 +22,10 @@ class TestCase(PExpectTest):
     # PExpect uses many timeouts internally and doesn't play well
     # under ASAN on a loaded machine..
     @skipIfAsan
-    @skipIfWindows
-    @skipIf(oslist=["linux"], archs=["arm", "aarch64"])
+    @requirePOSIX
+    @skipIf(oslist=["linux"], archs=["arm$", "aarch64"])
     def test_while_evaluating_code(self):
-        """ Tests SIGINT handling while Python code is being evaluated."""
+        """Tests SIGINT handling while Python code is being evaluated."""
         self.start_python_repl()
 
         # Start a long-running command that we try to abort with SIGINT.
@@ -49,17 +49,16 @@ class TestCase(PExpectTest):
         # Send EOF to quit the Python REPL.
         self.child.sendeof()
 
-        self.quit()
 
     # PExpect uses many timeouts internally and doesn't play well
     # under ASAN on a loaded machine..
     @skipIfAsan
     # FIXME: On Linux the Python code that reads from stdin seems to block until
     # it has finished reading a line before handling any queued signals.
-    @skipIf(hostoslist=['linux'])
-    @skipIfWindows
+    @skipIf(hostoslist=["linux"])
+    @requirePOSIX
     def test_while_waiting_on_input(self):
-        """ Tests SIGINT handling while the REPL is waiting on input from
+        """Tests SIGINT handling while the REPL is waiting on input from
         stdin."""
         self.start_python_repl()
 
@@ -71,4 +70,3 @@ class TestCase(PExpectTest):
         # Send EOF to quit the Python REPL.
         self.child.sendeof()
 
-        self.quit()

@@ -1,4 +1,4 @@
-//===--- ContainerDataPointerCheck.cpp - clang-tidy -----------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -8,26 +8,35 @@
 
 #include "ContainerDataPointerCheck.h"
 
+#include "../utils/Matchers.h"
+#include "../utils/OptionsUtils.h"
 #include "clang/Lex/Lexer.h"
-#include "llvm/ADT/StringRef.h"
 
 using namespace clang::ast_matchers;
 
 namespace clang::tidy::readability {
 
-constexpr llvm::StringLiteral ContainerExprName = "container-expr";
-constexpr llvm::StringLiteral DerefContainerExprName = "deref-container-expr";
-constexpr llvm::StringLiteral AddrOfContainerExprName =
-    "addr-of-container-expr";
-constexpr llvm::StringLiteral AddressOfName = "address-of";
+constexpr StringRef ContainerExprName = "container-expr";
+constexpr StringRef DerefContainerExprName = "deref-container-expr";
+constexpr StringRef AddrOfContainerExprName = "addr-of-container-expr";
+constexpr StringRef AddressOfName = "address-of";
+
+void ContainerDataPointerCheck::storeOptions(
+    ClangTidyOptions::OptionMap &Opts) {
+  Options.store(Opts, "IgnoredContainers",
+                utils::options::serializeStringList(IgnoredContainers));
+}
 
 ContainerDataPointerCheck::ContainerDataPointerCheck(StringRef Name,
                                                      ClangTidyContext *Context)
-    : ClangTidyCheck(Name, Context) {}
+    : ClangTidyCheck(Name, Context),
+      IgnoredContainers(utils::options::parseStringList(
+          Options.get("IgnoredContainers", ""))) {}
 
 void ContainerDataPointerCheck::registerMatchers(MatchFinder *Finder) {
   const auto Record =
       cxxRecordDecl(
+          unless(matchers::matchesAnyListedRegexName(IgnoredContainers)),
           isSameOrDerivedFrom(
               namedDecl(
                   has(cxxMethodDecl(isPublic(), hasName("data")).bind("data")))
@@ -64,7 +73,7 @@ void ContainerDataPointerCheck::registerMatchers(MatchFinder *Finder) {
 
   Finder->addMatcher(
       unaryOperator(
-          unless(isExpansionInSystemHeader()), hasOperatorName("&"),
+          hasOperatorName("&"),
           hasUnaryOperand(expr(
               anyOf(cxxOperatorCallExpr(SubscriptOperator, argumentCountIs(2),
                                         hasArgument(0, ContainerExpr),
@@ -90,14 +99,17 @@ void ContainerDataPointerCheck::check(const MatchFinder::MatchResult &Result) {
   else if (ACE)
     CE = ACE;
 
-  SourceRange SrcRange = CE->getSourceRange();
+  const SourceRange SrcRange = CE->getSourceRange();
 
   std::string ReplacementText{
       Lexer::getSourceText(CharSourceRange::getTokenRange(SrcRange),
                            *Result.SourceManager, getLangOpts())};
 
-  if (!isa<DeclRefExpr, ArraySubscriptExpr, CXXOperatorCallExpr, CallExpr,
-           MemberExpr>(CE))
+  const auto *OpCall = dyn_cast<CXXOperatorCallExpr>(CE);
+  const bool NeedsParens =
+      OpCall ? (OpCall->getOperator() != OO_Subscript)
+             : !isa<DeclRefExpr, MemberExpr, ArraySubscriptExpr, CallExpr>(CE);
+  if (NeedsParens)
     ReplacementText = "(" + ReplacementText + ")";
 
   if (CE->getType()->isPointerType())
@@ -105,7 +117,7 @@ void ContainerDataPointerCheck::check(const MatchFinder::MatchResult &Result) {
   else
     ReplacementText += ".data()";
 
-  FixItHint Hint =
+  const FixItHint Hint =
       FixItHint::CreateReplacement(UO->getSourceRange(), ReplacementText);
   diag(UO->getBeginLoc(),
        "'data' should be used for accessing the data pointer instead of taking "

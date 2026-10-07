@@ -7,11 +7,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
@@ -21,27 +23,29 @@ using namespace llvm;
 
 namespace {
 struct Context {
-  const char *TripleName = "x86_64-pc-linux";
+  static constexpr char TripleName[] = "x86_64-pc-linux";
+  Triple TT;
   std::unique_ptr<MCRegisterInfo> MRI;
   std::unique_ptr<MCAsmInfo> MAI;
+  std::unique_ptr<MCSubtargetInfo> STI;
   std::unique_ptr<MCContext> Ctx;
 
-  Context() {
+  Context() : TT(TripleName) {
     llvm::InitializeAllTargetInfos();
     llvm::InitializeAllTargetMCs();
     llvm::InitializeAllDisassemblers();
 
     // If we didn't build x86, do not run the test.
     std::string Error;
-    const Target *TheTarget = TargetRegistry::lookupTarget(TripleName, Error);
+    const Target *TheTarget = TargetRegistry::lookupTarget(TT, Error);
     if (!TheTarget)
       return;
 
-    MRI.reset(TheTarget->createMCRegInfo(TripleName));
+    MRI.reset(TheTarget->createMCRegInfo(TT));
     MCTargetOptions MCOptions;
-    MAI.reset(TheTarget->createMCAsmInfo(*MRI, TripleName, MCOptions));
-    Ctx = std::make_unique<MCContext>(Triple(TripleName), MAI.get(), MRI.get(),
-                                      /*MSTI=*/nullptr);
+    MAI.reset(TheTarget->createMCAsmInfo(*MRI, TT, MCOptions));
+    STI.reset(TheTarget->createMCSubtargetInfo(TT, "", ""));
+    Ctx = std::make_unique<MCContext>(TT, *MAI, *MRI, *STI);
   }
 
   operator bool() { return Ctx.get(); }
@@ -57,9 +61,8 @@ Context &getContext() {
 void verifyEncoding(MCDwarfLineTableParams Params, int LineDelta, int AddrDelta,
                     ArrayRef<uint8_t> ExpectedEncoding) {
   SmallString<16> Buffer;
-  raw_svector_ostream EncodingOS(Buffer);
-  MCDwarfLineAddr::Encode(getContext(), Params, LineDelta, AddrDelta,
-                          EncodingOS);
+  MCDwarfLineAddr::encode(getContext(), Params, LineDelta, AddrDelta,
+                          Buffer);
   EXPECT_EQ(ExpectedEncoding, arrayRefFromStringRef(Buffer));
 }
 

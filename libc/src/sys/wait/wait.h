@@ -9,12 +9,13 @@
 #ifndef LLVM_LIBC_SRC_SYS_WAIT_WAIT_H
 #define LLVM_LIBC_SRC_SYS_WAIT_WAIT_H
 
-#include <sys/wait.h>
+#include "hdr/types/pid_t.h"
+#include "src/__support/macros/config.h"
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 pid_t wait(int *waitstatus);
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL
 
 #endif // LLVM_LIBC_SRC_SYS_WAIT_WAIT_H

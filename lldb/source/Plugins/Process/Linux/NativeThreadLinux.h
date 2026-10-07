@@ -110,13 +110,11 @@ private:
   /// Extend m_stop_description with logical and allocation tag values.
   /// If there is an error along the way just add the information we were able
   /// to get.
-  void AnnotateSyncTagCheckFault(const siginfo_t *info);
+  void AnnotateSyncTagCheckFault(lldb::addr_t fault_addr);
 
   // Member Variables
   lldb::StateType m_state;
-  ThreadStopInfo m_stop_info;
   std::unique_ptr<NativeRegisterContextLinux> m_reg_context_up;
-  std::string m_stop_description;
   using WatchpointIndexMap = std::map<lldb::addr_t, uint32_t>;
   WatchpointIndexMap m_watchpoint_index_map;
   WatchpointIndexMap m_hw_break_index_map;

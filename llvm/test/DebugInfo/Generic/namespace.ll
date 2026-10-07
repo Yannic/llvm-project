@@ -13,6 +13,19 @@
 ; CHECK-NOT: DW_AT_decl_file
 ; CHECK-NOT: DW_AT_decl_line
 
+; CHECK: DW_TAG_subprogram
+; CHECK:   DW_AT_MIPS_linkage_name
+; CHECK:   DW_AT_name ("f1")
+; CHECK: [[FUNC1:.*]]: DW_TAG_subprogram
+; CHECK:   DW_AT_MIPS_linkage_name
+; CHECK:   DW_AT_name ("f1")
+; CHECK:   DW_TAG_formal_parameter
+; CHECK:   NULL
+
+; CHECK: [[FUNC_FWD:0x[0-9a-f]*]]:{{.*}}DW_TAG_subprogram
+; CHECK:   DW_AT_name ("func_fwd")
+; CHECK-NOT: DW_AT_declaration
+
 ; CHECK: [[I:0x[0-9a-f]*]]:{{ *}}DW_TAG_variable
 ; CHECK:   DW_AT_name ("i")
 ; CHECK: [[VAR_FWD:0x[0-9a-f]*]]:{{ *}}DW_TAG_variable
@@ -24,15 +37,6 @@
 ; CHECK: [[BAR:0x[0-9a-f]*]]:{{ *}}DW_TAG_structure_type
 ; CHECK:   DW_AT_name ("bar")
 
-; CHECK: DW_TAG_subprogram
-; CHECK:   DW_AT_MIPS_linkage_name
-; CHECK:   DW_AT_name ("f1")
-; CHECK: [[FUNC1:.*]]: DW_TAG_subprogram
-; CHECK:   DW_AT_MIPS_linkage_name
-; CHECK:   DW_AT_name ("f1")
-; CHECK:   DW_TAG_formal_parameter
-; CHECK:   NULL
-
 ; CHECK: [[BAZ:0x[0-9a-f]*]]:{{.*}}DW_TAG_typedef
 ; CHECK:   DW_AT_name ("baz")
 
@@ -43,90 +47,86 @@
 ; CHECK: [[FUNC_DECL:0x[0-9a-f]*]]:{{.*}}DW_TAG_subprogram
 ; CHECK:   DW_AT_name ("func_decl")
 ; CHECK:   DW_AT_declaration
-
-; CHECK: [[FUNC_FWD:0x[0-9a-f]*]]:{{.*}}DW_TAG_subprogram
-; CHECK:   DW_AT_name ("func_fwd")
-; CHECK-NOT: DW_AT_declaration
 ; CHECK: NULL
 
 ; CHECK: DW_TAG_imported_module
 ; CHECK:   DW_AT_decl_file ([[F2:.*]])
 ; CHECK:   DW_AT_decl_line (15)
-; CHECK:   DW_AT_import ([[NS2]])
+; CHECK:   DW_AT_import ([[NS2]] "B")
 ; CHECK: DW_TAG_imported_declaration
 ; CHECK: NULL
 
-; CHECK: DW_TAG_base_type
-; CHECK: DW_TAG_imported_module
-; CHECK:   DW_AT_decl_file ([[F2:.*]])
-; CHECK:   DW_AT_decl_line (18)
-; CHECK:   DW_AT_import ([[NS1]])
-; CHECK: DW_TAG_imported_declaration
-
 ; CHECK: DW_TAG_subprogram
+
 ; CHECK: DW_TAG_subprogram
 ; CHECK:   DW_AT_MIPS_linkage_name
 ; CHECK:   DW_AT_name ("func")
 ; CHECK:   DW_TAG_formal_parameter
-; CHECK:   DW_TAG_imported_module
-; CHECK:     DW_AT_decl_file ([[F2:.*]])
-; CHECK:     DW_AT_decl_line (26)
-; CHECK:     DW_AT_import ([[NS1]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (27)
-; CHECK:     DW_AT_import ([[FOO]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (28)
-; CHECK:     DW_AT_import ([[BAR]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (29)
-; CHECK:     DW_AT_import ([[FUNC1]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (30)
-; CHECK:     DW_AT_import ([[I]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (31)
-; CHECK:     DW_AT_import ([[BAZ]])
-; CHECK:   [[X:0x[0-9a-f]*]]:{{ *}}DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (32)
-; CHECK:     DW_AT_import ([[NS1]])
-; CHECK:     DW_AT_name ("X")
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (33)
-; CHECK:     DW_AT_import ([[X]])
-; CHECK:     DW_AT_name ("Y")
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (34)
-; CHECK:     DW_AT_import ([[VAR_DECL]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (35)
-; CHECK:     DW_AT_import ([[FUNC_DECL]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (36)
-; CHECK:     DW_AT_import ([[VAR_FWD]])
-; CHECK:   DW_TAG_imported_declaration
-; CHECK:     DW_AT_decl_file ([[F2]])
-; CHECK:     DW_AT_decl_line (37)
-; CHECK:     DW_AT_import ([[FUNC_FWD]])
 ; CHECK:   DW_TAG_lexical_block
 ; CHECK:     DW_TAG_imported_module
 ; CHECK:       DW_AT_decl_file ([[F2]])
 ; CHECK:       DW_AT_decl_line (23)
 ; CHECK:       DW_AT_import {{.*}}
 ; CHECK:     NULL
+; CHECK:   DW_TAG_imported_module
+; CHECK:     DW_AT_decl_file ([[F2:.*]])
+; CHECK:     DW_AT_decl_line (26)
+; CHECK:     DW_AT_import ([[NS1]] "A")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (27)
+; CHECK:     DW_AT_import ([[FOO]] "foo")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (28)
+; CHECK:     DW_AT_import ([[BAR]] "bar")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (29)
+; CHECK:     DW_AT_import ([[FUNC1]] {{.*}})
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (30)
+; CHECK:     DW_AT_import ([[I]] "_ZN1A1B1iE")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (31)
+; CHECK:     DW_AT_import ([[BAZ]] "baz")
+; CHECK:   [[X:0x[0-9a-f]*]]:{{ *}}DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (32)
+; CHECK:     DW_AT_import ([[NS1]] "A")
+; CHECK:     DW_AT_name ("X")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (33)
+; CHECK:     DW_AT_import ([[X]] "X")
+; CHECK:     DW_AT_name ("Y")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (34)
+; CHECK:     DW_AT_import ([[VAR_DECL]] "_ZN1A1B8var_declE")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (35)
+; CHECK:     DW_AT_import ([[FUNC_DECL]] "_ZN1A1B9func_declEv")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (36)
+; CHECK:     DW_AT_import ([[VAR_FWD]] "_ZN1A1B7var_fwdE")
+; CHECK:   DW_TAG_imported_declaration
+; CHECK:     DW_AT_decl_file ([[F2]])
+; CHECK:     DW_AT_decl_line (37)
+; CHECK:     DW_AT_import ([[FUNC_FWD]] "_ZN1A1B8func_fwdEv")
 ; CHECK:   NULL
 
 ; CHECK: DW_TAG_subprogram
+; CHECK: DW_TAG_base_type
+; CHECK: DW_TAG_imported_module
+; CHECK:   DW_AT_decl_file ([[F2:.*]])
+; CHECK:   DW_AT_decl_line (18)
+; CHECK:   DW_AT_import ([[NS1]] "A")
+; CHECK: DW_TAG_imported_declaration
 ; CHECK: DW_TAG_base_type
 ; CHECK: NULL
 
@@ -266,7 +266,7 @@ entry:
   ret void, !dbg !74
 }
 
-attributes #0 = { nounwind ssp uwtable "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind ssp uwtable "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone }
 
 !llvm.dbg.cu = !{!0}
@@ -293,7 +293,7 @@ attributes #1 = { nounwind readnone }
 !18 = !DIFile(filename: "foo.cpp", directory: "/tmp")
 !19 = !DISubroutineType(types: !20)
 !20 = !{null}
-!21 = distinct !DISubprogram(name: "func", linkageName: "_Z4funcb", line: 21, isLocal: false, isDefinition: true, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 21, file: !5, scope: !18, type: !22, retainedNodes: !2)
+!21 = distinct !DISubprogram(name: "func", linkageName: "_Z4funcb", line: 21, isLocal: false, isDefinition: true, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 21, file: !5, scope: !18, type: !22, retainedNodes: !77)
 !22 = !DISubroutineType(types: !23)
 !23 = !{!13, !24}
 !24 = !DIBasicType(tag: DW_TAG_base_type, name: "bool", size: 8, align: 8, encoding: DW_ATE_boolean)
@@ -305,7 +305,7 @@ attributes #1 = { nounwind readnone }
 !30 = !{!131, !132}
 !31 = !DIGlobalVariable(name: "i", linkageName: "_ZN1A1B1iE", line: 20, isLocal: false, isDefinition: true, scope: !6, file: !18, type: !13)
 !32 = !DIGlobalVariable(name: "var_fwd", linkageName: "_ZN1A1B7var_fwdE", line: 44, isLocal: false, isDefinition: true, scope: !6, file: !18, type: !13)
-!33 = !{!34, !35, !36, !37, !40, !41, !42, !43, !44, !45, !47, !48, !49, !51, !54, !55, !56}
+!33 = !{!34, !35, !36, !56}
 !34 = !DIImportedEntity(tag: DW_TAG_imported_module, file: !5, line: 15, scope: !7, entity: !6)
 !35 = !DIImportedEntity(tag: DW_TAG_imported_module, file: !5, line: 18, scope: !0, entity: !7)
 !36 = !DIImportedEntity(tag: DW_TAG_imported_declaration, file: !5, line: 19, name: "E", scope: !0, entity: !7)
@@ -348,5 +348,6 @@ attributes #1 = { nounwind readnone }
 !73 = !DILocation(line: 47, column: 21, scope: !26)
 !74 = !DILocation(line: 0, scope: !75)
 !75 = !DILexicalBlockFile(discriminator: 0, file: !5, scope: !27)
+!77 = !{!37, !40, !41, !42, !43, !44, !45, !47, !48, !49, !51, !54, !55}
 !131 = !DIGlobalVariableExpression(var: !31, expr: !DIExpression())
 !132 = !DIGlobalVariableExpression(var: !32, expr: !DIExpression())

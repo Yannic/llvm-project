@@ -25,16 +25,14 @@ extern cl::opt<bolt::FrameOptimizationType> FrameOptimization;
 namespace llvm {
 namespace bolt {
 
-namespace {
-
-bool getStackAdjustmentSize(const BinaryContext &BC, const MCInst &Inst,
-                            int64_t &Adjustment) {
+static bool getStackAdjustmentSize(const BinaryContext &BC, const MCInst &Inst,
+                                   int64_t &Adjustment) {
   return BC.MIB->evaluateStackOffsetExpr(
       Inst, Adjustment, std::make_pair(BC.MIB->getStackPointer(), 0LL),
       std::make_pair(0, 0LL));
 }
 
-bool isIndifferentToSP(const MCInst &Inst, const BinaryContext &BC) {
+static bool isIndifferentToSP(const MCInst &Inst, const BinaryContext &BC) {
   if (BC.MIB->isCFI(Inst))
     return true;
 
@@ -50,12 +48,12 @@ bool isIndifferentToSP(const MCInst &Inst, const BinaryContext &BC) {
   return true;
 }
 
-bool shouldProcess(const BinaryFunction &Function) {
+static bool shouldProcess(const BinaryFunction &Function) {
   return Function.isSimple() && Function.hasCFG() && !Function.isIgnored();
 }
 
-void runForAllWeCare(std::map<uint64_t, BinaryFunction> &BFs,
-                     std::function<void(BinaryFunction &)> Task) {
+static void runForAllWeCare(std::map<uint64_t, BinaryFunction> &BFs,
+                            std::function<void(BinaryFunction &)> Task) {
   for (auto &It : BFs) {
     BinaryFunction &Function = It.second;
     if (shouldProcess(Function))
@@ -63,11 +61,10 @@ void runForAllWeCare(std::map<uint64_t, BinaryFunction> &BFs,
   }
 }
 
-} // end anonymous namespace
-
 void AllocCombinerPass::combineAdjustments(BinaryFunction &BF) {
   BinaryContext &BC = BF.getBinaryContext();
   for (BinaryBasicBlock &BB : BF) {
+    SmallVector<MCInst *, 2> ToErase;
     MCInst *Prev = nullptr;
     for (MCInst &Inst : llvm::reverse(BB)) {
       if (isIndifferentToSP(Inst, BC))
@@ -98,26 +95,29 @@ void AllocCombinerPass::combineAdjustments(BinaryFunction &BF) {
         Inst.dump();
       });
 
-      BB.eraseInstruction(BB.findInstruction(Prev));
+      ToErase.push_back(Prev);
       ++NumCombined;
       DynamicCountCombined += BB.getKnownExecutionCount();
       FuncsChanged.insert(&BF);
       Prev = &Inst;
     }
+    for (MCInst *Inst : ToErase)
+      BB.eraseInstruction(BB.findInstruction(Inst));
   }
 }
 
-void AllocCombinerPass::runOnFunctions(BinaryContext &BC) {
+Error AllocCombinerPass::runOnFunctions(BinaryContext &BC) {
   if (opts::FrameOptimization == FOP_NONE)
-    return;
+    return Error::success();
 
   runForAllWeCare(BC.getBinaryFunctions(), [&](BinaryFunction &Function) {
     combineAdjustments(Function);
   });
 
-  outs() << "BOLT-INFO: Allocation combiner: " << NumCombined
-         << " empty spaces coalesced (dyn count: " << DynamicCountCombined
-         << ").\n";
+  BC.outs() << "BOLT-INFO: Allocation combiner: " << NumCombined
+            << " empty spaces coalesced (dyn count: " << DynamicCountCombined
+            << ").\n";
+  return Error::success();
 }
 
 } // end namespace bolt

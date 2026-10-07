@@ -1,5 +1,11 @@
 add_mlir_conversion_library(MLIROpenACCToLLVM
-  OpenACCToLLVM.cpp
+  ACCAtomicPatterns.cpp
+  ACCDataDirectivePatterns.cpp
+  ACCDataRuntime.cpp
+  ACCExecutableDirectivePatterns.cpp
+  ACCHostDataPatterns.cpp
+  ACCToLLVMUtils.cpp
+  ACCToLLVM.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Conversion/OpenACCToLLVM
@@ -8,9 +14,18 @@ add_mlir_conversion_library(MLIROpenACCToLLVM
   MLIRConversionPassIncGen
 
   LINK_LIBS PUBLIC
+  MLIRArithToLLVM
+  MLIRComplexDialect
+  MLIRControlFlowToLLVM
+  MLIRFuncToLLVM
+  MLIRFunctionInterfaces
   MLIRIR
+  MLIRLLVMCommonConversion
   MLIRLLVMDialect
+  MLIRMemRefDialect
   MLIRMemRefToLLVM
+  MLIROpenACCAnalysis
   MLIROpenACCDialect
+  MLIROpenACCUtils
   MLIRTransforms
-  )
+)

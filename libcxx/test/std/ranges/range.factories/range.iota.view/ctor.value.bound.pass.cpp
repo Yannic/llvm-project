@@ -8,18 +8,35 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
-#include "test_macros.h"
+// ADDITIONAL_COMPILE_FLAGS(gcc-style-warnings): -Wno-sign-compare
 
-TEST_CLANG_DIAGNOSTIC_IGNORED("-Wsign-compare")
-TEST_GCC_DIAGNOSTIC_IGNORED("-Wsign-compare")
-TEST_MSVC_DIAGNOSTIC_IGNORED(4018 4389) // various "signed/unsigned mismatch"
+// various "signed/unsigned mismatch"
+// ADDITIONAL_COMPILE_FLAGS(cl-style-warnings): /wd4018 /wd4389
 
-// constexpr iota_view(type_identity_t<W> value, type_identity_t<Bound> bound);
+// constexpr explicit iota_view(type_identity_t<W> value, type_identity_t<Bound> bound); // explicit since C++23
 
 #include <ranges>
 #include <cassert>
 
+#include "test_convertible.h"
 #include "types.h"
+
+// SFINAE tests.
+
+static_assert(!test_convertible<std::ranges::iota_view<SomeInt, SomeInt>,
+                                decltype(std::ranges::iota_view<SomeInt, SomeInt>{}.begin()),
+                                decltype(std::ranges::iota_view<SomeInt, SomeInt>{}.end())>(),
+              "This constructor must be explicit");
+
+static_assert(!test_convertible<std::ranges::iota_view<SomeInt>,
+                                decltype(std::ranges::iota_view<SomeInt>{}.begin()),
+                                decltype(std::unreachable_sentinel)>(),
+              "This constructor must be explicit");
+
+static_assert(!test_convertible<std::ranges::iota_view<SomeInt, IntComparableWith<SomeInt>>,
+                                decltype(std::ranges::iota_view{SomeInt(0), IntComparableWith(SomeInt(10))}.begin()),
+                                decltype(std::ranges::iota_view{SomeInt(0), IntComparableWith(SomeInt(10))}.end())>(),
+              "This constructor must be explicit");
 
 constexpr bool test() {
   {

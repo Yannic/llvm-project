@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLDB_TARGET_TRACE_CURSOR_H
-#define LLDB_TARGET_TRACE_CURSOR_H
+#ifndef LLDB_TARGET_TRACECURSOR_H
+#define LLDB_TARGET_TRACECURSOR_H
 
 #include "lldb/lldb-private.h"
 
@@ -217,7 +217,7 @@ public:
 
   /// \return
   ///     The error message the cursor is pointing at.
-  virtual const char *GetError() const = 0;
+  virtual llvm::StringRef GetError() const = 0;
 
   /// \return
   ///     Whether the cursor points to an event or not.
@@ -290,4 +290,4 @@ protected:
 };
 } // namespace lldb_private
 
-#endif // LLDB_TARGET_TRACE_CURSOR_H
+#endif // LLDB_TARGET_TRACECURSOR_H

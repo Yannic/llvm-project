@@ -5,6 +5,7 @@ set(MSAN_RTL_SOURCES
   msan.cpp
   msan_allocator.cpp
   msan_chained_origin_depot.cpp
+  msan_dl.cpp
   msan_interceptors.cpp
   msan_linux.cpp
   msan_report.cpp
@@ -20,6 +21,7 @@ set(MSAN_RTL_HEADERS
   msan.h
   msan_allocator.h
   msan_chained_origin_depot.h
+  msan_dl.h
   msan_flags.h
   msan_flags.inc
   msan_interface_internal.h
@@ -55,6 +57,7 @@ foreach(arch ${MSAN_SUPPORTED_ARCH})
             $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
             $<TARGET_OBJECTS:RTSanitizerCommonCoverage.${arch}>
             $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.${arch}>
+            $<TARGET_OBJECTS:RTSanitizerCommonSymbolizerInternal.${arch}>
             $<TARGET_OBJECTS:RTUbsan.${arch}>
     ADDITIONAL_HEADERS ${MSAN_RTL_HEADERS}
     CFLAGS ${MSAN_RTL_CFLAGS}
@@ -63,7 +66,6 @@ foreach(arch ${MSAN_SUPPORTED_ARCH})
     STATIC
     ARCHS ${arch}
     SOURCES ${MSAN_RTL_CXX_SOURCES}
-            $<TARGET_OBJECTS:RTUbsan_cxx.${arch}>
     ADDITIONAL_HEADERS ${MSAN_RTL_HEADERS}
     CFLAGS ${MSAN_RTL_CFLAGS}
     PARENT_TARGET msan)
@@ -72,17 +74,17 @@ foreach(arch ${MSAN_SUPPORTED_ARCH})
   if(SANITIZER_USE_SYMBOLS)
     add_sanitizer_rt_symbols(clang_rt.msan
       ARCHS ${arch}
+      PARENT_TARGET msan
       EXTRA msan.syms.extra)
     add_sanitizer_rt_symbols(clang_rt.msan_cxx
       ARCHS ${arch}
+      PARENT_TARGET msan
       EXTRA msan.syms.extra)
-    add_dependencies(msan clang_rt.msan-${arch}-symbols
-                          clang_rt.msan_cxx-${arch}-symbols)
   endif()
 endforeach()
 
-add_compiler_rt_resource_file(msan_ignorelist msan_ignorelist.txt msan)
-list(APPEND MSAN_RUNTIME_LIBRARIES msan_ignorelist)
+add_sanitizer_ignorelists_dependency(msan)
+list(APPEND MSAN_RUNTIME_LIBRARIES sanitizer-ignorelists)
 
 if(COMPILER_RT_INCLUDE_TESTS)
   add_subdirectory(tests)

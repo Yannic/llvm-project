@@ -15,11 +15,15 @@
 
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace clang {
 namespace targets {
+
+static constexpr LangASMap WebAssemblyAddrSpaceMap = {
+    {LangAS::wasm_funcref, 20},
+};
 
 class LLVM_LIBRARY_VISIBILITY WebAssemblyTargetInfo : public TargetInfo {
 
@@ -29,22 +33,34 @@ class LLVM_LIBRARY_VISIBILITY WebAssemblyTargetInfo : public TargetInfo {
     RelaxedSIMD,
   } SIMDLevel = NoSIMD;
 
-  bool HasNontrappingFPToInt = false;
-  bool HasSignExt = false;
-  bool HasExceptionHandling = false;
-  bool HasBulkMemory = false;
   bool HasAtomics = false;
-  bool HasMutableGlobals = false;
-  bool HasMultivalue = false;
-  bool HasTailCall = false;
-  bool HasReferenceTypes = false;
+  bool HasBulkMemory = false;
+  bool HasBulkMemoryOpt = false;
+  bool HasCallIndirectOverlong = false;
+  bool HasCooperativeThreading = false;
+  bool HasCompactImports = false;
+  bool HasExceptionHandling = false;
   bool HasExtendedConst = false;
+  bool HasFP16 = false;
+  bool HasGC = false;
+  bool HasLibcallThreadContext = false;
+  bool HasMultiMemory = false;
+  bool HasMultivalue = false;
+  bool HasMutableGlobals = false;
+  bool HasNontrappingFPToInt = false;
+  bool HasReferenceTypes = false;
+  bool HasRelaxedAtomics = false;
+  bool HasSignExt = false;
+  bool HasTailCall = false;
+  bool HasWideArithmetic = false;
 
   std::string ABI;
 
 public:
   explicit WebAssemblyTargetInfo(const llvm::Triple &T, const TargetOptions &)
       : TargetInfo(T) {
+    AddrSpaceMap = &WebAssemblyAddrSpaceMap;
+    UseAddrSpaceMapMangling = true;
     NoAsmVariants = true;
     SuitableAlign = 128;
     LargeArrayMinWidth = 128;
@@ -53,11 +69,27 @@ public:
     LongDoubleWidth = LongDoubleAlign = 128;
     LongDoubleFormat = &llvm::APFloat::IEEEquad();
     MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 64;
-    // size_t being unsigned long for both wasm32 and wasm64 makes mangled names
-    // more consistent between the two.
-    SizeType = UnsignedLong;
-    PtrDiffType = SignedLong;
-    IntPtrType = SignedLong;
+    HasUnalignedAccess = true;
+    if (T.isWALI()) {
+      // The WALI ABI is documented here:
+      // https://doc.rust-lang.org/rustc/platform-support/wasm32-wali-linux.html
+      // Currently, this ABI only applies to wasm32 targets and notably requires
+      // 64-bit longs
+      LongAlign = LongWidth = 64;
+      SizeType = UnsignedInt;
+      PtrDiffType = SignedInt;
+      IntPtrType = SignedInt;
+    } else {
+      // size_t being unsigned long for both wasm32 and wasm64 makes mangled
+      // names more consistent between the two.
+      SizeType = UnsignedLong;
+      PtrDiffType = SignedLong;
+      IntPtrType = SignedLong;
+    }
+    if (T.getOS() == llvm::Triple::WASIp3) {
+      HasLibcallThreadContext = true;
+      HasCooperativeThreading = true;
+    }
   }
 
   StringRef getABI() const override;
@@ -86,18 +118,18 @@ private:
   bool isValidCPUName(StringRef Name) const final;
   void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const final;
 
-  bool setCPU(const std::string &Name) final { return isValidCPUName(Name); }
+  bool setCPU(StringRef Name) final { return isValidCPUName(Name); }
 
-  ArrayRef<Builtin::Info> getTargetBuiltins() const final;
+  llvm::SmallVector<Builtin::InfosShard> getTargetBuiltins() const final;
 
   BuiltinVaListKind getBuiltinVaListKind() const final {
     return VoidPtrBuiltinVaList;
   }
 
-  ArrayRef<const char *> getGCCRegNames() const final { return std::nullopt; }
+  ArrayRef<const char *> getGCCRegNames() const final { return {}; }
 
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const final {
-    return std::nullopt;
+    return {};
   }
 
   bool validateAsmConstraint(const char *&Name,
@@ -105,7 +137,7 @@ private:
     return false;
   }
 
-  const char *getClobbers() const final { return ""; }
+  std::string_view getClobbers() const final { return ""; }
 
   bool isCLZForZeroUndef() const final { return false; }
 
@@ -130,7 +162,7 @@ private:
     case CC_Swift:
       return CCCR_OK;
     case CC_SwiftAsync:
-      return CCCR_Error;
+      return HasTailCall ? CCCR_OK : CCCR_Error;
     default:
       return CCCR_Warning;
     }
@@ -139,8 +171,6 @@ private:
   bool hasBitIntType() const override { return true; }
 
   bool hasProtectedVisibility() const override { return false; }
-
-  void adjust(DiagnosticsEngine &Diags, LangOptions &Opts) override;
 };
 
 class LLVM_LIBRARY_VISIBILITY WebAssembly32TargetInfo
@@ -149,12 +179,7 @@ public:
   explicit WebAssembly32TargetInfo(const llvm::Triple &T,
                                    const TargetOptions &Opts)
       : WebAssemblyTargetInfo(T, Opts) {
-    if (T.isOSEmscripten())
-      resetDataLayout("e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-f128:64-n32:64-"
-                      "S128-ni:1:10:20");
-    else
-      resetDataLayout(
-          "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20");
+    resetDataLayout();
   }
 
 protected:
@@ -173,12 +198,7 @@ public:
     SizeType = UnsignedLong;
     PtrDiffType = SignedLong;
     IntPtrType = SignedLong;
-    if (T.isOSEmscripten())
-      resetDataLayout("e-m:e-p:64:64-p10:8:8-p20:8:8-i64:64-f128:64-n32:64-"
-                      "S128-ni:1:10:20");
-    else
-      resetDataLayout(
-          "e-m:e-p:64:64-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20");
+    resetDataLayout();
   }
 
 protected:

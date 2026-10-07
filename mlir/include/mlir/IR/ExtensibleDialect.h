@@ -24,8 +24,11 @@
 #include "mlir/IR/DialectInterface.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/Support/TypeID.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <optional>
 
 namespace mlir {
 class AsmParser;
@@ -35,7 +38,6 @@ class DynamicType;
 class ExtensibleDialect;
 class MLIRContext;
 class OptionalParseResult;
-class ParseResult;
 
 namespace detail {
 struct DynamicAttrStorage;
@@ -68,6 +70,17 @@ public:
   static std::unique_ptr<DynamicAttrDefinition>
   get(StringRef name, ExtensibleDialect *dialect, VerifierFn &&verifier,
       ParserFn &&parser, PrinterFn &&printer);
+
+  /// Sets the verifier function for this attribute. It should emits an error
+  /// message and returns failure if a problem is detected, or returns success
+  /// if everything is ok.
+  void setVerifyFn(VerifierFn &&verify) { verifier = std::move(verify); }
+
+  /// Sets the static hook for parsing this attribute assembly.
+  void setParseFn(ParserFn &&parse) { parser = std::move(parse); }
+
+  /// Sets the static hook for printing this attribute assembly.
+  void setPrintFn(PrinterFn &&print) { printer = std::move(print); }
 
   /// Check that the attribute parameters are valid.
   LogicalResult verify(function_ref<InFlightDiagnostic()> emitError,
@@ -136,7 +149,7 @@ class IsDynamicAttr : public TraitBase<ConcreteType, IsDynamicAttr> {};
 /// A dynamic attribute instance. This is an attribute whose definition is
 /// defined at runtime.
 /// It is possible to check if an attribute is a dynamic attribute using
-/// `my_attr.isa<DynamicAttr>()`, and getting the attribute definition of a
+/// `isa<DynamicAttr>(myAttr)`, and getting the attribute definition of a
 /// dynamic attribute using the `DynamicAttr::getAttrDef` method.
 /// All dynamic attributes have the same storage, which is an array of
 /// attributes.
@@ -214,6 +227,17 @@ public:
   get(StringRef name, ExtensibleDialect *dialect, VerifierFn &&verifier,
       ParserFn &&parser, PrinterFn &&printer);
 
+  /// Sets the verifier function for this type. It should emits an error
+  /// message and returns failure if a problem is detected, or returns success
+  /// if everything is ok.
+  void setVerifyFn(VerifierFn &&verify) { verifier = std::move(verify); }
+
+  /// Sets the static hook for parsing this type assembly.
+  void setParseFn(ParserFn &&parse) { parser = std::move(parse); }
+
+  /// Sets the static hook for printing this type assembly.
+  void setPrintFn(PrinterFn &&print) { printer = std::move(print); }
+
   /// Check that the type parameters are valid.
   LogicalResult verify(function_ref<InFlightDiagnostic()> emitError,
                        ArrayRef<Attribute> params) const {
@@ -282,7 +306,7 @@ class IsDynamicType : public TypeTrait::TraitBase<ConcreteType, IsDynamicType> {
 /// A dynamic type instance. This is a type whose definition is defined at
 /// runtime.
 /// It is possible to check if a type is a dynamic type using
-/// `my_type.isa<DynamicType>()`, and getting the type definition of a dynamic
+/// `isa<DynamicType>(myType)`, and getting the type definition of a dynamic
 /// type using the `DynamicType::getTypeDef` method.
 /// All dynamic types have the same storage, which is an array of attributes.
 class DynamicType
@@ -329,6 +353,78 @@ public:
   /// 'type' or 'type<>' if there is no parameters, or 'type<attr (,attr)*>'.
   void print(AsmPrinter &printer);
 };
+
+/// Base class of traits for dynamic-defined operations.
+class DynamicOpTrait {
+public:
+  virtual LogicalResult verifyTrait(Operation *op) const { return success(); };
+  virtual LogicalResult verifyRegionTrait(Operation *op) const {
+    return success();
+  };
+
+  /// Returns the TypeID of the trait.
+  /// It must be equal to the TypeID of corresponding static trait
+  /// which will be used in `hasTrait(TypeID)`.
+  virtual TypeID getTypeID() const = 0;
+  virtual ~DynamicOpTrait() = default;
+};
+
+/// This class holds a list of traits for dynamic-defined operations.
+class DynamicOpTraitList {
+public:
+  bool insert(std::unique_ptr<DynamicOpTrait> trait) {
+    return traits.try_emplace(trait->getTypeID(), std::move(trait)).second;
+  }
+
+  bool contains(TypeID id) const { return traits.contains(id); }
+
+  LogicalResult verifyTraits(Operation *op) const {
+    for (const auto &[_, trait] : traits) {
+      if (failed(trait->verifyTrait(op)))
+        return failure();
+    }
+    return success();
+  }
+
+  LogicalResult verifyRegionTraits(Operation *op) const {
+    for (const auto &[_, trait] : traits) {
+      if (failed(trait->verifyRegionTrait(op)))
+        return failure();
+    }
+    return success();
+  }
+
+private:
+  llvm::MapVector<TypeID, std::unique_ptr<DynamicOpTrait>> traits;
+};
+
+template <template <typename T> class Trait>
+class DynamicOpTraitImpl : public DynamicOpTrait {
+public:
+  static TypeID getStaticTypeID() { return TypeID::get<Trait>(); }
+  TypeID getTypeID() const override { return getStaticTypeID(); }
+};
+
+namespace DynamicOpTraits {
+
+class IsTerminator : public DynamicOpTraitImpl<OpTrait::IsTerminator> {
+public:
+  LogicalResult verifyTrait(Operation *op) const override {
+    return OpTrait::impl::verifyIsTerminator(op);
+  }
+};
+
+class NoTerminator : public DynamicOpTraitImpl<OpTrait::NoTerminator> {};
+
+class IsIsolatedFromAbove
+    : public DynamicOpTraitImpl<OpTrait::IsIsolatedFromAbove> {
+public:
+  LogicalResult verifyRegionTrait(Operation *op) const override {
+    return OpTrait::impl::verifyIsIsolatedFromAbove(op);
+  }
+};
+
+} // namespace DynamicOpTraits
 
 //===----------------------------------------------------------------------===//
 // Dynamic operation
@@ -413,6 +509,11 @@ public:
     populateDefaultAttrsFn = std::move(populateDefaultAttrs);
   }
 
+  /// Attach a trait to this dynamic-defined op.
+  bool addTrait(std::unique_ptr<DynamicOpTrait> trait) {
+    return traits.insert(std::move(trait));
+  }
+
   LogicalResult foldHook(Operation *op, ArrayRef<Attribute> attrs,
                          SmallVectorImpl<OpFoldResult> &results) final {
     return foldHookFn(op, attrs, results);
@@ -421,7 +522,7 @@ public:
                                    MLIRContext *context) final {
     getCanonicalizationPatternsFn(set, context);
   }
-  bool hasTrait(TypeID id) final { return false; }
+  bool hasTrait(TypeID id) final { return traits.contains(id); }
   OperationName::ParseAssemblyFn getParseAssemblyFn() final {
     return [&](OpAsmParser &parser, OperationState &state) {
       return parseFn(parser, state);
@@ -435,10 +536,47 @@ public:
                      StringRef name) final {
     printFn(op, printer, name);
   }
-  LogicalResult verifyInvariants(Operation *op) final { return verifyFn(op); }
-  LogicalResult verifyRegionInvariants(Operation *op) final {
-    return verifyRegionFn(op);
+  LogicalResult verifyInvariants(Operation *op) final {
+    return failure(failed(traits.verifyTraits(op)) || failed(verifyFn(op)));
   }
+  LogicalResult verifyRegionInvariants(Operation *op) final {
+    return failure(failed(traits.verifyRegionTraits(op)) ||
+                   failed(verifyRegionFn(op)));
+  }
+
+  /// Implementation for properties (unsupported right now here).
+  std::optional<Attribute> getInherentAttr(Operation *op,
+                                           StringRef name) final {
+    llvm::report_fatal_error("Unsupported getInherentAttr on Dynamic dialects");
+  }
+  void setInherentAttr(Operation *op, StringAttr name, Attribute value) final {
+    llvm::report_fatal_error("Unsupported setInherentAttr on Dynamic dialects");
+  }
+  void walkInherentAttrs(Operation *op,
+                         OperationName::InherentAttrVisitor visitor) final {}
+  LogicalResult
+  verifyInherentAttrs(OperationName opName, NamedAttrList &attributes,
+                      function_ref<InFlightDiagnostic()> emitError) final {
+    return success();
+  }
+  int getOpPropertyByteSize() final { return 0; }
+  void initProperties(OperationName opName, PropertyRef storage,
+                      PropertyRef init) final {}
+  void deleteProperties(PropertyRef prop) final {}
+  void populateDefaultProperties(OperationName opName,
+                                 PropertyRef properties) final {}
+
+  LogicalResult
+  setPropertiesFromAttr(OperationName opName, PropertyRef properties,
+                        Attribute attr,
+                        function_ref<InFlightDiagnostic()> emitError) final {
+    emitError() << "extensible Dialects don't support properties";
+    return failure();
+  }
+  Attribute getPropertiesAsAttr(Operation *op) final { return {}; }
+  void copyProperties(PropertyRef lhs, PropertyRef rhs) final {}
+  bool compareProperties(PropertyRef, PropertyRef) final { return true; }
+  llvm::hash_code hashProperties(PropertyRef prop) final { return {}; }
 
 private:
   DynamicOpDefinition(
@@ -461,6 +599,7 @@ private:
   OperationName::FoldHookFn foldHookFn;
   GetCanonicalizationPatternsFn getCanonicalizationPatternsFn;
   OperationName::PopulateDefaultAttrsFn populateDefaultAttrsFn;
+  DynamicOpTraitList traits;
 
   friend ExtensibleDialect;
 };
@@ -489,10 +628,7 @@ public:
 
   /// Returns nullptr if the definition was not found.
   DynamicTypeDefinition *lookupTypeDefinition(StringRef name) const {
-    auto it = nameToDynTypes.find(name);
-    if (it == nameToDynTypes.end())
-      return nullptr;
-    return it->second;
+    return nameToDynTypes.lookup(name);
   }
 
   /// Returns nullptr if the definition was not found.
@@ -505,10 +641,7 @@ public:
 
   /// Returns nullptr if the definition was not found.
   DynamicAttrDefinition *lookupAttrDefinition(StringRef name) const {
-    auto it = nameToDynAttrs.find(name);
-    if (it == nameToDynAttrs.end())
-      return nullptr;
-    return it->second;
+    return nameToDynAttrs.lookup(name);
   }
 
   /// Returns nullptr if the definition was not found.

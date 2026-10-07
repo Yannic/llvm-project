@@ -52,9 +52,9 @@ for.cond.cleanup:                                 ; preds = %for.cond.cleanup.lo
 
 for.body:                                         ; preds = %for.body.lr.ph, %if.end19
   %i.032 = phi i32 [ 1, %for.body.lr.ph ], [ %inc, %if.end19 ]
-  call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %persistent) #4
+  call void @llvm.lifetime.start.p0(ptr nonnull %persistent) #4
   store i32 0, ptr %persistent, align 4
-  call void @llvm.lifetime.start.p0(i64 4, ptr nonnull %personalized) #4
+  call void @llvm.lifetime.start.p0(ptr nonnull %personalized) #4
   store i32 0, ptr %personalized, align 4
   %call = call zeroext i1 @lookupType(ptr noundef nonnull %persistent, ptr noundef nonnull %personalized) #8, !clang.arc.no_objc_arc_exceptions !15
   br i1 %call, label %if.then, label %if.end19
@@ -110,50 +110,18 @@ if.end18:                                         ; preds = %if.else, %if.then13
   br label %if.end19
 
 if.end19:                                         ; preds = %if.end18, %for.body
-  call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %personalized) #4
-  call void @llvm.lifetime.end.p0(i64 4, ptr nonnull %persistent) #4
+  call void @llvm.lifetime.end.p0(ptr nonnull %personalized) #4
+  call void @llvm.lifetime.end.p0(ptr nonnull %persistent) #4
   %inc = add nuw nsw i32 %i.032, 1
   %exitcond.not = icmp eq i32 %inc, %argc
   br i1 %exitcond.not, label %for.cond.cleanup.loopexit, label %for.body
 }
 
-; CHECK-LABEL: define ptr @foo() {
-; CHECK-NOT: @llvm.objc
-; CHECK: ret ptr %
-
-define ptr @foo() {
-  %t = alloca ptr, align 8
-  %v4 = load ptr, ptr @global1, align 8
-  %v5 = tail call ptr @llvm.objc.retain(ptr %v4)
-  store ptr %v4, ptr %t, align 8
-  %v13 = load ptr, ptr @"OBJC_CLASSLIST_REFERENCES_$_", align 8
-  %call78 = call ptr @bar(ptr %v13)
-  call void @llvm.objc.release(ptr %v4)
-  ret ptr %call78
-}
-
-; CHECK-LABEL: define void @test_select(
-; CHECK: call ptr @llvm.objc.retain(
-; CHECK: call void @llvm.objc.release(
-
-define void @test_select(i1 %c0, i1 %c1, ptr %p0, ptr %p1) {
-  %cond = select i1 %c0, ptr %p0, ptr %p1
-  %cond5 = select i1 %c0, ptr %p1, ptr %p0
-  %cond14 = select i1 %c1, ptr %cond5, ptr null
-  call ptr @llvm.objc.retain(ptr %cond14)
-  call void @llvm.objc.release(ptr %cond)
-  ret void
-}
-
-declare ptr @bar(ptr)
-
-declare ptr @llvm.objc.retain(ptr)
+; Function Attrs: argmemonly mustprogress nocallback nofree nosync nounwind willreturn
+declare void @llvm.lifetime.start.p0(ptr nocapture) #2
 
 ; Function Attrs: argmemonly mustprogress nocallback nofree nosync nounwind willreturn
-declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #2
-
-; Function Attrs: argmemonly mustprogress nocallback nofree nosync nounwind willreturn
-declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #2
+declare void @llvm.lifetime.end.p0(ptr nocapture) #2
 
 ; Function Attrs: inaccessiblememonly mustprogress nocallback nofree nosync nounwind willreturn
 declare void @llvm.objc.clang.arc.noop.use(...) #5

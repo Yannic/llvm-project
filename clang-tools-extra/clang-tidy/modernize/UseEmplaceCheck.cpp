@@ -1,4 +1,4 @@
-//===--- UseEmplaceCheck.cpp - clang-tidy----------------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -13,6 +13,10 @@ using namespace clang::ast_matchers;
 namespace clang::tidy::modernize {
 
 namespace {
+AST_MATCHER_P(InitListExpr, initCountLeq, unsigned, N) {
+  return Node.getNumInits() <= N;
+}
+
 // Identical to hasAnyName, except it does not take template specifiers into
 // account. This is used to match the functions names as in
 // DefaultEmplacyFunctions below without caring about the template types of the
@@ -26,36 +30,29 @@ AST_MATCHER_P(NamedDecl, hasAnyNameIgnoringTemplates, std::vector<StringRef>,
   // example, it'll transform a::b<c<d>>::e<f> to simply a::b::e.
   std::string FullNameTrimmed;
   int Depth = 0;
-  for (const auto &Character : FullName) {
-    if (Character == '<') {
+  for (const auto &Character : FullName)
+    if (Character == '<')
       ++Depth;
-    } else if (Character == '>') {
+    else if (Character == '>')
       --Depth;
-    } else if (Depth == 0) {
+    else if (Depth == 0)
       FullNameTrimmed.append(1, Character);
-    }
-  }
 
   // This loop is taken from HasNameMatcher::matchesNodeFullSlow in
   // clang/lib/ASTMatchers/ASTMatchersInternal.cpp and checks whether
   // FullNameTrimmed matches any of the given Names.
   const StringRef FullNameTrimmedRef = FullNameTrimmed;
-  for (const StringRef Pattern : Names) {
-    if (Pattern.startswith("::")) {
-      if (FullNameTrimmed == Pattern)
-        return true;
-    } else if (FullNameTrimmedRef.endswith(Pattern) &&
-               FullNameTrimmedRef.drop_back(Pattern.size()).endswith("::")) {
-      return true;
-    }
-  }
-
-  return false;
+  return llvm::any_of(Names, [&](const StringRef Pattern) {
+    if (Pattern.starts_with("::"))
+      return FullNameTrimmed == Pattern;
+    return FullNameTrimmedRef.ends_with(Pattern) &&
+           FullNameTrimmedRef.drop_back(Pattern.size()).ends_with("::");
+  });
 }
 
 // Checks if the given matcher is the last argument of the given CallExpr.
-AST_MATCHER_P(CallExpr, hasLastArgument,
-              clang::ast_matchers::internal::Matcher<Expr>, InnerMatcher) {
+AST_MATCHER_P(CallExpr, hasLastArgument, ast_matchers::internal::Matcher<Expr>,
+              InnerMatcher) {
   if (Node.getNumArgs() == 0)
     return false;
 
@@ -67,11 +64,9 @@ AST_MATCHER_P(CallExpr, hasLastArgument,
 // function had parameters defined (this is useful to check if there is only one
 // variadic argument).
 AST_MATCHER(CXXMemberCallExpr, hasSameNumArgsAsDeclNumParams) {
-  if (Node.getMethodDecl()->isFunctionTemplateSpecialization())
-    return Node.getNumArgs() == Node.getMethodDecl()
-                                    ->getPrimaryTemplate()
-                                    ->getTemplatedDecl()
-                                    ->getNumParams();
+  if (const FunctionTemplateDecl *Primary =
+          Node.getMethodDecl()->getPrimaryTemplate())
+    return Node.getNumArgs() == Primary->getTemplatedDecl()->getNumParams();
 
   return Node.getNumArgs() == Node.getMethodDecl()->getNumParams();
 }
@@ -79,18 +74,44 @@ AST_MATCHER(CXXMemberCallExpr, hasSameNumArgsAsDeclNumParams) {
 AST_MATCHER(DeclRefExpr, hasExplicitTemplateArgs) {
   return Node.hasExplicitTemplateArgs();
 }
+} // namespace
 
-const auto DefaultContainersWithPushBack =
+// Helper Matcher which applies the given QualType Matcher either directly or by
+// resolving a pointer type to its pointee. Used to match v.push_back() as well
+// as p->push_back().
+static auto hasTypeOrPointeeType(
+    const ast_matchers::internal::Matcher<QualType> &TypeMatcher) {
+  return anyOf(hasType(TypeMatcher),
+               hasType(pointerType(pointee(TypeMatcher))));
+}
+
+// Matches if the node has canonical type matching any of the given names.
+static auto hasWantedType(llvm::ArrayRef<StringRef> TypeNames) {
+  return hasCanonicalType(hasDeclaration(cxxRecordDecl(hasAnyName(TypeNames))));
+}
+
+// Matches member call expressions of the named method on the listed container
+// types.
+static auto
+cxxMemberCallExprOnContainer(StringRef MethodName,
+                             llvm::ArrayRef<StringRef> ContainerNames) {
+  return cxxMemberCallExpr(
+      hasDeclaration(functionDecl(hasName(MethodName))),
+      on(hasTypeOrPointeeType(hasWantedType(ContainerNames))));
+}
+
+static constexpr char DefaultContainersWithPushBack[] =
     "::std::vector; ::std::list; ::std::deque";
-const auto DefaultContainersWithPush =
+static constexpr char DefaultContainersWithPush[] =
     "::std::stack; ::std::queue; ::std::priority_queue";
-const auto DefaultContainersWithPushFront =
+static constexpr char DefaultContainersWithPushFront[] =
     "::std::forward_list; ::std::list; ::std::deque";
-const auto DefaultSmartPointers =
+static constexpr char DefaultSmartPointers[] =
     "::std::shared_ptr; ::std::unique_ptr; ::std::auto_ptr; ::std::weak_ptr";
-const auto DefaultTupleTypes = "::std::pair; ::std::tuple";
-const auto DefaultTupleMakeFunctions = "::std::make_pair; ::std::make_tuple";
-const auto DefaultEmplacyFunctions =
+static constexpr char DefaultTupleTypes[] = "::std::pair; ::std::tuple";
+static constexpr char DefaultTupleMakeFunctions[] =
+    "::std::make_pair; ::std::make_tuple";
+static constexpr char DefaultEmplacyFunctions[] =
     "vector::emplace_back; vector::emplace;"
     "deque::emplace; deque::emplace_front; deque::emplace_back;"
     "forward_list::emplace_after; forward_list::emplace_front;"
@@ -104,7 +125,6 @@ const auto DefaultEmplacyFunctions =
     "unordered_multiset::emplace; unordered_multiset::emplace_hint;"
     "unordered_multimap::emplace; unordered_multimap::emplace_hint;"
     "stack::emplace; queue::emplace; priority_queue::emplace";
-} // namespace
 
 UseEmplaceCheck::UseEmplaceCheck(StringRef Name, ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context), IgnoreImplicitConstructors(Options.get(
@@ -130,27 +150,20 @@ void UseEmplaceCheck::registerMatchers(MatchFinder *Finder) {
   // because this requires special treatment (it could cause performance
   // regression)
   // + match for emplace calls that should be replaced with insertion
-  auto CallPushBack = cxxMemberCallExpr(
-      hasDeclaration(functionDecl(hasName("push_back"))),
-      on(hasType(hasCanonicalType(
-          hasDeclaration(cxxRecordDecl(hasAnyName(ContainersWithPushBack)))))));
+  const auto CallPushBack =
+      cxxMemberCallExprOnContainer("push_back", ContainersWithPushBack);
+  const auto CallPush =
+      cxxMemberCallExprOnContainer("push", ContainersWithPush);
+  const auto CallPushFront =
+      cxxMemberCallExprOnContainer("push_front", ContainersWithPushFront);
 
-  auto CallPush =
-      cxxMemberCallExpr(hasDeclaration(functionDecl(hasName("push"))),
-                        on(hasType(hasCanonicalType(hasDeclaration(
-                            cxxRecordDecl(hasAnyName(ContainersWithPush)))))));
-
-  auto CallPushFront = cxxMemberCallExpr(
-      hasDeclaration(functionDecl(hasName("push_front"))),
-      on(hasType(hasCanonicalType(hasDeclaration(
-          cxxRecordDecl(hasAnyName(ContainersWithPushFront)))))));
-
-  auto CallEmplacy = cxxMemberCallExpr(
+  const auto CallEmplacy = cxxMemberCallExpr(
       hasDeclaration(
           functionDecl(hasAnyNameIgnoringTemplates(EmplacyFunctions))),
-      on(hasType(hasCanonicalType(hasDeclaration(has(typedefNameDecl(
-          hasName("value_type"), hasType(type(hasUnqualifiedDesugaredType(
-                                     recordType().bind("value_type")))))))))));
+      on(hasTypeOrPointeeType(
+          hasCanonicalType(hasDeclaration(has(typedefNameDecl(
+              hasName("value_type"),
+              hasType(hasCanonicalType(recordType().bind("value_type"))))))))));
 
   // We can't replace push_backs of smart pointer because
   // if emplacement fails (f.e. bad_alloc in vector) we will have leak of
@@ -165,7 +178,8 @@ void UseEmplaceCheck::registerMatchers(MatchFinder *Finder) {
 
   // Initializer list can't be passed to universal reference.
   auto InitializerListAsArgument = hasAnyArgument(
-      ignoringImplicit(cxxConstructExpr(isListInitialization())));
+      ignoringImplicit(allOf(cxxConstructExpr(isListInitialization()),
+                             unless(cxxTemporaryObjectExpr()))));
 
   // We could have leak of resource.
   auto NewExprAsArgument = hasAnyArgument(ignoringImplicit(cxxNewExpr()));
@@ -182,7 +196,7 @@ void UseEmplaceCheck::registerMatchers(MatchFinder *Finder) {
 
   // FIXME: Discard 0/NULL (as nullptr), static inline const data members,
   // overloaded functions and template names.
-  auto SoughtConstructExpr =
+  const auto SoughtConstructExpr =
       cxxConstructExpr(
           unless(anyOf(IsCtorOfSmartPtr, HasInitList, BitFieldAsArgument,
                        InitializerListAsArgument, NewExprAsArgument,
@@ -190,7 +204,18 @@ void UseEmplaceCheck::registerMatchers(MatchFinder *Finder) {
           .bind("ctor");
   auto HasConstructExpr = has(ignoringImplicit(SoughtConstructExpr));
 
-  auto MakeTuple = ignoringImplicit(
+  // allow for T{} to be replaced, even if no CTOR is declared
+  auto HasConstructInitListExpr = has(initListExpr(
+      initCountLeq(1), anyOf(allOf(has(SoughtConstructExpr),
+                                   has(cxxConstructExpr(argumentCountIs(0)))),
+                             has(cxxBindTemporaryExpr(
+                                 has(SoughtConstructExpr),
+                                 has(cxxConstructExpr(argumentCountIs(0))))))));
+  auto HasBracedInitListExpr =
+      anyOf(has(cxxBindTemporaryExpr(HasConstructInitListExpr)),
+            HasConstructInitListExpr);
+
+  const auto MakeTuple = ignoringImplicit(
       callExpr(callee(expr(ignoringImplicit(declRefExpr(
                    unless(hasExplicitTemplateArgs()),
                    to(functionDecl(hasAnyName(TupleMakeFunctions))))))))
@@ -198,23 +223,38 @@ void UseEmplaceCheck::registerMatchers(MatchFinder *Finder) {
 
   // make_something can return type convertible to container's element type.
   // Allow the conversion only on containers of pairs.
-  auto MakeTupleCtor = ignoringImplicit(cxxConstructExpr(
+  const auto MakeTupleCtor = ignoringImplicit(cxxConstructExpr(
       has(materializeTemporaryExpr(MakeTuple)),
       hasDeclaration(cxxConstructorDecl(ofClass(hasAnyName(TupleTypes))))));
 
-  auto SoughtParam = materializeTemporaryExpr(
-      anyOf(has(MakeTuple), has(MakeTupleCtor), HasConstructExpr,
-            has(cxxFunctionalCastExpr(HasConstructExpr))));
+  const auto SoughtParam =
+      materializeTemporaryExpr(
+          anyOf(has(MakeTuple), has(MakeTupleCtor), HasConstructExpr,
+                HasBracedInitListExpr,
+                has(cxxFunctionalCastExpr(HasConstructExpr)),
+                has(cxxFunctionalCastExpr(HasBracedInitListExpr))))
+          .bind("temporary_expr");
 
   auto HasConstructExprWithValueTypeType =
       has(ignoringImplicit(cxxConstructExpr(
-          SoughtConstructExpr, hasType(type(hasUnqualifiedDesugaredType(
-                                   type(equalsBoundNode("value_type"))))))));
+          SoughtConstructExpr,
+          hasType(hasCanonicalType(type(equalsBoundNode("value_type")))))));
 
-  auto HasConstructExprWithValueTypeTypeAsLastArgument =
-      hasLastArgument(materializeTemporaryExpr(anyOf(
-          HasConstructExprWithValueTypeType,
-          has(cxxFunctionalCastExpr(HasConstructExprWithValueTypeType)))));
+  auto HasBracedInitListWithValueTypeType = anyOf(
+      allOf(HasConstructInitListExpr,
+            has(initListExpr(hasType(
+                hasCanonicalType(type(equalsBoundNode("value_type"))))))),
+      has(cxxBindTemporaryExpr(HasConstructInitListExpr,
+                               has(initListExpr(hasType(hasCanonicalType(
+                                   type(equalsBoundNode("value_type")))))))));
+
+  const auto HasConstructExprWithValueTypeTypeAsLastArgument = hasLastArgument(
+      materializeTemporaryExpr(
+          anyOf(HasConstructExprWithValueTypeType,
+                HasBracedInitListWithValueTypeType,
+                has(cxxFunctionalCastExpr(HasConstructExprWithValueTypeType)),
+                has(cxxFunctionalCastExpr(HasBracedInitListWithValueTypeType))))
+          .bind("temporary_expr"));
 
   Finder->addMatcher(
       traverse(TK_AsIs, cxxMemberCallExpr(CallPushBack, has(SoughtParam),
@@ -244,19 +284,17 @@ void UseEmplaceCheck::registerMatchers(MatchFinder *Finder) {
       this);
 
   Finder->addMatcher(
-      traverse(
-          TK_AsIs,
-          cxxMemberCallExpr(
-              CallEmplacy,
-              on(hasType(cxxRecordDecl(has(typedefNameDecl(
-                  hasName("value_type"),
-                  hasType(type(
-                      hasUnqualifiedDesugaredType(recordType(hasDeclaration(
-                          cxxRecordDecl(hasAnyName(SmallVector<StringRef, 2>(
-                              TupleTypes.begin(), TupleTypes.end()))))))))))))),
-              has(MakeTuple), hasSameNumArgsAsDeclNumParams(),
-              unless(isInTemplateInstantiation()))
-              .bind("emplacy_call")),
+      traverse(TK_AsIs,
+               cxxMemberCallExpr(
+                   CallEmplacy,
+                   on(hasType(cxxRecordDecl(has(typedefNameDecl(
+                       hasName("value_type"),
+                       hasType(hasCanonicalType(recordType(hasDeclaration(
+                           cxxRecordDecl(hasAnyName(SmallVector<StringRef, 2>(
+                               TupleTypes.begin(), TupleTypes.end())))))))))))),
+                   has(MakeTuple), hasSameNumArgsAsDeclNumParams(),
+                   unless(isInTemplateInstantiation()))
+                   .bind("emplacy_call")),
       this);
 }
 
@@ -270,17 +308,16 @@ void UseEmplaceCheck::check(const MatchFinder::MatchResult &Result) {
       Result.Nodes.getNodeAs<CXXMemberCallExpr>("emplacy_call");
   const auto *CtorCall = Result.Nodes.getNodeAs<CXXConstructExpr>("ctor");
   const auto *MakeCall = Result.Nodes.getNodeAs<CallExpr>("make");
+  const auto *TemporaryExpr =
+      Result.Nodes.getNodeAs<MaterializeTemporaryExpr>("temporary_expr");
 
   const CXXMemberCallExpr *Call = [&]() {
-    if (PushBackCall) {
+    if (PushBackCall)
       return PushBackCall;
-    }
-    if (PushCall) {
+    if (PushCall)
       return PushCall;
-    }
-    if (PushFrontCall) {
+    if (PushFrontCall)
       return PushFrontCall;
-    }
     return EmplacyCall;
   }();
 
@@ -294,9 +331,11 @@ void UseEmplaceCheck::check(const MatchFinder::MatchResult &Result) {
   const auto FunctionNameSourceRange = CharSourceRange::getCharRange(
       Call->getExprLoc(), Call->getArg(0)->getExprLoc());
 
-  auto Diag =
+  const auto Diag =
       EmplacyCall
-          ? diag(CtorCall ? CtorCall->getBeginLoc() : MakeCall->getBeginLoc(),
+          ? diag(TemporaryExpr ? TemporaryExpr->getBeginLoc()
+                 : CtorCall    ? CtorCall->getBeginLoc()
+                               : MakeCall->getBeginLoc(),
                  "unnecessary temporary object created while calling %0")
           : diag(Call->getExprLoc(), "use emplace%select{|_back|_front}0 "
                                      "instead of push%select{|_back|_front}0");
@@ -335,16 +374,22 @@ void UseEmplaceCheck::check(const MatchFinder::MatchResult &Result) {
   if (CallParensRange.getBegin().isInvalid())
     return;
 
-  const SourceLocation ExprBegin =
-      CtorCall ? CtorCall->getExprLoc() : MakeCall->getExprLoc();
+  // FIXME: Will there ever be a CtorCall, if there is no TemporaryExpr?
+  const SourceLocation ExprBegin = TemporaryExpr ? TemporaryExpr->getExprLoc()
+                                   : CtorCall    ? CtorCall->getExprLoc()
+                                                 : MakeCall->getExprLoc();
 
   // Range for constructor name and opening brace.
   const auto ParamCallSourceRange =
       CharSourceRange::getTokenRange(ExprBegin, CallParensRange.getBegin());
 
+  // Range for constructor closing brace and end of temporary expr.
+  const auto EndCallSourceRange = CharSourceRange::getTokenRange(
+      CallParensRange.getEnd(),
+      TemporaryExpr ? TemporaryExpr->getEndLoc() : CallParensRange.getEnd());
+
   Diag << FixItHint::CreateRemoval(ParamCallSourceRange)
-       << FixItHint::CreateRemoval(CharSourceRange::getTokenRange(
-              CallParensRange.getEnd(), CallParensRange.getEnd()));
+       << FixItHint::CreateRemoval(EndCallSourceRange);
 
   if (MakeCall && EmplacyCall) {
     // Remove extra left parenthesis

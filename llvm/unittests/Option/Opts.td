@@ -4,6 +4,9 @@ def OptFlag1 : OptionFlag;
 def OptFlag2 : OptionFlag;
 def OptFlag3 : OptionFlag;
 
+def SubtoolVis : OptionVisibility;
+def MultiLineVis: OptionVisibility;
+
 def A : Flag<["-"], "A">, HelpText<"The A option">, Flags<[OptFlag1]>;
 def AB : Flag<["-"], "AB">;
 def B : Joined<["-"], "B">, HelpText<"The B option">, MetaVarName<"B">, Flags<[OptFlag2]>;
@@ -23,8 +26,14 @@ def I : Flag<["-"], "I">, Alias<H>, Group<my_group>;
 
 def J : Flag<["-"], "J">, Alias<B>, AliasArgs<["foo"]>;
 def Joo : Flag<["-"], "Joo">, Alias<B>, AliasArgs<["bar"]>;
+def Jmulti : Flag<["-"], "Jmulti">, Alias<D>, AliasArgs<["foo", "bar"]>;
 
 def K : Flag<["-"], "K">, Alias<B>;
+
+def ValuesInline : Joined<["-"], "values-inline=">, Values<"inline1,inline2">;
+def ValuesFromCode : Joined<["-"], "values-from-code=">, ValuesCode<[{
+  static constexpr const char VALUES_CODE [] = "code1,code2";
+}]>;
 
 def Slurp : Option<["-"], "slurp", KIND_REMAINING_ARGS>;
 
@@ -35,6 +44,13 @@ def Blarn : Flag<["--", "-"], "blarn">, HelpText<"The blarn option">, Flags<[Opt
 def Cramb : Joined<["/"], "cramb:">, HelpText<"The cramb option">, MetaVarName<"CRAMB">, Flags<[OptFlag1]>;
 def Doopf1 : Flag<["-"], "doopf1">, HelpText<"The doopf1 option">, Flags<[OptFlag1]>;
 def Doopf2 : Flag<["-"], "doopf2">, HelpText<"The doopf2 option">, Flags<[OptFlag2]>;
+def Xyzzy1 : Flag<["-"], "xyzzy1">, HelpText<"The xyzzy1 option">, Visibility<[SubtoolVis]>;
+def Xyzzy2 : Flag<["-"], "xyzzy2">, HelpText<"The xyzzy2 option">, Visibility<[DefaultVis]>;
+def Xyzzy3 : Flag<["-"], "xyzzy3">, HelpText<"The xyzzy3 option"> {
+  let HelpTextsForVariants = [
+    HelpTextVariant<[SubtoolVis], "The xyzzy3 option for the subtool">,
+    HelpTextVariant<[MultiLineVis], "The xyzzy3 option for multiline">];
+}
 def Ermgh : Joined<["--"], "ermgh">, HelpText<"The ermgh option">, MetaVarName<"ERMGH">, Flags<[OptFlag1]>;
 def Fjormp : Flag<["--"], "fjormp">, HelpText<"The fjormp option">, Flags<[OptFlag1]>;
 
@@ -43,7 +59,17 @@ def Glorrmp_eq : Flag<["--"], "glorrmp=">;
 def Blurmpq : Flag<["--"], "blurmp">;
 def Blurmpq_eq : Flag<["--"], "blurmp=">;
 
-def DashDash : Option<["--"], "", KIND_REMAINING_ARGS>;
+def Q : Flag<["-"], "Q">, Visibility<[SubtoolVis]>;
+def R : Flag<["-"], "R">, Visibility<[DefaultVis, SubtoolVis]>;
+
+def multiline_help : Flag<["-"], "multiline-help">, HelpText<"This a help text that has\nmultiple lines in it">, Visibility<[MultiLineVis]>;
+
+def multiline_help_long :
+  Flag<["-"], "multiline-help-with-long-name">,
+  HelpText<"This a help text that has\n"
+           "multiple lines in it\n"
+           "and a long name">,
+  Visibility<[MultiLineVis]>;
 
 class XOpts<string base> : KeyPathAndMacro<"X->", base> {}
 

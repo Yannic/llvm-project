@@ -15,6 +15,10 @@ TEST_CLANG_DIAGNOSTIC_IGNORED("-Wprivate-header")
 #include <__iterator/iterator_with_data.h>
 TEST_DIAGNOSTIC_POP
 
+#include <cassert>
+#include <iterator>
+#include <utility>
+
 #include "test_iterators.h"
 
 static_assert(std::forward_iterator<std::__iterator_with_data<forward_iterator<int*>, int>>);
@@ -36,4 +40,6 @@ constexpr bool test() {
 int main(int, char**) {
   test();
   static_assert(test());
+
+  return 0;
 }

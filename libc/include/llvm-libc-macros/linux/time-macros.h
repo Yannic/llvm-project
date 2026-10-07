@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef __LLVM_LIBC_MACROS_LINUX_TIME_MACROS_H
-#define __LLVM_LIBC_MACROS_LINUX_TIME_MACROS_H
+#ifndef LLVM_LIBC_MACROS_LINUX_TIME_MACROS_H
+#define LLVM_LIBC_MACROS_LINUX_TIME_MACROS_H
 
 // clock type macros
 #define CLOCK_REALTIME 0
@@ -23,4 +23,7 @@
 
 #define CLOCKS_PER_SEC 1000000
 
-#endif //__LLVM_LIBC_MACROS_LINUX_TIME_MACROS_H
+// timer flags
+#define TIMER_ABSTIME 1
+
+#endif // LLVM_LIBC_MACROS_LINUX_TIME_MACROS_H

@@ -8,17 +8,12 @@
 
 // <locale>
 
-// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DISABLE_DEPRECATION_WARNINGS
+// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DISABLE_DEPRECATION_WARNINGS -D_LIBCPP_ENABLE_CXX26_REMOVED_CODECVT -D_LIBCPP_ENABLE_CXX26_REMOVED_WSTRING_CONVERT
 
 // wbuffer_convert<Codecvt, Elem, Tr>
 
-// wbuffer_convert(streambuf* bytebuf = 0, Codecvt* pcvt = new Codecvt,
-//                 state_type state = state_type());          // before C++14
-// explicit wbuffer_convert(streambuf* bytebuf = nullptr, Codecvt* pcvt = new Codecvt,
-//                          state_type state = state_type()); // before C++20
-// wbuffer_convert() : wbuffer_convert(nullptr) {} // C++20
-// explicit wbuffer_convert(streambuf* bytebuf, Codecvt* pcvt = new Codecvt,
-//                          state_type state = state_type()); // C++20
+// wbuffer_convert() : wbuffer_convert(nullptr) {}
+// explicit wbuffer_convert(streambuf* bytebuf, Codecvt* pcvt = new Codecvt, state_type state = state_type());
 
 // XFAIL: no-wide-characters
 
@@ -37,10 +32,8 @@ int main(int, char**)
 {
     globalMemCounter.reset();
     typedef std::wbuffer_convert<std::codecvt_utf8<wchar_t> > B;
-#if TEST_STD_VER > 11
     static_assert(!std::is_convertible<std::streambuf*, B>::value, "");
-    static_assert( std::is_constructible<B, std::streambuf*>::value, "");
-#endif
+    static_assert(std::is_constructible<B, std::streambuf*>::value, "");
     {
         B b;
         assert(b.rdbuf() == nullptr);

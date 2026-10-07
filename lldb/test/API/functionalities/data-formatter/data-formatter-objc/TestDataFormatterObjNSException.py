@@ -13,26 +13,28 @@ from ObjCDataFormatterTestCase import ObjCDataFormatterTestCase
 
 
 class ObjCDataFormatterNSException(ObjCDataFormatterTestCase):
+    SHARED_BUILD_TESTCASE = False
 
     def test_nsexception_with_run_command(self):
         """Test formatters for NSException."""
         self.appkit_tester_impl(self.nsexception_data_formatter_commands, True)
 
-    @skipUnlessDarwin
+    @requireDarwin
     def test_nsexception_with_run_command_no_const(self):
         """Test formatters for NSException."""
         self.appkit_tester_impl(self.nsexception_data_formatter_commands, False)
 
     def nsexception_data_formatter_commands(self):
         self.expect(
-            'frame variable except0 except1 except2 except3',
+            "frame variable except0 except1 except2 except3",
             substrs=[
-                '(NSException *) except0 = ',
+                "(NSException *) except0 = ",
                 '@"First"',
-                '(NSException *) except1 = ',
+                "(NSException *) except1 = ",
                 '@"Second"',
-                '(NSException *) except2 = ',
+                "(NSException *) except2 = ",
                 ' @"Third"',
-                '(NSException *) except3 = ',
-                ' @"Fourth"'
-            ])
+                "(NSException *) except3 = ",
+                ' @"Fourth"',
+            ],
+        )

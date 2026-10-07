@@ -58,14 +58,38 @@ TEST(Symbolizer, ExtractTokenUpToDelimiter) {
 TEST(Symbolizer, DemangleSwiftAndCXX) {
   // Swift names are not demangled in default llvm build because Swift
   // runtime is not linked in.
-  EXPECT_STREQ("_TtSd", DemangleSwiftAndCXX("_TtSd"));
+  EXPECT_STREQ(nullptr, DemangleSwiftAndCXX("_TtSd"));
   // Check that the rest demangles properly.
   EXPECT_STREQ("f1(char*, int)", DemangleSwiftAndCXX("_Z2f1Pci"));
 #if !SANITIZER_FREEBSD // QoI issue with libcxxrt on FreeBSD
-  EXPECT_STREQ("foo", DemangleSwiftAndCXX("foo"));
+  EXPECT_STREQ(nullptr, DemangleSwiftAndCXX("foo"));
 #endif
-  EXPECT_STREQ("", DemangleSwiftAndCXX(""));
+  EXPECT_STREQ(nullptr, DemangleSwiftAndCXX(""));
 }
 #endif
+
+#if SANITIZER_POSIX
+namespace {
+class TestSymbolizerProcess final : public SymbolizerProcess {
+ public:
+  TestSymbolizerProcess() : SymbolizerProcess("/invalid/symbolizer/path") {}
+
+ private:
+  bool ReachedEndOfOutput(const char*, uptr) const override { return true; }
+};
+}  // namespace
+
+// A symbolizer that closes its stdout yields a 0-byte (EOF) read. That must be
+// reported as a failure, not silently accepted as success. Regression test for
+// the shadowed `ret` in SymbolizerProcess::ReadFromSymbolizer.
+TEST(Symbolizer, ReadFromSymbolizerReportsEofAsFailure) {
+  fd_t fd = OpenFile("/dev/null", RdOnly);
+  ASSERT_NE(fd, kInvalidFd);
+  TestSymbolizerProcess symbolizer;
+  symbolizer.input_fd_ = fd;
+  EXPECT_FALSE(symbolizer.ReadFromSymbolizer());
+  CloseFile(fd);
+}
+#endif  // SANITIZER_POSIX
 
 }  // namespace __sanitizer

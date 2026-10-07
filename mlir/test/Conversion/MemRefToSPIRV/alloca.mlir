@@ -16,7 +16,6 @@ module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader
 //       CHECK:   %[[STOREPTR:.+]] = spirv.AccessChain %[[VAR]]
 //       CHECK:   spirv.Store "Function" %[[STOREPTR]], %[[VAL]] : f32
 
-
 // -----
 
 module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader], []>, #spirv.resource_limits<>>} {
@@ -49,6 +48,25 @@ module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader
 // -----
 
 module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader], []>, #spirv.resource_limits<>>} {
+  func.func @nested_alloca(%condition: i1, %index: index) {
+    scf.if %condition {
+      %array = memref.alloca() : memref<4xf32, #spirv.storage_class<Function>>
+      %value = memref.load %array[%index] : memref<4xf32, #spirv.storage_class<Function>>
+      memref.store %value, %array[%index] : memref<4xf32, #spirv.storage_class<Function>>
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: func @nested_alloca
+// CHECK: %[[ARRAY:.+]] = spirv.Variable
+// CHECK: scf.if
+// CHECK: spirv.Load "Function" {{.*}} : f32
+// CHECK: spirv.Store "Function" {{.*}} : f32
+
+// -----
+
+module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader], []>, #spirv.resource_limits<>>} {
   // CHECK-LABEL: func @alloc_dynamic_size
   func.func @alloc_dynamic_size(%arg0 : index) -> f32 {
     // CHECK: memref.alloca
@@ -69,3 +87,15 @@ module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader
     return %1: f32
   }
 }
+
+// -----
+
+module attributes {spirv.target_env = #spirv.target_env<#spirv.vce<v1.3, [Shader], []>, #spirv.resource_limits<>>} {
+  func.func @zero_size() {
+    %0 = memref.alloca() : memref<0xf32, #spirv.storage_class<Function>>
+    return
+  }
+}
+
+// Zero-sized allocations are not handled yet. Just make sure we do not crash.
+// CHECK-LABEL: func @zero_size

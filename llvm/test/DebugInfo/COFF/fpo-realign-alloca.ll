@@ -1,4 +1,5 @@
 ; RUN: llc < %s | FileCheck %s
+; RUN: llc -mtriple=i686-windows-msvc < %s -filetype=obj | llvm-readobj --codeview - | FileCheck %s --check-prefix=OBJ
 
 ; C source:
 ; void usethings(ptr, ptr p);
@@ -19,8 +20,8 @@
 ; CHECK:         .cv_fpo_pushreg %esi
 ; CHECK:         andl    $-16, %esp
 ; CHECK:         .cv_fpo_stackalign      16
-; CHECK:         subl    $32, %esp
-; CHECK:         .cv_fpo_stackalloc      32
+; CHECK:         subl    $16, %esp
+; CHECK:         .cv_fpo_stackalloc      16
 ; CHECK:         .cv_fpo_endprologue
 ; CHECK:         movl    %esp, %esi
 ; CHECK:         leal    8(%esi),
@@ -33,6 +34,15 @@
 ; CHECK:         retl
 ; CHECK:         .cv_fpo_endproc
 
+; OBJ-LABEL:     FunctionType: realign_and_alloca (0x1002)
+; OBJ-NEXT:      CodeOffset: _realign_and_alloca+0x0
+; OBJ-NEXT:      Segment: 0x0
+; OBJ-NEXT:      Flags [ (0x81)
+; OBJ-NEXT:        HasFP (0x1)
+; OBJ-NEXT:        HasOptimizedDebugInfo (0x80)
+; OBJ-NEXT:      ]
+; OBJ-NEXT:      DisplayName: realign_and_alloca
+; OBJ-NEXT:      LinkageName: _realign_and_alloca
 
 ; ModuleID = 't.c'
 source_filename = "t.c"
@@ -66,9 +76,9 @@ declare void @llvm.lifetime.end.p0(i64, ptr nocapture) #1
 ; Function Attrs: nounwind readnone speculatable
 declare void @llvm.dbg.value(metadata, metadata, metadata) #3
 
-attributes #0 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #1 = { argmemonly nounwind }
-attributes #2 = { "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #2 = { "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #3 = { nounwind readnone speculatable }
 attributes #4 = { nounwind }
 

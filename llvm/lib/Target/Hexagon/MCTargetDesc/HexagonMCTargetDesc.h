@@ -16,7 +16,6 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/CommandLine.h"
 #include <cstdint>
-#include <string>
 
 #define Hexagon_POINTER_SIZE 4
 
@@ -66,7 +65,6 @@ extern cl::opt<bool> HexagonDisableDuplex;
 extern const InstrStage HexagonStages[];
 
 MCInstrInfo *createHexagonMCInstrInfo();
-MCRegisterInfo *createHexagonMCRegisterInfo(StringRef TT);
 
 namespace Hexagon_MC {
   StringRef selectHexagonCPU(StringRef CPU);
@@ -82,7 +80,11 @@ namespace Hexagon_MC {
   unsigned GetELFFlags(const MCSubtargetInfo &STI);
 
   llvm::ArrayRef<MCPhysReg> GetVectRegRev();
-}
+
+  std::optional<unsigned> getHVXVersion(const FeatureBitset &Features);
+
+  unsigned getArchVersion(const FeatureBitset &Features);
+  } // namespace Hexagon_MC
 
 MCCodeEmitter *createHexagonMCCodeEmitter(const MCInstrInfo &MCII,
                                           MCContext &MCT);

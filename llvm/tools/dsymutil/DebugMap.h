@@ -21,15 +21,17 @@
 #ifndef LLVM_TOOLS_DSYMUTIL_DEBUGMAP_H
 #define LLVM_TOOLS_DSYMUTIL_DEBUGMAP_H
 
+#include "BinaryHolder.h"
+#include "RelocationMap.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Support/Chrono.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/YAMLTraits.h"
+#include "llvm/TargetParser/Triple.h"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +48,41 @@ class raw_ostream;
 namespace dsymutil {
 
 class DebugMapObject;
+class DebugMapObjectFilter;
+
+class DebugMapFilter {
+  using ObjectContainer = std::vector<std::unique_ptr<DebugMapObjectFilter>>;
+
+public:
+  virtual ~DebugMapFilter() = default;
+  using const_iterator = ObjectContainer::const_iterator;
+
+  iterator_range<const_iterator> objects() const {
+    return make_range(begin(), end());
+  }
+
+  const_iterator begin() const { return Objects.begin(); }
+
+  const_iterator end() const { return Objects.end(); }
+
+protected:
+  std::vector<std::unique_ptr<DebugMapObjectFilter>> Objects;
+
+private:
+  friend class DebugMap;
+
+  /// For YAML IO support.
+  ///@{
+  friend yaml::MappingTraits<std::unique_ptr<DebugMapFilter>>;
+  friend yaml::MappingTraits<DebugMapFilter>;
+
+  DebugMapFilter() = default;
+
+public:
+  DebugMapFilter(DebugMapFilter &&) = default;
+  DebugMapFilter &operator=(DebugMapFilter &&) = default;
+  ///@}
+};
 
 /// The DebugMap object stores the list of object files to query for debug
 /// information along with the mapping between the symbols' addresses in the
@@ -71,13 +108,18 @@ class DebugMapObject;
 ///             DIE.discardSubtree();
 ///     }
 /// }
-class DebugMap {
+class DebugMap : public DebugMapFilter {
   Triple BinaryTriple;
   std::string BinaryPath;
   std::vector<uint8_t> BinaryUUID;
   using ObjectContainer = std::vector<std::unique_ptr<DebugMapObject>>;
 
-  ObjectContainer Objects;
+  ObjectContainer &getObjects() {
+    return reinterpret_cast<ObjectContainer &>(Objects);
+  }
+  const ObjectContainer &getObjects() const {
+    return reinterpret_cast<const ObjectContainer &>(Objects);
+  }
 
   /// For YAML IO support.
   ///@{
@@ -89,9 +131,7 @@ class DebugMap {
 
 public:
   DebugMap(const Triple &BinaryTriple, StringRef BinaryPath,
-           ArrayRef<uint8_t> BinaryUUID = ArrayRef<uint8_t>())
-      : BinaryTriple(BinaryTriple), BinaryPath(std::string(BinaryPath)),
-        BinaryUUID(BinaryUUID.begin(), BinaryUUID.end()) {}
+           ArrayRef<uint8_t> BinaryUUID = ArrayRef<uint8_t>());
 
   using const_iterator = ObjectContainer::const_iterator;
 
@@ -99,9 +139,9 @@ public:
     return make_range(begin(), end());
   }
 
-  const_iterator begin() const { return Objects.begin(); }
+  const_iterator begin() const { return getObjects().begin(); }
 
-  const_iterator end() const { return Objects.end(); }
+  const_iterator end() const { return getObjects().end(); }
 
   unsigned getNumberOfObjects() const { return Objects.size(); }
 
@@ -126,30 +166,43 @@ public:
 
   /// Read a debug map for \a InputFile.
   static ErrorOr<std::vector<std::unique_ptr<DebugMap>>>
-  parseYAMLDebugMap(StringRef InputFile, StringRef PrependPath, bool Verbose);
+  parseYAMLDebugMap(BinaryHolder &BinHolder, StringRef InputFile,
+                    StringRef PrependPath, bool Verbose);
+};
+
+class DebugMapObjectFilter {
+public:
+  virtual ~DebugMapObjectFilter() = default;
+  StringRef getObjectFilename() const { return Filename; }
+
+protected:
+  std::string Filename;
+
+private:
+  friend class DebugMapFilter;
+  friend class DebugMapObject;
+
+  DebugMapObjectFilter(StringRef ObjectFilename);
+
+  /// For YAMLIO support.
+  ///@{
+  friend yaml::MappingTraits<dsymutil::DebugMapObjectFilter>;
+  friend yaml::SequenceTraits<
+      std::vector<std::unique_ptr<DebugMapObjectFilter>>>;
+
+  DebugMapObjectFilter() = default;
+
+public:
+  DebugMapObjectFilter(DebugMapObjectFilter &&) = default;
+  DebugMapObjectFilter &operator=(DebugMapObjectFilter &&) = default;
+  ///@}
 };
 
 /// The DebugMapObject represents one object file described by the DebugMap. It
 /// contains a list of mappings between addresses in the object file and in the
 /// linked binary for all the linked atoms in this object file.
-class DebugMapObject {
+class DebugMapObject : public DebugMapObjectFilter {
 public:
-  struct SymbolMapping {
-    std::optional<yaml::Hex64> ObjectAddress;
-    yaml::Hex64 BinaryAddress;
-    yaml::Hex32 Size;
-
-    SymbolMapping(std::optional<uint64_t> ObjectAddr, uint64_t BinaryAddress,
-                  uint32_t Size)
-        : BinaryAddress(BinaryAddress), Size(Size) {
-      if (ObjectAddr)
-        ObjectAddress = *ObjectAddr;
-    }
-
-    /// For YAML IO support
-    SymbolMapping() = default;
-  };
-
   using YAMLSymbolMapping = std::pair<std::string, SymbolMapping>;
   using DebugMapEntry = StringMapEntry<SymbolMapping>;
 
@@ -166,8 +219,6 @@ public:
   /// Lookup an object file address.
   /// \returns null if the address isn't found.
   const DebugMapEntry *lookupObjectAddress(uint64_t Address) const;
-
-  StringRef getObjectFilename() const { return Filename; }
 
   sys::TimePoint<std::chrono::seconds> getTimestamp() const {
     return Timestamp;
@@ -186,6 +237,16 @@ public:
   }
   const std::vector<std::string> &getWarnings() const { return Warnings; }
 
+  const std::optional<RelocationMap> &getRelocationMap() const {
+    return RelocMap;
+  }
+  void setRelocationMap(dsymutil::RelocationMap &RM);
+
+  const std::optional<std::string> &getInstallName() const {
+    return InstallName;
+  }
+  void setInstallName(StringRef IN);
+
   void print(raw_ostream &OS) const;
 #ifndef NDEBUG
   void dump() const;
@@ -198,11 +259,13 @@ private:
   DebugMapObject(StringRef ObjectFilename,
                  sys::TimePoint<std::chrono::seconds> Timestamp, uint8_t Type);
 
-  std::string Filename;
   sys::TimePoint<std::chrono::seconds> Timestamp;
-  StringMap<SymbolMapping> Symbols;
+  StringMap<struct SymbolMapping> Symbols;
   DenseMap<uint64_t, DebugMapEntry *> AddressToMapping;
   uint8_t Type;
+
+  std::optional<RelocationMap> RelocMap;
+  std::optional<std::string> InstallName;
 
   std::vector<std::string> Warnings;
 
@@ -229,22 +292,14 @@ namespace yaml {
 
 using namespace llvm::dsymutil;
 
-template <>
-struct MappingTraits<std::pair<std::string, DebugMapObject::SymbolMapping>> {
-  static void mapping(IO &io,
-                      std::pair<std::string, DebugMapObject::SymbolMapping> &s);
+template <> struct MappingTraits<std::pair<std::string, SymbolMapping>> {
+  static void mapping(IO &io, std::pair<std::string, SymbolMapping> &s);
   static const bool flow = true;
 };
 
 template <> struct MappingTraits<dsymutil::DebugMapObject> {
   struct YamlDMO;
   static void mapping(IO &io, dsymutil::DebugMapObject &DMO);
-};
-
-template <> struct ScalarTraits<Triple> {
-  static void output(const Triple &val, void *, raw_ostream &out);
-  static StringRef input(StringRef scalar, void *, Triple &value);
-  static QuotingType mustQuote(StringRef) { return QuotingType::Single; }
 };
 
 template <>
@@ -256,12 +311,36 @@ struct SequenceTraits<std::vector<std::unique_ptr<dsymutil::DebugMapObject>>> {
           size_t index);
 };
 
+template <> struct MappingTraits<dsymutil::DebugMapObjectFilter> {
+  static void mapping(IO &io, dsymutil::DebugMapObjectFilter &DMO);
+};
+
+template <>
+struct SequenceTraits<
+    std::vector<std::unique_ptr<dsymutil::DebugMapObjectFilter>>> {
+  static size_t
+  size(IO &io,
+       std::vector<std::unique_ptr<dsymutil::DebugMapObjectFilter>> &seq);
+  static dsymutil::DebugMapObjectFilter &
+  element(IO &,
+          std::vector<std::unique_ptr<dsymutil::DebugMapObjectFilter>> &seq,
+          size_t index);
+};
+
 template <> struct MappingTraits<dsymutil::DebugMap> {
   static void mapping(IO &io, dsymutil::DebugMap &DM);
 };
 
 template <> struct MappingTraits<std::unique_ptr<dsymutil::DebugMap>> {
   static void mapping(IO &io, std::unique_ptr<dsymutil::DebugMap> &DM);
+};
+
+template <> struct MappingTraits<dsymutil::DebugMapFilter> {
+  static void mapping(IO &io, dsymutil::DebugMapFilter &DMF);
+};
+
+template <> struct MappingTraits<std::unique_ptr<dsymutil::DebugMapFilter>> {
+  static void mapping(IO &io, std::unique_ptr<dsymutil::DebugMapFilter> &DMF);
 };
 
 } // end namespace yaml

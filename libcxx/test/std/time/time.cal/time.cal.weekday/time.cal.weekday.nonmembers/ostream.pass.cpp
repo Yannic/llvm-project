@@ -8,7 +8,10 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: no-localization
-// UNSUPPORTED: libcpp-has-no-incomplete-format
+// UNSUPPORTED: GCC-ALWAYS_INLINE-FIXME
+
+// TODO FMT This test should not require std::to_chars(floating-point)
+// XFAIL: availability-fp_to_chars-missing
 
 // REQUIRES: locale.fr_FR.UTF-8
 // REQUIRES: locale.ja_JP.UTF-8
@@ -68,16 +71,6 @@ static void test() {
   assert(stream_c_locale<CharT>(std::chrono::weekday(8)) == SV("8 is not a valid weekday"));
   assert(stream_c_locale<CharT>(std::chrono::weekday(255)) == SV("255 is not a valid weekday"));
 
-#if defined(__APPLE__)
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(0)) == SV("Dim"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(1)) == SV("Lun"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(2)) == SV("Mar"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(3)) == SV("Mer"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(4)) == SV("Jeu"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(5)) == SV("Ven"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(6)) == SV("Sam"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(7)) == SV("Dim"));
-#else
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(0)) == SV("dim."));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(1)) == SV("lun."));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(2)) == SV("mar."));
@@ -86,7 +79,6 @@ static void test() {
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(5)) == SV("ven."));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(6)) == SV("sam."));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(7)) == SV("dim."));
-#endif
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(8)) == SV("8 is not a valid weekday"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday(255)) == SV("255 is not a valid weekday"));
 

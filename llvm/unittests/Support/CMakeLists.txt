@@ -14,20 +14,25 @@ add_llvm_unittest(SupportTests
   BinaryStreamTest.cpp
   BLAKE3Test.cpp
   BlockFrequencyTest.cpp
+  BalancedPartitioningTest.cpp
   BranchProbabilityTest.cpp
   CachePruningTest.cpp
   CrashRecoveryTest.cpp
+  Caching.cpp
   Casting.cpp
   CheckedArithmeticTest.cpp
+  CHERICapabilityFormatTest.cpp
   Chrono.cpp
   CommandLineTest.cpp
   CompressionTest.cpp
+  ConvertEBCDICTest.cpp
   ConvertUTFTest.cpp
   CRCTest.cpp
   CSKYAttributeParserTest.cpp
   DataExtractorTest.cpp
   DebugCounterTest.cpp
   DebugTest.cpp
+  DebugLogTest.cpp
   DivisionByConstantTest.cpp
   DJBTest.cpp
   EndianStreamTest.cpp
@@ -36,19 +41,23 @@ add_llvm_unittest(SupportTests
   ErrnoTest.cpp
   ErrorOrTest.cpp
   ErrorTest.cpp
+  ExponentialBackoffTest.cpp
   ExtensibleRTTITest.cpp
   FileCollectorTest.cpp
   FileOutputBufferTest.cpp
-  FileUtilitiesTest.cpp
+  Format.cpp
   FormatVariadicTest.cpp
   FSUniqueIDTest.cpp
+  GenericDomTreeTest.cpp
   GlobPatternTest.cpp
   HashBuilderTest.cpp
   IndexedAccessorTest.cpp
   InstructionCostTest.cpp
-  ItaniumManglingCanonicalizerTest.cpp
+  InterleavedRangeTest.cpp
+  JobserverTest.cpp
   JSONTest.cpp
   KnownBitsTest.cpp
+  KnownFPClassTest.cpp
   LEB128Test.cpp
   LineIteratorTest.cpp
   LockFileManagerTest.cpp
@@ -59,12 +68,18 @@ add_llvm_unittest(SupportTests
   MemoryBufferRefTest.cpp
   MemoryBufferTest.cpp
   MemoryTest.cpp
+  MustacheTest.cpp
+  ModRefTest.cpp
   NativeFormatTests.cpp
   OptimizedStructLayoutTest.cpp
   ParallelTest.cpp
   Path.cpp
+  PerThreadBumpPtrAllocatorTest.cpp
   ProcessTest.cpp
   ProgramTest.cpp
+  ProgramStackTest.cpp
+  IntegerInclusiveIntervalTest.cpp
+  RecyclerTest.cpp
   RegexTest.cpp
   ReverseIterationTest.cpp
   ReplaceFileTest.cpp
@@ -72,14 +87,16 @@ add_llvm_unittest(SupportTests
   ScaledNumberTest.cpp
   ScopedPrinterTest.cpp
   SHA256.cpp
+  SignalsTest.cpp
+  SipHashTest.cpp
   SourceMgrTest.cpp
   SpecialCaseListTest.cpp
   SuffixTreeTest.cpp
   SwapByteOrderTest.cpp
-  SymbolRemappingReaderTest.cpp
   TarWriterTest.cpp
-  TaskQueueTest.cpp
+  TextEncodingTest.cpp
   ThreadPool.cpp
+  ThreadSafeAllocatorTest.cpp
   Threading.cpp
   TimerTest.cpp
   TimeProfilerTest.cpp
@@ -88,10 +105,14 @@ add_llvm_unittest(SupportTests
   TypeSizeTest.cpp
   TypeTraitsTest.cpp
   TrailingObjectsTest.cpp
-  TrigramIndexTest.cpp
   UnicodeTest.cpp
+  UTCTimeTest.cpp
   VersionTupleTest.cpp
   VirtualFileSystemTest.cpp
+  VirtualOutputBackendTest.cpp
+  VirtualOutputBackendsTest.cpp
+  VirtualOutputConfigTest.cpp
+  VirtualOutputFileTest.cpp
   WithColorTest.cpp
   YAMLIOTest.cpp
   YAMLParserTest.cpp
@@ -99,10 +120,17 @@ add_llvm_unittest(SupportTests
   formatted_raw_ostream_test.cpp
   raw_fd_stream_test.cpp
   raw_ostream_test.cpp
+  raw_ostream_proxy_test.cpp
   raw_pwrite_stream_test.cpp
   raw_sha1_ostream_test.cpp
+  raw_socket_stream_test.cpp
   xxhashTest.cpp
+
+  DEPENDS
+  intrinsics_gen
   )
+
+add_subdirectory(LSP)
 
 target_link_libraries(SupportTests PRIVATE LLVMTestingSupport)
 
@@ -134,3 +162,4 @@ if(NOT LLVM_INTEGRATED_CRT_ALLOC)
 endif()
 
 add_subdirectory(CommandLineInit)
+add_subdirectory(LLVMToolSession)

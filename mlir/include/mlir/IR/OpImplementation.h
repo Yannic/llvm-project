@@ -15,10 +15,26 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectInterface.h"
+#include "mlir/IR/OpAsmSupport.h"
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/SMLoc.h"
+#include <cstddef>
 #include <optional>
+
+namespace {
+// reference https://stackoverflow.com/a/16000226
+template <typename T, typename = void>
+struct HasStaticName : std::false_type {};
+
+template <typename T>
+struct HasStaticName<T,
+                     typename std::enable_if<
+                         std::is_same<::llvm::StringLiteral,
+                                      std::decay_t<decltype(T::name)>>::value,
+                         void>::type> : std::true_type {};
+} // namespace
 
 namespace mlir {
 class AsmParsedResourceEntry;
@@ -54,7 +70,7 @@ private:
   /// The type of the resource referenced.
   TypeID opaqueID;
   /// The dialect owning the given resource.
-  Dialect *dialect;
+  Dialect *dialect = nullptr;
 };
 
 /// This class represents a CRTP base class for dialect resource handles. It
@@ -116,10 +132,36 @@ public:
   /// Return the raw output stream used by this printer.
   virtual raw_ostream &getStream() const;
 
+  /// Print a newline and indent the printer to the start of the current
+  /// operation/attribute/type.
+  /// Note: For attributes and types this method should only be used in
+  /// custom dialects. Usage in upstream MLIR dialects is currently disallowed.
+  virtual void printNewline();
+
+  /// Increase indentation.
+  virtual void increaseIndent();
+
+  /// Decrease indentation.
+  virtual void decreaseIndent();
+
   /// Print the given floating point value in a stabilized form that can be
   /// roundtripped through the IR. This is the companion to the 'parseFloat'
   /// hook on the AsmParser.
   virtual void printFloat(const APFloat &value);
+
+  /// Print the given integer value. This is useful to force a uint8_t/int8_t to
+  /// be printed as an integer instead of a char.
+  template <typename IntT,
+            typename = std::enable_if_t<std::is_integral_v<IntT>>>
+  void printInteger(IntT value) {
+    // Handle int8_t/uint8_t specially to avoid printing as char
+    if constexpr (std::is_same_v<IntT, int8_t> ||
+                  std::is_same_v<IntT, uint8_t>) {
+      getStream() << static_cast<int>(value);
+    } else {
+      getStream() << value;
+    }
+  }
 
   virtual void printType(Type type);
   virtual void printAttribute(Attribute attr);
@@ -141,7 +183,16 @@ public:
   void printStrippedAttrOrType(AttrOrType attrOrType) {
     if (succeeded(printAlias(attrOrType)))
       return;
+
+    raw_ostream &os = getStream();
+    uint64_t posPrior = os.tell();
     attrOrType.print(*this);
+    if (posPrior != os.tell())
+      return;
+
+    // Fallback to printing with prefix if the above failed to write anything
+    // to the output stream.
+    *this << attrOrType;
   }
 
   /// Print the provided array of attributes or types in the context of an
@@ -171,9 +222,24 @@ public:
   /// provide a valid type for the attribute.
   virtual void printAttributeWithoutType(Attribute attr);
 
+  /// Print the given named attribute.
+  virtual void printNamedAttribute(NamedAttribute attr);
+
+  /// Print the alias for the given attribute, return failure if no alias could
+  /// be printed.
+  virtual LogicalResult printAlias(Attribute attr);
+
+  /// Print the alias for the given type, return failure if no alias could
+  /// be printed.
+  virtual LogicalResult printAlias(Type type);
+
   /// Print the given string as a keyword, or a quoted and escaped string if it
   /// has any special or non-printable characters in it.
   virtual void printKeywordOrString(StringRef keyword);
+
+  /// Print the given string as a quoted string, escaping any special or
+  /// non-printable characters in it.
+  virtual void printString(StringRef string);
 
   /// Print the given string as a symbol reference, i.e. a form representable by
   /// a SymbolRefAttr. A symbol reference is represented as a string prefixed
@@ -181,7 +247,8 @@ public:
   /// special or non-printable characters in it.
   virtual void printSymbolName(StringRef symbolRef);
 
-  /// Print a handle to the given dialect resource.
+  /// Print a handle to the given dialect resource. The handle key is quoted and
+  /// escaped if it has any special or non-printable characters in it.
   virtual void printResourceHandle(const AsmDialectResourceHandle &resource);
 
   /// Print an optional arrow followed by a type list.
@@ -195,7 +262,7 @@ public:
     auto &os = getStream() << " -> ";
 
     bool wrapped = !llvm::hasSingleElement(types) ||
-                   (*types.begin()).template isa<FunctionType>();
+                   llvm::isa<FunctionType>((*types.begin()));
     if (wrapped)
       os << '(';
     llvm::interleaveComma(types, *this);
@@ -213,60 +280,112 @@ public:
     printArrowTypeList(results);
   }
 
+  void printDimensionList(ArrayRef<int64_t> shape);
+
+  /// Class used to automatically end a cyclic region on destruction.
+  class CyclicPrintReset {
+  public:
+    explicit CyclicPrintReset(AsmPrinter *printer) : printer(printer) {}
+
+    ~CyclicPrintReset() {
+      if (printer)
+        printer->popCyclicPrinting();
+    }
+
+    CyclicPrintReset(const CyclicPrintReset &) = delete;
+
+    CyclicPrintReset &operator=(const CyclicPrintReset &) = delete;
+
+    CyclicPrintReset(CyclicPrintReset &&rhs)
+        : printer(std::exchange(rhs.printer, nullptr)) {}
+
+    CyclicPrintReset &operator=(CyclicPrintReset &&rhs) {
+      printer = std::exchange(rhs.printer, nullptr);
+      return *this;
+    }
+
+  private:
+    AsmPrinter *printer;
+  };
+
+  /// Attempts to start a cyclic printing region for `attrOrType`.
+  /// A cyclic printing region starts with this call and ends with the
+  /// destruction of the returned `CyclicPrintReset`. During this time,
+  /// calling `tryStartCyclicPrint` with the same attribute in any printer
+  /// will lead to returning failure.
+  ///
+  /// This makes it possible to break infinite recursions when trying to print
+  /// cyclic attributes or types by printing only immutable parameters if nested
+  /// within itself.
+  template <class AttrOrTypeT>
+  FailureOr<CyclicPrintReset> tryStartCyclicPrint(AttrOrTypeT attrOrType) {
+    static_assert(
+        std::is_base_of_v<AttributeTrait::IsMutable<AttrOrTypeT>,
+                          AttrOrTypeT> ||
+            std::is_base_of_v<TypeTrait::IsMutable<AttrOrTypeT>, AttrOrTypeT>,
+        "Only mutable attributes or types can be cyclic");
+    if (failed(pushCyclicPrinting(attrOrType.getAsOpaquePointer())))
+      return failure();
+    return CyclicPrintReset(this);
+  }
+
 protected:
   /// Initialize the printer with no internal implementation. In this case, all
   /// virtual methods of this class must be overriden.
   AsmPrinter() = default;
 
+  /// Pushes a new attribute or type in the form of a type erased pointer
+  /// into an internal set.
+  /// Returns success if the type or attribute was inserted in the set or
+  /// failure if it was already contained.
+  virtual LogicalResult pushCyclicPrinting(const void *opaquePointer);
+
+  /// Removes the element that was last inserted with a successful call to
+  /// `pushCyclicPrinting`. There must be exactly one `popCyclicPrinting` call
+  /// in reverse order of all successful `pushCyclicPrinting`.
+  virtual void popCyclicPrinting();
+
 private:
   AsmPrinter(const AsmPrinter &) = delete;
   void operator=(const AsmPrinter &) = delete;
-
-  /// Print the alias for the given attribute, return failure if no alias could
-  /// be printed.
-  virtual LogicalResult printAlias(Attribute attr);
-
-  /// Print the alias for the given type, return failure if no alias could
-  /// be printed.
-  virtual LogicalResult printAlias(Type type);
 
   /// The internal implementation of the printer.
   Impl *impl{nullptr};
 };
 
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, Type type) {
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, Type type) {
   p.printType(type);
   return p;
 }
 
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, Attribute attr) {
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, Attribute attr) {
   p.printAttribute(attr);
   return p;
 }
 
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, const APFloat &value) {
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, const APFloat &value) {
   p.printFloat(value);
   return p;
 }
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, float value) {
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, float value) {
   return p << APFloat(value);
 }
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, double value) {
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, double value) {
   return p << APFloat(value);
 }
 
@@ -280,39 +399,53 @@ template <typename AsmPrinterT, typename T,
                                !std::is_convertible<T &, ValueRange>::value &&
                                !std::is_convertible<T &, APFloat &>::value &&
                                !llvm::is_one_of<T, bool, float, double>::value,
-                           T> * = nullptr>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, const T &other) {
+                           T> * = nullptr,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, const T &other) {
   p.getStream() << other;
   return p;
 }
 
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, bool value) {
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, bool value) {
   return p << (value ? StringRef("true") : "false");
 }
 
-template <typename AsmPrinterT, typename ValueRangeT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, const ValueTypeRange<ValueRangeT> &types) {
+template <typename AsmPrinterT, typename ValueRangeT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p,
+                               const ValueTypeRange<ValueRangeT> &types) {
   llvm::interleaveComma(types, p);
   return p;
 }
-template <typename AsmPrinterT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, const TypeRange &types) {
+
+template <typename AsmPrinterT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, const TypeRange &types) {
   llvm::interleaveComma(types, p);
   return p;
 }
-template <typename AsmPrinterT, typename ElementT>
-inline std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value,
-                        AsmPrinterT &>
-operator<<(AsmPrinterT &p, ArrayRef<ElementT> types) {
+
+// Prevent matching the TypeRange version above for ValueRange
+// printing through base AsmPrinter. This is needed so that the
+// ValueRange printing behaviour does not change from printing
+// the SSA values to printing the types for the operands when
+// using AsmPrinter instead of OpAsmPrinter.
+template <
+    typename AsmPrinterT, typename T,
+    typename = std::enable_if_t<std::is_same<AsmPrinter, AsmPrinterT>::value &&
+                                std::is_convertible<T &, ValueRange>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, const T &other) = delete;
+
+template <typename AsmPrinterT, typename ElementT,
+          typename =
+              std::enable_if_t<std::is_base_of<AsmPrinter, AsmPrinterT>::value>>
+inline AsmPrinterT &operator<<(AsmPrinterT &p, ArrayRef<ElementT> types) {
   llvm::interleaveComma(types, p);
   return p;
 }
@@ -331,16 +464,6 @@ public:
   /// Print a loc(...) specifier if printing debug info is enabled.
   virtual void printOptionalLocationSpecifier(Location loc) = 0;
 
-  /// Print a newline and indent the printer to the start of the current
-  /// operation.
-  virtual void printNewline() = 0;
-
-  /// Increase indentation.
-  virtual void increaseIndent() = 0;
-
-  /// Decrease indentation.
-  virtual void decreaseIndent() = 0;
-
   /// Print a block argument in the usual format of:
   ///   %ssaName : type {attr1=42} loc("here")
   /// where location printing is controlled by the standard internal option.
@@ -353,6 +476,13 @@ public:
   /// Print implementations for various things an operation contains.
   virtual void printOperand(Value value) = 0;
   virtual void printOperand(Value value, raw_ostream &os) = 0;
+
+  /// Print a comma separated range of operation operands out of line to avoid
+  /// instantiating the range iteration in every generated operation printer.
+  void printOperands(OperandRange operands);
+
+  /// Print the types of a comma separated range of operation operands.
+  void printOperandTypes(ValueTypeRange<OperandRange> types);
 
   /// Print a comma separated list of operands.
   template <typename ContainerType>
@@ -380,6 +510,11 @@ public:
   /// printed some other way (like as a fixed operand).
   virtual void printOptionalAttrDict(ArrayRef<NamedAttribute> attrs,
                                      ArrayRef<StringRef> elidedAttrs = {}) = 0;
+
+  void printOptionalAttrDict(DictionaryAttr attrs,
+                             ArrayRef<StringRef> elidedAttrs = {}) {
+    printOptionalAttrDict(attrs.getValue(), elidedAttrs);
+  }
 
   /// If the specified operation has attributes, print out an attribute
   /// dictionary prefixed with 'attributes'.
@@ -433,6 +568,17 @@ public:
 // Make the implementations convenient to use.
 inline OpAsmPrinter &operator<<(OpAsmPrinter &p, Value value) {
   p.printOperand(value);
+  return p;
+}
+
+inline OpAsmPrinter &operator<<(OpAsmPrinter &p, OperandRange values) {
+  p.printOperands(values);
+  return p;
+}
+
+inline OpAsmPrinter &operator<<(OpAsmPrinter &p,
+                                ValueTypeRange<OperandRange> types) {
+  p.printOperandTypes(types);
   return p;
 }
 
@@ -555,6 +701,18 @@ public:
   /// Parse a '+' token if present.
   virtual ParseResult parseOptionalPlus() = 0;
 
+  /// Parse a '/' token.
+  virtual ParseResult parseSlash() = 0;
+
+  /// Parse a '/' token if present.
+  virtual ParseResult parseOptionalSlash() = 0;
+
+  /// Parse a '-' token.
+  virtual ParseResult parseMinus() = 0;
+
+  /// Parse a '-' token if present.
+  virtual ParseResult parseOptionalMinus() = 0;
+
   /// Parse a '*' token.
   virtual ParseResult parseStar() = 0;
 
@@ -614,6 +772,10 @@ public:
   /// Parse a floating point value from the stream.
   virtual ParseResult parseFloat(double &result) = 0;
 
+  /// Parse a floating point value into APFloat from the stream.
+  virtual ParseResult parseFloat(const llvm::fltSemantics &semantics,
+                                 APFloat &result) = 0;
+
   /// Parse an integer value from the stream.
   template <typename IntT>
   ParseResult parseInteger(IntT &result) {
@@ -624,16 +786,27 @@ public:
     return *parseResult;
   }
 
+  /// Parse a decimal integer value from the stream.
+  template <typename IntT>
+  ParseResult parseDecimalInteger(IntT &result) {
+    auto loc = getCurrentLocation();
+    OptionalParseResult parseResult = parseOptionalDecimalInteger(result);
+    if (!parseResult.has_value())
+      return emitError(loc, "expected decimal integer value");
+    return *parseResult;
+  }
+
   /// Parse an optional integer value from the stream.
   virtual OptionalParseResult parseOptionalInteger(APInt &result) = 0;
+  virtual OptionalParseResult parseOptionalDecimalInteger(APInt &result) = 0;
 
-  template <typename IntT>
-  OptionalParseResult parseOptionalInteger(IntT &result) {
+private:
+  template <typename IntT, typename ParseFn>
+  OptionalParseResult parseOptionalIntegerAndCheck(IntT &result,
+                                                   ParseFn &&parseFn) {
     auto loc = getCurrentLocation();
-
-    // Parse the unsigned variant.
     APInt uintResult;
-    OptionalParseResult parseResult = parseOptionalInteger(uintResult);
+    OptionalParseResult parseResult = parseFn(uintResult);
     if (!parseResult.has_value() || failed(*parseResult))
       return parseResult;
 
@@ -642,9 +815,25 @@ public:
     // zero for non-negated integers.
     result =
         (IntT)uintResult.sextOrTrunc(sizeof(IntT) * CHAR_BIT).getLimitedValue();
-    if (APInt(uintResult.getBitWidth(), result) != uintResult)
+    if (APInt(uintResult.getBitWidth(), result,
+              /*isSigned=*/std::is_signed_v<IntT>,
+              /*implicitTrunc=*/true) != uintResult)
       return emitError(loc, "integer value too large");
     return success();
+  }
+
+public:
+  template <typename IntT>
+  OptionalParseResult parseOptionalInteger(IntT &result) {
+    return parseOptionalIntegerAndCheck(
+        result, [&](APInt &result) { return parseOptionalInteger(result); });
+  }
+
+  template <typename IntT>
+  OptionalParseResult parseOptionalDecimalInteger(IntT &result) {
+    return parseOptionalIntegerAndCheck(result, [&](APInt &result) {
+      return parseOptionalDecimalInteger(result);
+    });
   }
 
   /// These are the supported delimiters around operand lists and region
@@ -693,18 +882,20 @@ public:
   //===--------------------------------------------------------------------===//
 
   /// This class represents a StringSwitch like class that is useful for parsing
-  /// expected keywords. On construction, it invokes `parseKeyword` and
-  /// processes each of the provided cases statements until a match is hit. The
-  /// provided `ResultT` must be assignable from `failure()`.
+  /// expected keywords. On construction, unless a non-empty keyword is
+  /// provided, it invokes `parseKeyword` and processes each of the provided
+  /// cases statements until a match is hit. The provided `ResultT` must be
+  /// assignable from `failure()`.
   template <typename ResultT = ParseResult>
   class KeywordSwitch {
   public:
-    KeywordSwitch(AsmParser &parser)
+    KeywordSwitch(AsmParser &parser, StringRef *keyword = nullptr)
         : parser(parser), loc(parser.getCurrentLocation()) {
-      if (failed(parser.parseKeywordOrCompletion(&keyword)))
+      if (keyword && !keyword->empty())
+        this->keyword = *keyword;
+      else if (failed(parser.parseKeywordOrCompletion(&this->keyword)))
         result = failure();
     }
-
     /// Case that uses the provided value when true.
     KeywordSwitch &Case(StringLiteral str, ResultT value) {
       return Case(str, [&](StringRef, SMLoc) { return std::move(value); });
@@ -715,9 +906,9 @@ public:
     /// Case that invokes the provided functor when true. The parameters passed
     /// to the functor are the keyword, and the location of the keyword (in case
     /// any errors need to be emitted).
-    template <typename FnT>
-    std::enable_if_t<!std::is_convertible<FnT, ResultT>::value, KeywordSwitch &>
-    Case(StringLiteral str, FnT &&fn) {
+    template <typename FnT, typename = std::enable_if_t<
+                                !std::is_convertible<FnT, ResultT>::value>>
+    KeywordSwitch &Case(StringLiteral str, FnT &&fn) {
       if (result)
         return *this;
 
@@ -728,9 +919,9 @@ public:
         result.emplace(std::move(fn(keyword, loc)));
       return *this;
     }
-    template <typename FnT>
-    std::enable_if_t<!std::is_convertible<FnT, ResultT>::value, KeywordSwitch &>
-    Default(FnT &&fn) {
+    template <typename FnT, typename = std::enable_if_t<
+                                !std::is_convertible<FnT, ResultT>::value>>
+    KeywordSwitch &Default(FnT &&fn) {
       if (!result)
         result.emplace(fn(keyword, loc));
       return *this;
@@ -756,7 +947,7 @@ public:
     /// The parsed keyword itself.
     StringRef keyword;
 
-    /// The result of the switch statement or none if currently unknown.
+    /// The result of the switch statement or std::nullopt if currently unknown.
     std::optional<ResultT> result;
   };
 
@@ -786,6 +977,12 @@ public:
   parseOptionalKeyword(StringRef *keyword,
                        ArrayRef<StringRef> allowedValues) = 0;
 
+  /// Parse a string into 'string' if it is present and one of the
+  /// 'allowedValues'.
+  virtual ParseResult
+  parseOptionalString(std::string *string,
+                      ArrayRef<StringRef> allowedValues) = 0;
+
   /// Parse a keyword or a quoted string.
   ParseResult parseKeywordOrString(std::string *result) {
     if (failed(parseOptionalKeywordOrString(result)))
@@ -796,6 +993,12 @@ public:
 
   /// Parse an optional keyword or string.
   virtual ParseResult parseOptionalKeywordOrString(std::string *result) = 0;
+
+  /// Parse an optional keyword or string into `result` if it is present and one
+  /// of the 'allowedValues'.
+  virtual ParseResult
+  parseOptionalKeywordOrString(std::string *result,
+                               ArrayRef<StringRef> allowedValues) = 0;
 
   //===--------------------------------------------------------------------===//
   // Attribute/Type Parsing
@@ -843,7 +1046,7 @@ public:
       return failure();
 
     // Check for the right kind of attribute.
-    if (!(result = attr.dyn_cast<AttrType>()))
+    if (!(result = llvm::dyn_cast<AttrType>(attr)))
       return emitError(loc, "invalid kind of attribute specified");
 
     return success();
@@ -877,7 +1080,7 @@ public:
       return failure();
 
     // Check for the right kind of attribute.
-    result = attr.dyn_cast<AttrType>();
+    result = llvm::dyn_cast<AttrType>(attr);
     if (!result)
       return emitError(loc, "invalid kind of attribute specified");
 
@@ -914,7 +1117,7 @@ public:
       return failure();
 
     // Check for the right kind of attribute.
-    result = attr.dyn_cast<AttrType>();
+    result = llvm::dyn_cast<AttrType>(attr);
     if (!result)
       return emitError(loc, "invalid kind of attribute specified");
 
@@ -935,20 +1138,20 @@ public:
   /// populated in `result`.
   template <typename AttrType>
   std::enable_if_t<detect_has_parse_method<AttrType>::value, ParseResult>
-  parseCustomAttributeWithFallback(AttrType &result) {
+  parseCustomAttributeWithFallback(AttrType &result, Type type = {}) {
     SMLoc loc = getCurrentLocation();
 
     // Parse any kind of attribute.
     Attribute attr;
     if (parseCustomAttributeWithFallback(
-            attr, {}, [&](Attribute &result, Type type) -> ParseResult {
+            attr, type, [&](Attribute &result, Type type) -> ParseResult {
               result = AttrType::parse(*this, type);
               return success(!!result);
             }))
       return failure();
 
     // Check for the right kind of attribute.
-    result = attr.dyn_cast<AttrType>();
+    result = llvm::dyn_cast<AttrType>(attr);
     if (!result)
       return emitError(loc, "invalid kind of attribute specified");
     return success();
@@ -957,8 +1160,8 @@ public:
   /// SFINAE parsing method for Attribute that don't implement a parse method.
   template <typename AttrType>
   std::enable_if_t<!detect_has_parse_method<AttrType>::value, ParseResult>
-  parseCustomAttributeWithFallback(AttrType &result) {
-    return parseAttribute(result);
+  parseCustomAttributeWithFallback(AttrType &result, Type type = {}) {
+    return parseAttribute(result, type);
   }
 
   /// Parse an arbitrary optional attribute of a given type and return it in
@@ -977,6 +1180,31 @@ public:
   /// Parse an optional symbol ref attribute and return it in result.
   virtual OptionalParseResult parseOptionalAttribute(SymbolRefAttr &result,
                                                      Type type = {}) = 0;
+
+  /// Parse an optional attribute of a specific typed result. This overload
+  /// handles concrete attribute types (e.g. FloatAttr) that are not covered by
+  /// a dedicated virtual overload. It parses any attribute and then validates
+  /// that the result is of the expected type, emitting an error if not.
+  template <
+      typename AttrType,
+      typename = std::enable_if_t<!llvm::is_one_of<
+          AttrType, Attribute, ArrayAttr, StringAttr, SymbolRefAttr>::value>>
+  OptionalParseResult parseOptionalAttribute(AttrType &result, Type type = {}) {
+    llvm::SMLoc loc = getCurrentLocation();
+    Attribute attr;
+    OptionalParseResult parseResult = parseOptionalAttribute(attr, type);
+    if (!parseResult.has_value() || failed(*parseResult))
+      return parseResult;
+    result = dyn_cast<AttrType>(attr);
+    if (!result) {
+      InFlightDiagnostic diag =
+          emitError(loc, "invalid kind of attribute specified");
+      if constexpr (HasStaticName<AttrType>::value)
+        diag << ": expected " << AttrType::name << ", but found " << attr;
+      return diag;
+    }
+    return success();
+  }
 
   /// Parse an optional attribute of a specific type and add it to the list with
   /// the specified name.
@@ -1010,8 +1238,14 @@ public:
   /// Parse an affine map instance into 'map'.
   virtual ParseResult parseAffineMap(AffineMap &map) = 0;
 
+  /// Parse an affine expr instance into 'expr' using the already computed
+  /// mapping from symbols to affine expressions in 'symbolSet'.
+  virtual ParseResult
+  parseAffineExpr(ArrayRef<std::pair<StringRef, AffineExpr>> symbolSet,
+                  AffineExpr &expr) = 0;
+
   /// Parse an integer set instance into 'set'.
-  virtual ParseResult printIntegerSet(IntegerSet &set) = 0;
+  virtual ParseResult parseIntegerSet(IntegerSet &set) = 0;
 
   //===--------------------------------------------------------------------===//
   // Identifier Parsing
@@ -1104,9 +1338,14 @@ public:
       return failure();
 
     // Check for the right kind of type.
-    result = type.dyn_cast<TypeT>();
-    if (!result)
-      return emitError(loc, "invalid kind of type specified");
+    result = llvm::dyn_cast<TypeT>(type);
+    if (!result) {
+      InFlightDiagnostic diag =
+          emitError(loc, "invalid kind of type specified");
+      if constexpr (HasStaticName<TypeT>::value)
+        diag << ": expected " << TypeT::name << ", but found " << type;
+      return diag;
+    }
 
     return success();
   }
@@ -1136,9 +1375,14 @@ public:
       return failure();
 
     // Check for the right kind of Type.
-    result = type.dyn_cast<TypeT>();
-    if (!result)
-      return emitError(loc, "invalid kind of Type specified");
+    result = llvm::dyn_cast<TypeT>(type);
+    if (!result) {
+      InFlightDiagnostic diag =
+          emitError(loc, "invalid kind of type specified");
+      if constexpr (HasStaticName<TypeT>::value)
+        diag << ": expected " << TypeT::name << ", but found " << type;
+      return diag;
+    }
     return success();
   }
 
@@ -1150,10 +1394,7 @@ public:
   }
 
   /// Parse a type list.
-  ParseResult parseTypeList(SmallVectorImpl<Type> &result) {
-    return parseCommaSeparatedList(
-        [&]() { return parseType(result.emplace_back()); });
-  }
+  ParseResult parseTypeList(SmallVectorImpl<Type> &result);
 
   /// Parse an arrow followed by a type list.
   virtual ParseResult parseArrowTypeList(SmallVectorImpl<Type> &result) = 0;
@@ -1176,9 +1417,14 @@ public:
       return failure();
 
     // Check for the right kind of type.
-    result = type.dyn_cast<TypeType>();
-    if (!result)
-      return emitError(loc, "invalid kind of type specified");
+    result = llvm::dyn_cast<TypeType>(type);
+    if (!result) {
+      InFlightDiagnostic diag =
+          emitError(loc, "invalid kind of type specified");
+      if constexpr (HasStaticName<TypeType>::value)
+        diag << ": expected " << TypeType::name << ", but found " << type;
+      return diag;
+    }
 
     return success();
   }
@@ -1235,11 +1481,66 @@ public:
   /// next token.
   virtual ParseResult parseXInDimensionList() = 0;
 
+  /// Class used to automatically end a cyclic region on destruction.
+  class CyclicParseReset {
+  public:
+    explicit CyclicParseReset(AsmParser *parser) : parser(parser) {}
+
+    ~CyclicParseReset() {
+      if (parser)
+        parser->popCyclicParsing();
+    }
+
+    CyclicParseReset(const CyclicParseReset &) = delete;
+    CyclicParseReset &operator=(const CyclicParseReset &) = delete;
+    CyclicParseReset(CyclicParseReset &&rhs)
+        : parser(std::exchange(rhs.parser, nullptr)) {}
+    CyclicParseReset &operator=(CyclicParseReset &&rhs) {
+      parser = std::exchange(rhs.parser, nullptr);
+      return *this;
+    }
+
+  private:
+    AsmParser *parser;
+  };
+
+  /// Attempts to start a cyclic parsing region for `attrOrType`.
+  /// A cyclic parsing region starts with this call and ends with the
+  /// destruction of the returned `CyclicParseReset`. During this time,
+  /// calling `tryStartCyclicParse` with the same attribute in any parser
+  /// will lead to returning failure.
+  ///
+  /// This makes it possible to parse cyclic attributes or types by parsing a
+  /// short from if nested within itself.
+  template <class AttrOrTypeT>
+  FailureOr<CyclicParseReset> tryStartCyclicParse(AttrOrTypeT attrOrType) {
+    static_assert(
+        std::is_base_of_v<AttributeTrait::IsMutable<AttrOrTypeT>,
+                          AttrOrTypeT> ||
+            std::is_base_of_v<TypeTrait::IsMutable<AttrOrTypeT>, AttrOrTypeT>,
+        "Only mutable attributes or types can be cyclic");
+    if (failed(pushCyclicParsing(attrOrType.getAsOpaquePointer())))
+      return failure();
+
+    return CyclicParseReset(this);
+  }
+
 protected:
   /// Parse a handle to a resource within the assembly format for the given
   /// dialect.
   virtual FailureOr<AsmDialectResourceHandle>
   parseResourceHandle(Dialect *dialect) = 0;
+
+  /// Pushes a new attribute or type in the form of a type erased pointer
+  /// into an internal set.
+  /// Returns success if the type or attribute was inserted in the set or
+  /// failure if it was already contained.
+  virtual LogicalResult pushCyclicParsing(const void *opaquePointer) = 0;
+
+  /// Removes the element that was last inserted with a successful call to
+  /// `pushCyclicParsing`. There must be exactly one `popCyclicParsing` call
+  /// in reverse order of all successful `pushCyclicParsing`.
+  virtual void popCyclicParsing() = 0;
 
   //===--------------------------------------------------------------------===//
   // Code Completion
@@ -1346,6 +1647,7 @@ public:
       std::optional<MutableArrayRef<std::unique_ptr<Region>>> parsedRegions =
           std::nullopt,
       std::optional<ArrayRef<NamedAttribute>> parsedAttributes = std::nullopt,
+      std::optional<Attribute> parsedPropertiesAttribute = std::nullopt,
       std::optional<FunctionType> parsedFnType = std::nullopt) = 0;
 
   /// Parse a single SSA value operand name along with a result number if
@@ -1411,18 +1713,22 @@ public:
   /// Resolve a list of operands and a list of operand types to SSA values,
   /// emitting an error and returning failure, or appending the results
   /// to the list on success.
-  template <typename Operands = ArrayRef<UnresolvedOperand>,
-            typename Types = ArrayRef<Type>>
-  std::enable_if_t<!std::is_convertible<Types, Type>::value, ParseResult>
-  resolveOperands(Operands &&operands, Types &&types, SMLoc loc,
-                  SmallVectorImpl<Value> &result) {
-    size_t operandSize = std::distance(operands.begin(), operands.end());
-    size_t typeSize = std::distance(types.begin(), types.end());
-    if (operandSize != typeSize)
-      return emitError(loc)
-             << operandSize << " operands present, but expected " << typeSize;
+  template <
+      typename Operands = ArrayRef<UnresolvedOperand>,
+      typename Types = ArrayRef<Type>,
+      typename = std::enable_if_t<!std::is_convertible<Types, Type>::value>>
+  ParseResult resolveOperands(Operands &&operands, Types &&types, SMLoc loc,
+                              SmallVectorImpl<Value> &result) {
+    size_t operandSize = llvm::range_size(operands);
+    size_t typeSize = llvm::range_size(types);
+    if (operandSize != typeSize) {
+      // If no location was provided, report errors at the beginning of the op.
+      return emitError(loc.isValid() ? loc : getNameLoc())
+             << "number of operands and types do not match: got " << operandSize
+             << " operands and " << typeSize << " types";
+    }
 
-    for (auto [operand, type] : llvm::zip(operands, types))
+    for (auto [operand, type] : llvm::zip_equal(operands, types))
       if (resolveOperand(operand, type, result))
         return failure();
     return success();
@@ -1450,9 +1756,9 @@ public:
   //===--------------------------------------------------------------------===//
 
   struct Argument {
-    UnresolvedOperand ssaName;    // SourceLoc, SSA name, result #.
-    Type type;                    // Type.
-    DictionaryAttr attrs;         // Attributes if present.
+    UnresolvedOperand ssaName;         // SourceLoc, SSA name, result #.
+    Type type;                         // Type.
+    DictionaryAttr attrs;              // Attributes if present.
     std::optional<Location> sourceLoc; // Source location specifier if present.
   };
 
@@ -1538,85 +1844,43 @@ public:
                               SmallVectorImpl<UnresolvedOperand> &rhs) = 0;
 };
 
-//===--------------------------------------------------------------------===//
-// Dialect OpAsm interface.
-//===--------------------------------------------------------------------===//
+namespace detail {
+/// Parse an optional operand or type into a generated parser's storage.
+ParseResult parseOptionalOperandInto(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operands);
+ParseResult parseOptionalTypeInto(AsmParser &parser,
+                                  SmallVectorImpl<Type> &types);
 
-/// A functor used to set the name of the start of a result group of an
-/// operation. See 'getAsmResultNames' below for more details.
-using OpAsmSetValueNameFn = function_ref<void(Value, StringRef)>;
-
-/// A functor used to set the name of blocks in regions directly nested under
-/// an operation.
-using OpAsmSetBlockNameFn = function_ref<void(Block *, StringRef)>;
-
-class OpAsmDialectInterface
-    : public DialectInterface::Base<OpAsmDialectInterface> {
+/// Keep the cleanup of multiple generated parser operand groups out of each
+/// parser's early-return paths. The storage is shared across operations with
+/// the same number of groups.
+template <size_t N>
+class OperandParserStorage {
 public:
-  OpAsmDialectInterface(Dialect *dialect) : Base(dialect) {}
+  using Group = llvm::SmallVector<OpAsmParser::UnresolvedOperand, 4>;
 
-  //===------------------------------------------------------------------===//
-  // Aliases
-  //===------------------------------------------------------------------===//
+  LLVM_ATTRIBUTE_NOINLINE OperandParserStorage() {}
+  LLVM_ATTRIBUTE_NOINLINE ~OperandParserStorage() {}
 
-  /// Holds the result of `getAlias` hook call.
-  enum class AliasResult {
-    /// The object (type or attribute) is not supported by the hook
-    /// and an alias was not provided.
-    NoAlias,
-    /// An alias was provided, but it might be overriden by other hook.
-    OverridableAlias,
-    /// An alias was provided and it should be used
-    /// (no other hooks will be checked).
-    FinalAlias
-  };
+  Group &operator[](size_t index) { return groups[index]; }
 
-  /// Hooks for getting an alias identifier alias for a given symbol, that is
-  /// not necessarily a part of this dialect. The identifier is used in place of
-  /// the symbol when printing textual IR. These aliases must not contain `.` or
-  /// end with a numeric digit([0-9]+).
-  virtual AliasResult getAlias(Attribute attr, raw_ostream &os) const {
-    return AliasResult::NoAlias;
-  }
-  virtual AliasResult getAlias(Type type, raw_ostream &os) const {
-    return AliasResult::NoAlias;
-  }
-
-  //===--------------------------------------------------------------------===//
-  // Resources
-  //===--------------------------------------------------------------------===//
-
-  /// Declare a resource with the given key, returning a handle to use for any
-  /// references of this resource key within the IR during parsing. The result
-  /// of `getResourceKey` on the returned handle is permitted to be different
-  /// than `key`.
-  virtual FailureOr<AsmDialectResourceHandle>
-  declareResource(StringRef key) const {
-    return failure();
-  }
-
-  /// Return a key to use for the given resource. This key should uniquely
-  /// identify this resource within the dialect.
-  virtual std::string
-  getResourceKey(const AsmDialectResourceHandle &handle) const {
-    llvm_unreachable(
-        "Dialect must implement `getResourceKey` when defining resources");
-  }
-
-  /// Hook for parsing resource entries. Returns failure if the entry was not
-  /// valid, or could otherwise not be processed correctly. Any necessary errors
-  /// can be emitted via the provided entry.
-  virtual LogicalResult parseResource(AsmParsedResourceEntry &entry) const;
-
-  /// Hook for building resources to use during printing. The given `op` may be
-  /// inspected to help determine what information to include.
-  /// `referencedResources` contains all of the resources detected when printing
-  /// 'op'.
-  virtual void
-  buildResources(Operation *op,
-                 const SetVector<AsmDialectResourceHandle> &referencedResources,
-                 AsmResourceBuilder &builder) const {}
+private:
+  Group groups[N];
 };
+
+} // namespace detail
+
+//===--------------------------------------------------------------------===//
+// Custom printers and parsers.
+//===--------------------------------------------------------------------===//
+
+// Handles custom<DimensionList>(...) in TableGen.
+void printDimensionList(OpAsmPrinter &printer, Operation *op,
+                        ArrayRef<int64_t> dimensions);
+ParseResult parseDimensionList(OpAsmParser &parser,
+                               DenseI64ArrayAttr &dimensions);
+
 } // namespace mlir
 
 //===--------------------------------------------------------------------===//
@@ -1624,19 +1888,18 @@ public:
 //===--------------------------------------------------------------------===//
 
 /// The OpAsmOpInterface, see OpAsmInterface.td for more details.
-#include "mlir/IR/OpAsmInterface.h.inc"
+#include "mlir/IR/OpAsmOpInterface.h.inc"
+
+//===--------------------------------------------------------------------===//
+// Dialect OpAsm interface.
+//===--------------------------------------------------------------------===//
+
+/// The OpAsmDialectInterface, see OpAsmDialectInterface.td
+#include "mlir/IR/OpAsmDialectInterface.h.inc"
 
 namespace llvm {
 template <>
 struct DenseMapInfo<mlir::AsmDialectResourceHandle> {
-  static inline mlir::AsmDialectResourceHandle getEmptyKey() {
-    return {DenseMapInfo<void *>::getEmptyKey(),
-            DenseMapInfo<mlir::TypeID>::getEmptyKey(), nullptr};
-  }
-  static inline mlir::AsmDialectResourceHandle getTombstoneKey() {
-    return {DenseMapInfo<void *>::getTombstoneKey(),
-            DenseMapInfo<mlir::TypeID>::getTombstoneKey(), nullptr};
-  }
   static unsigned getHashValue(const mlir::AsmDialectResourceHandle &handle) {
     return DenseMapInfo<void *>::getHashValue(handle.getResource());
   }

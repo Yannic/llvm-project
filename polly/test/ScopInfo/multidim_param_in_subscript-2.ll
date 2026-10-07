@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-precise-fold-accesses -polly-print-scops -disable-output < %s | FileCheck %s
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-precise-fold-accesses '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s
 ;
 ;    void foo(long n, long m, float A[][n][m]) {
 ;      for (long i = 0; i < 100; i++)

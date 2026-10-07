@@ -29,15 +29,15 @@
 using namespace lldb;
 using namespace lldb_private;
 
-ConstString &TargetList::GetStaticBroadcasterClass() {
-  static ConstString class_name("lldb.targetList");
+llvm::StringRef TargetList::GetStaticBroadcasterClass() {
+  static constexpr llvm::StringLiteral class_name("lldb.targetList");
   return class_name;
 }
 
 // TargetList constructor
 TargetList::TargetList(Debugger &debugger)
     : Broadcaster(debugger.GetBroadcasterManager(),
-                  TargetList::GetStaticBroadcasterClass().AsCString()),
+                  TargetList::GetStaticBroadcasterClass().str()),
       m_target_list(), m_target_list_mutex(), m_selected_target_idx(0) {
   CheckInWithManager();
 }
@@ -48,7 +48,7 @@ Status TargetList::CreateTarget(Debugger &debugger,
                                 LoadDependentFiles load_dependent_files,
                                 const OptionGroupPlatform *platform_options,
                                 TargetSP &target_sp) {
-  std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+
   auto result = TargetList::CreateTargetInternal(
       debugger, user_exe_path, triple_str, load_dependent_files,
       platform_options, target_sp);
@@ -63,7 +63,7 @@ Status TargetList::CreateTarget(Debugger &debugger,
                                 const ArchSpec &specified_arch,
                                 LoadDependentFiles load_dependent_files,
                                 PlatformSP &platform_sp, TargetSP &target_sp) {
-  std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+
   auto result = TargetList::CreateTargetInternal(
       debugger, user_exe_path, specified_arch, load_dependent_files,
       platform_sp, target_sp);
@@ -88,8 +88,8 @@ Status TargetList::CreateTargetInternal(
   // determine the architecture.
   const ArchSpec arch(triple_str);
   if (!triple_str.empty() && !arch.IsValid()) {
-    error.SetErrorStringWithFormat("invalid triple '%s'",
-                                   triple_str.str().c_str());
+    error = Status::FromErrorStringWithFormat("invalid triple '%s'",
+                                              triple_str.str().c_str());
     return error;
   }
 
@@ -135,14 +135,13 @@ Status TargetList::CreateTargetInternal(
 
     lldb::offset_t file_offset = 0;
     lldb::offset_t file_size = 0;
-    ModuleSpecList module_specs;
-    const size_t num_specs = ObjectFile::GetModuleSpecifications(
-        module_spec.GetFileSpec(), file_offset, file_size, module_specs);
+    ModuleSpecList module_specs = ObjectFile::GetModuleSpecifications(
+        module_spec.GetFileSpec(), file_offset, file_size);
 
-    if (num_specs > 0) {
+    if (module_specs.GetSize() > 0) {
       ModuleSpec matching_module_spec;
 
-      if (num_specs == 1) {
+      if (module_specs.GetSize() == 1) {
         if (module_specs.GetModuleSpecAtIndex(0, matching_module_spec)) {
           if (platform_arch.IsValid()) {
             if (platform_arch.IsCompatibleMatch(
@@ -158,7 +157,7 @@ Status TargetList::CreateTargetInternal(
               platform_arch.DumpTriple(platform_arch_strm.AsRawOstream());
               matching_module_spec.GetArchitecture().DumpTriple(
                   module_arch_strm.AsRawOstream());
-              error.SetErrorStringWithFormat(
+              error = Status::FromErrorStringWithFormat(
                   "the specified architecture '%s' is not compatible with '%s' "
                   "in '%s'",
                   platform_arch_strm.GetData(), module_arch_strm.GetData(),
@@ -188,7 +187,8 @@ Status TargetList::CreateTargetInternal(
                 platform_list.GetOrCreate(archs, {}, candidates)) {
           platform_sp = platform_for_archs_sp;
         } else if (candidates.empty()) {
-          error.SetErrorString("no matching platforms found for this file");
+          error = Status::FromErrorString(
+              "no matching platforms found for this file");
           return error;
         } else {
           // More than one platform claims to support this file.
@@ -205,8 +205,8 @@ Status TargetList::CreateTargetInternal(
             error_strm.PutCString(platform_name);
             platform_set.insert(platform_name);
           }
-          error_strm.Printf("), specify an architecture to disambiguate");
-          error.SetErrorString(error_strm.GetString());
+          error_strm.PutCString("), specify an architecture to disambiguate");
+          error = Status(error_strm.GetString().str());
           return error;
         }
       }
@@ -271,7 +271,7 @@ Status TargetList::CreateTargetInternal(Debugger &debugger,
     arch = specified_arch;
 
   FileSpec file(user_exe_path);
-  if (!FileSystem::Instance().Exists(file) && user_exe_path.startswith("~")) {
+  if (!FileSystem::Instance().Exists(file) && user_exe_path.starts_with("~")) {
     // we want to expand the tilde but we don't want to resolve any symbolic
     // links so we can't use the FileSpec constructor's resolve flag
     llvm::SmallString<64> unglobbed_path;
@@ -303,29 +303,31 @@ Status TargetList::CreateTargetInternal(Debugger &debugger,
 
     ModuleSP exe_module_sp;
     if (platform_sp) {
-      FileSpecList executable_search_paths(
-          Target::GetDefaultExecutableSearchPaths());
       ModuleSpec module_spec(file, arch);
-      error = platform_sp->ResolveExecutable(module_spec, exe_module_sp,
-                                             executable_search_paths.GetSize()
-                                                 ? &executable_search_paths
-                                                 : nullptr);
+      module_spec.SetTarget(target_sp);
+      // Set the platform so that GetSharedModule can use it for the locate
+      // module callback, even when Target is not yet available (during target
+      // creation for launch mode).
+      module_spec.SetPlatform(platform_sp);
+      error = platform_sp->ResolveExecutable(module_spec, exe_module_sp);
     }
 
     if (error.Success() && exe_module_sp) {
       if (exe_module_sp->GetObjectFile() == nullptr) {
         if (arch.IsValid()) {
-          error.SetErrorStringWithFormat(
+          error = Status::FromErrorStringWithFormat(
               "\"%s\" doesn't contain architecture %s", file.GetPath().c_str(),
               arch.GetArchitectureName());
         } else {
-          error.SetErrorStringWithFormat("unsupported file type \"%s\"",
-                                         file.GetPath().c_str());
+          error = Status::FromErrorStringWithFormat(
+              "unsupported file type \"%s\"", file.GetPath().c_str());
         }
         return error;
       }
       target_sp.reset(new Target(debugger, arch, platform_sp, is_dummy_target));
-      target_sp->SetExecutableModule(exe_module_sp, load_dependent_files);
+      debugger.GetTargetList().RegisterInProcessTarget(target_sp);
+      target_sp->RebuildModuleListWithExecutable(exe_module_sp,
+                                                 load_dependent_files);
       if (user_exe_path_is_bundle)
         exe_module_sp->GetFileSpec().GetPath(resolved_bundle_exe_path,
                                              sizeof(resolved_bundle_exe_path));
@@ -336,6 +338,7 @@ Status TargetList::CreateTargetInternal(Debugger &debugger,
     // No file was specified, just create an empty target with any arch if a
     // valid arch was specified
     target_sp.reset(new Target(debugger, arch, platform_sp, is_dummy_target));
+    debugger.GetTargetList().RegisterInProcessTarget(target_sp);
   }
 
   if (!target_sp)
@@ -354,7 +357,7 @@ Status TargetList::CreateTargetInternal(Debugger &debugger,
       target_sp->SetArg0(file.GetPath().c_str());
     }
   }
-  if (file.GetDirectory()) {
+  if (!file.GetDirectory().empty()) {
     FileSpec file_dir;
     file_dir.SetDirectory(file.GetDirectory());
     target_sp->AppendExecutableSearchPaths(file_dir);
@@ -368,7 +371,7 @@ Status TargetList::CreateTargetInternal(Debugger &debugger,
 
 bool TargetList::DeleteTarget(TargetSP &target_sp) {
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find(m_target_list.begin(), m_target_list.end(), target_sp);
+  auto it = llvm::find(m_target_list, target_sp);
   if (it == m_target_list.end())
     return false;
 
@@ -379,8 +382,8 @@ bool TargetList::DeleteTarget(TargetSP &target_sp) {
 TargetSP TargetList::FindTargetWithExecutableAndArchitecture(
     const FileSpec &exe_file_spec, const ArchSpec *exe_arch_ptr) const {
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find_if(m_target_list.begin(), m_target_list.end(),
-      [&exe_file_spec, exe_arch_ptr](const TargetSP &item) {
+  auto it = llvm::find_if(
+      m_target_list, [&exe_file_spec, exe_arch_ptr](const TargetSP &item) {
         Module *exe_module = item->GetExecutableModulePointer();
         if (!exe_module ||
             !FileSpec::Match(exe_file_spec, exe_module->GetFileSpec()))
@@ -398,11 +401,10 @@ TargetSP TargetList::FindTargetWithExecutableAndArchitecture(
 
 TargetSP TargetList::FindTargetWithProcessID(lldb::pid_t pid) const {
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find_if(m_target_list.begin(), m_target_list.end(),
-      [pid](const TargetSP &item) {
-        auto *process_ptr = item->GetProcessSP().get();
-        return process_ptr && (process_ptr->GetID() == pid);
-      });
+  auto it = llvm::find_if(m_target_list, [pid](const TargetSP &item) {
+    auto *process_ptr = item->GetProcessSP().get();
+    return process_ptr && (process_ptr->GetID() == pid);
+  });
 
   if (it != m_target_list.end())
     return *it;
@@ -416,15 +418,26 @@ TargetSP TargetList::FindTargetWithProcess(Process *process) const {
     return target_sp;
 
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find_if(m_target_list.begin(), m_target_list.end(),
-      [process](const TargetSP &item) {
-        return item->GetProcessSP().get() == process;
-      });
+  auto it = llvm::find_if(m_target_list, [process](const TargetSP &item) {
+    return item->GetProcessSP().get() == process;
+  });
 
   if (it != m_target_list.end())
     target_sp = *it;
 
   return target_sp;
+}
+
+TargetSP TargetList::FindTargetByGloballyUniqueID(lldb::user_id_t id) const {
+  std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+  auto it = llvm::find_if(m_target_list, [id](const TargetSP &item) {
+    return item->GetGloballyUniqueID() == id;
+  });
+
+  if (it != m_target_list.end())
+    return *it;
+
+  return TargetSP();
 }
 
 TargetSP TargetList::GetTargetSP(Target *target) const {
@@ -433,8 +446,9 @@ TargetSP TargetList::GetTargetSP(Target *target) const {
     return target_sp;
 
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find_if(m_target_list.begin(), m_target_list.end(),
-      [target](const TargetSP &item) { return item.get() == target; });
+  auto it = llvm::find_if(m_target_list, [target](const TargetSP &item) {
+    return item.get() == target;
+  });
   if (it != m_target_list.end())
     target_sp = *it;
 
@@ -489,7 +503,7 @@ uint32_t TargetList::SignalIfRunning(lldb::pid_t pid, int signo) {
   return num_signals_sent;
 }
 
-int TargetList::GetNumTargets() const {
+size_t TargetList::GetNumTargets() const {
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
   return m_target_list.size();
 }
@@ -504,15 +518,17 @@ lldb::TargetSP TargetList::GetTargetAtIndex(uint32_t idx) const {
 
 uint32_t TargetList::GetIndexOfTarget(lldb::TargetSP target_sp) const {
   std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find(m_target_list.begin(), m_target_list.end(), target_sp);
+  auto it = llvm::find(m_target_list, target_sp);
   if (it != m_target_list.end())
     return std::distance(m_target_list.begin(), it);
   return UINT32_MAX;
 }
 
 void TargetList::AddTargetInternal(TargetSP target_sp, bool do_select) {
+  std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
   lldbassert(!llvm::is_contained(m_target_list, target_sp) &&
              "target already exists it the list");
+  UnregisterInProcessTarget(target_sp);
   m_target_list.push_back(std::move(target_sp));
   if (do_select)
     SetSelectedTargetInternal(m_target_list.size() - 1);
@@ -529,9 +545,13 @@ void TargetList::SetSelectedTarget(uint32_t index) {
 }
 
 void TargetList::SetSelectedTarget(const TargetSP &target_sp) {
-  std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
-  auto it = std::find(m_target_list.begin(), m_target_list.end(), target_sp);
-  SetSelectedTargetInternal(std::distance(m_target_list.begin(), it));
+  // Don't allow an invalid target shared pointer or a target that has been
+  // destroyed to become the selected target.
+  if (target_sp && target_sp->IsValid()) {
+    std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+    auto it = llvm::find(m_target_list, target_sp);
+    SetSelectedTargetInternal(std::distance(m_target_list.begin(), it));
+  }
 }
 
 lldb::TargetSP TargetList::GetSelectedTarget() {
@@ -540,3 +560,36 @@ lldb::TargetSP TargetList::GetSelectedTarget() {
     m_selected_target_idx = 0;
   return GetTargetAtIndex(m_selected_target_idx);
 }
+
+bool TargetList::AnyTargetContainsModule(Module &module) {
+  std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+  for (const auto &target_sp : m_target_list) {
+    if (target_sp->GetImages().FindModule(&module))
+      return true;
+  }
+  for (const auto &target_sp: m_in_process_target_list) {
+    if (target_sp->GetImages().FindModule(&module))
+      return true;
+  }
+  return false;
+}
+
+  void TargetList::RegisterInProcessTarget(TargetSP target_sp) {
+    std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+    [[maybe_unused]] bool was_added;
+    std::tie(std::ignore, was_added) =
+        m_in_process_target_list.insert(target_sp);
+    assert(was_added && "Target pointer was left in the in-process map");
+  }
+  
+  void TargetList::UnregisterInProcessTarget(TargetSP target_sp) {
+    std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+    [[maybe_unused]] bool was_present =
+        m_in_process_target_list.erase(target_sp);
+    assert(was_present && "Target pointer being removed was not registered");
+  }
+  
+  bool TargetList::IsTargetInProcess(TargetSP target_sp) {
+    std::lock_guard<std::recursive_mutex> guard(m_target_list_mutex);
+    return m_in_process_target_list.count(target_sp) == 1; 
+  }

@@ -1,4 +1,4 @@
-; RUN: opt -S -mtriple=amdgcn-unknown-amdhsa -passes=amdgpu-promote-alloca < %s | FileCheck %s
+; RUN: opt -S -mtriple=amdgpu-unknown-amdhsa -passes=amdgpu-promote-alloca < %s | FileCheck %s
 
 ; CHECK-LABEL: @volatile_load(
 ; CHECK: alloca [4 x i32]
@@ -23,6 +23,17 @@ entry:
   %arrayidx1 = getelementptr inbounds [4 x i32], ptr addrspace(5) %stack, i32 0, i32 %tmp
   store volatile i32 %tmp, ptr addrspace(5) %arrayidx1
  ret void
+}
+
+; CHECK-LABEL: @volatile_store_vec(
+; CHECK: alloca [4 x i32]
+; CHECK: store volatile <4 x i32>
+define amdgpu_kernel void @volatile_store_vec(ptr addrspace(1) nocapture %out, ptr addrspace(1) nocapture %in) {
+entry:
+  %stack = alloca [4 x i32], align 4, addrspace(5)
+  %tmp = load <4 x i32>, ptr addrspace(1) %in, align 16
+  store volatile <4 x i32> %tmp, ptr addrspace(5) %stack
+  ret void
 }
 
 ; Has on OK non-volatile user but also a volatile user

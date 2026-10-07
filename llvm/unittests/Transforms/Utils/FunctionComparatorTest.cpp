@@ -24,9 +24,9 @@ struct TestFunction {
   Type *T;
 
   TestFunction(LLVMContext &Ctx, Module &M, int addVal) {
-    IRBuilder<> B(Ctx);
+    IRBuilder<> B(M);
     T = B.getInt8Ty();
-    F = Function::Create(FunctionType::get(T, {B.getInt8PtrTy()}, false),
+    F = Function::Create(FunctionType::get(T, {B.getPtrTy()}, false),
                          GlobalValue::ExternalLinkage, "F", &M);
     BB = BasicBlock::Create(Ctx, "", F);
     B.SetInsertPoint(BB);

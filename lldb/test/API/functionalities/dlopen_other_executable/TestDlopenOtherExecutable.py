@@ -3,21 +3,20 @@ from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbutil
 
-class TestCase(TestBase):
 
+class TestCase(TestBase):
     @skipIfRemote
-    @skipIfWindows
+    @no_debug_info_test
+    @skipIf(archs=no_match(["x86_64", "arm64$"]))
     # glibc's dlopen doesn't support opening executables.
     # https://sourceware.org/bugzilla/show_bug.cgi?id=11754
-    @skipIfLinux
-    # freebsd's dlopen ditto
-    @expectedFailureAll(oslist=["freebsd"])
-    @expectedFailureNetBSD
-    @no_debug_info_test
+    @skipUnlessDarwin
     def test(self):
         self.build()
         # Launch and stop before the dlopen call.
-        lldbutil.run_to_source_breakpoint(self, "// break here", lldb.SBFileSpec("main.c"))
+        lldbutil.run_to_source_breakpoint(
+            self, "// break here", lldb.SBFileSpec("main.c")
+        )
 
         # Delete the breakpoint we no longer need.
         self.target().DeleteAllBreakpoints()
@@ -27,7 +26,8 @@ class TestCase(TestBase):
 
         # Continue so that dlopen is called.
         breakpoint = self.target().BreakpointCreateBySourceRegex(
-            "// break after dlopen", lldb.SBFileSpec("main.c"))
+            "// break after dlopen", lldb.SBFileSpec("main.c")
+        )
         self.assertNotEqual(breakpoint.GetNumResolvedLocations(), 0)
         stopped_threads = lldbutil.continue_to_breakpoint(self.process(), breakpoint)
         self.assertEqual(len(stopped_threads), 1)

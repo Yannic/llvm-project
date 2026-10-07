@@ -6,12 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "SourceMgrUtils.h"
+#include "mlir/Tools/lsp-server-support/SourceMgrUtils.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Path.h"
 #include <optional>
 
 using namespace mlir;
 using namespace mlir::lsp;
+
+using llvm::lsp::Hover;
+using llvm::lsp::Range;
+using llvm::lsp::URIForFile;
 
 //===----------------------------------------------------------------------===//
 // Utils
@@ -43,7 +48,7 @@ static const char *lexLocStringTok(const char *curPtr) {
   return curPtr - 1;
 }
 
-SMRange lsp::convertTokenLocToRange(SMLoc loc) {
+SMRange lsp::convertTokenLocToRange(SMLoc loc, StringRef identifierChars) {
   if (!loc.isValid())
     return SMRange();
   const char *curPtr = loc.getPointer();
@@ -55,8 +60,8 @@ SMRange lsp::convertTokenLocToRange(SMLoc loc) {
     // Otherwise, default to handling an identifier.
   } else {
     // Return if the given character is a valid identifier character.
-    auto isIdentifierChar = [](char c) {
-      return isalnum(c) || c == '$' || c == '.' || c == '_' || c == '-';
+    auto isIdentifierChar = [=](char c) {
+      return isalnum(c) || c == '_' || identifierChars.contains(c);
     };
 
     while (*curPtr && isIdentifierChar(*(++curPtr)))
@@ -82,7 +87,7 @@ lsp::extractSourceDocComment(llvm::SourceMgr &sourceMgr, SMLoc loc) {
 
   // Pop the last line from the buffer string.
   auto popLastLine = [&]() -> std::optional<StringRef> {
-    size_t newlineOffset = buffer.find_last_of("\n");
+    size_t newlineOffset = buffer.find_last_of('\n');
     if (newlineOffset == StringRef::npos)
       return std::nullopt;
     StringRef lastLine = buffer.drop_front(newlineOffset).trim();
@@ -98,11 +103,11 @@ lsp::extractSourceDocComment(llvm::SourceMgr &sourceMgr, SMLoc loc) {
   SmallVector<StringRef> commentLines;
   while (std::optional<StringRef> line = popLastLine()) {
     // Check for a comment at the beginning of the line.
-    if (!line->startswith("//"))
+    if (!line->starts_with("//"))
       break;
 
     // Extract the document string from the comment.
-    commentLines.push_back(line->drop_while([](char c) { return c == '/'; }));
+    commentLines.push_back(line->ltrim('/'));
   }
 
   if (commentLines.empty())

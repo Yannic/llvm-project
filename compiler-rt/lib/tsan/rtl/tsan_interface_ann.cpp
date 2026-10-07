@@ -9,17 +9,19 @@
 // This file is a part of ThreadSanitizer (TSan), a race detector.
 //
 //===----------------------------------------------------------------------===//
-#include "sanitizer_common/sanitizer_libc.h"
+#include "tsan_interface_ann.h"
+
 #include "sanitizer_common/sanitizer_internal_defs.h"
+#include "sanitizer_common/sanitizer_libc.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "sanitizer_common/sanitizer_stacktrace.h"
 #include "sanitizer_common/sanitizer_vector.h"
-#include "tsan_interface_ann.h"
+#include "tsan_adaptive_delay.h"
+#include "tsan_flags.h"
+#include "tsan_mman.h"
+#include "tsan_platform.h"
 #include "tsan_report.h"
 #include "tsan_rtl.h"
-#include "tsan_mman.h"
-#include "tsan_flags.h"
-#include "tsan_platform.h"
 
 #define CALLERPC ((uptr)__builtin_return_address(0))
 
@@ -76,7 +78,7 @@ struct DynamicAnnContext {
 };
 
 static DynamicAnnContext *dyn_ann_ctx;
-static char dyn_ann_ctx_placeholder[sizeof(DynamicAnnContext)] ALIGNED(64);
+alignas(64) static char dyn_ann_ctx_placeholder[sizeof(DynamicAnnContext)];
 
 static void AddExpectRace(ExpectRace *list,
     char *f, int l, uptr addr, uptr size, char *desc) {
@@ -370,6 +372,7 @@ void __tsan_mutex_pre_lock(void *m, unsigned flagz) {
   }
   ThreadIgnoreBegin(thr, 0);
   ThreadIgnoreSyncBegin(thr, 0);
+  AdaptiveDelay::SyncOp();
 }
 
 INTERFACE_ATTRIBUTE
@@ -402,6 +405,7 @@ int __tsan_mutex_pre_unlock(void *m, unsigned flagz) {
 
 INTERFACE_ATTRIBUTE
 void __tsan_mutex_post_unlock(void *m, unsigned flagz) {
+  AdaptiveDelay::SyncOp();
   SCOPED_ANNOTATION(__tsan_mutex_post_unlock);
   ThreadIgnoreSyncEnd(thr);
   ThreadIgnoreEnd(thr);
@@ -434,5 +438,26 @@ void __tsan_mutex_post_divert(void *addr, unsigned flagz) {
   SCOPED_ANNOTATION(__tsan_mutex_post_divert);
   ThreadIgnoreBegin(thr, 0);
   ThreadIgnoreSyncBegin(thr, 0);
+}
+
+static void ReportMutexHeldWrongContext(ThreadState *thr, uptr pc) {
+  VarSizeStackTrace trace;
+  ObtainCurrentStack(thr, pc, &trace);
+  ScopedReport rep(ReportTypeMutexHeldWrongContext);
+  for (uptr i = 0; i < thr->mset.Size(); ++i) {
+    MutexSet::Desc desc = thr->mset.Get(i);
+    rep.AddMutex(desc.addr, desc.stack_id);
+  }
+  rep.AddStack(trace, true);
+  OutputReport(thr, rep);
+}
+
+INTERFACE_ATTRIBUTE
+void __tsan_check_no_mutexes_held() {
+  SCOPED_ANNOTATION(__tsan_check_no_mutexes_held);
+  if (thr->mset.Size() == 0) {
+    return;
+  }
+  ReportMutexHeldWrongContext(thr, pc);
 }
 }  // extern "C"

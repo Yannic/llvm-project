@@ -4,6 +4,7 @@ add_subdirectory(Serialization)
 set(LLVM_OPTIONAL_SOURCES
   SPIRVBinaryUtils.cpp
   TranslateRegistration.cpp
+  Target.cpp
   )
 
 add_mlir_translation_library(MLIRSPIRVBinaryUtils
@@ -11,7 +12,6 @@ add_mlir_translation_library(MLIRSPIRVBinaryUtils
 
   LINK_LIBS PUBLIC
   MLIRIR
-  MLIRSPIRVDialect
   MLIRSupport
   )
 
@@ -20,9 +20,21 @@ add_mlir_translation_library(MLIRSPIRVTranslateRegistration
 
   LINK_LIBS PUBLIC
   MLIRIR
-  MLIRSPIRVDialect
   MLIRSPIRVSerialization
   MLIRSPIRVDeserialization
   MLIRSupport
-  MLIRTranslateLib
+  )
+
+add_mlir_dialect_library(MLIRSPIRVTarget
+  Target.cpp
+
+  # Target.cpp includes llvm/IR/Attributes.h.
+  DEPENDS
+  intrinsics_gen
+
+  LINK_LIBS PUBLIC
+  MLIRIR
+  MLIRGPUDialect
+  MLIRSPIRVSerialization
+  MLIRSupport
   )

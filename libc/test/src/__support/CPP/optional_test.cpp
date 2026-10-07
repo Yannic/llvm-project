@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/CPP/optional.h"
-#include "utils/UnitTest/Test.h"
+#include "test/UnitTest/Test.h"
 
-using __llvm_libc::cpp::nullopt;
-using __llvm_libc::cpp::optional;
+using LIBC_NAMESPACE::cpp::nullopt;
+using LIBC_NAMESPACE::cpp::optional;
 
 // This class has three properties for testing:
 // 1) No default constructor.
@@ -42,14 +42,18 @@ TEST(LlvmLibcOptionalTest, Tests) {
 
   // For this test case, the destructor increments the pointed-to value.
   int holding = 1;
-  optional<Contrived> Complicated(&holding);
-  // Destructor was run once as part of copying the object.
-  ASSERT_EQ(holding, 2);
-  // Destructor was run a second time as part of destruction.
-  Complicated.reset();
-  ASSERT_EQ(holding, 3);
-  // Destructor was not run a third time as the object is already destroyed.
-  Complicated.reset();
+  {
+    optional<Contrived> Complicated(&holding);
+    // Destructor was run once as part of copying the object.
+    ASSERT_EQ(holding, 2);
+    // Destructor was run a second time as part of destruction.
+    Complicated.reset();
+    ASSERT_EQ(holding, 3);
+    // Destructor was not run a third time as the object is already destroyed.
+    Complicated.reset();
+    ASSERT_EQ(holding, 3);
+  }
+  // Make sure the destructor isn't called when the optional is destroyed.
   ASSERT_EQ(holding, 3);
 
   // Test that assigning an optional to another works when set
@@ -75,4 +79,23 @@ TEST(LlvmLibcOptionalTest, Tests) {
   ASSERT_EQ(arrow_test->get_a(), arrow_num);
   ASSERT_EQ(arrow_num, 11);
   arrow_test.reset();
+}
+
+TEST(LlvmLibcOptionalTest, ValueOr) {
+  optional<int> opt_empty;
+  EXPECT_EQ(opt_empty.value_or(42), 42);
+  optional<int> opt_full(10);
+  EXPECT_EQ(opt_full.value_or(42), 10);
+  EXPECT_EQ(optional<int>(100).value_or(42), 100);
+  EXPECT_EQ(optional<int>().value_or(42), 42);
+
+  const optional<int> opt_const_empty;
+  EXPECT_EQ(opt_const_empty.value_or(42), 42);
+  const optional<int> opt_const_full(10);
+  EXPECT_EQ(opt_const_full.value_or(42), 10);
+
+  optional<long> opt_long_empty;
+  EXPECT_EQ(opt_long_empty.value_or(42), 42L);
+  optional<long> opt_long_full(100L);
+  EXPECT_EQ(opt_long_full.value_or(42), 100L);
 }

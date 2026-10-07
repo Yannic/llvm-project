@@ -34,17 +34,8 @@ static std::optional<OptimizationLevel> mapToLevel(unsigned optLevel,
     return OptimizationLevel::O1;
 
   case 2:
-    switch (sizeLevel) {
-    case 0:
-      return OptimizationLevel::O2;
+    return OptimizationLevel::O2;
 
-    case 1:
-      return OptimizationLevel::Os;
-
-    case 2:
-      return OptimizationLevel::Oz;
-    }
-    break;
   case 3:
     return OptimizationLevel::O3;
   }
@@ -84,11 +75,7 @@ mlir::makeOptimizingTransformer(unsigned optLevel, unsigned sizeLevel,
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
     ModulePassManager mpm;
-    if (*ol == OptimizationLevel::O0)
-      mpm.addPass(pb.buildO0DefaultPipeline(*ol));
-    else
-      mpm.addPass(pb.buildPerModuleDefaultPipeline(*ol));
-
+    mpm.addPass(pb.buildPerModuleDefaultPipeline(*ol));
     mpm.run(*m, mam);
     return Error::success();
   };

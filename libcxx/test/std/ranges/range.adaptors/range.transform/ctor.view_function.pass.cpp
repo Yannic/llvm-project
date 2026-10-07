@@ -8,14 +8,16 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
-// constexpr transform_view(View, F);
-
-#include <ranges>
+// constexpr explicit transform_view(View, F); // explicit since C++23
 
 #include <cassert>
+#include <ranges>
+
+#include "test_convertible.h"
+#include "test_macros.h"
 
 struct Range : std::ranges::view_base {
-  constexpr explicit Range(int* b, int* e) : begin_(b), end_(e) { }
+  constexpr explicit Range(int* b, int* e) : begin_(b), end_(e) {}
   constexpr int* begin() const { return begin_; }
   constexpr int* end() const { return end_; }
 
@@ -28,6 +30,11 @@ struct F {
   constexpr int operator()(int i) const { return i + 100; }
 };
 
+// SFINAE tests.
+
+static_assert(!test_convertible<std::ranges::transform_view<Range, F>, Range, F>(),
+              "This constructor must be explicit");
+
 constexpr bool test() {
   int buff[] = {1, 2, 3, 4, 5, 6, 7, 8};
 
@@ -35,16 +42,6 @@ constexpr bool test() {
     Range range(buff, buff + 8);
     F f;
     std::ranges::transform_view<Range, F> view(range, f);
-    assert(view[0] == 101);
-    assert(view[1] == 102);
-    // ...
-    assert(view[7] == 108);
-  }
-
-  {
-    Range range(buff, buff + 8);
-    F f;
-    std::ranges::transform_view<Range, F> view = {range, f};
     assert(view[0] == 101);
     assert(view[1] == 102);
     // ...

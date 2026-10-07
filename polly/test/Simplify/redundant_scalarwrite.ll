@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-import-jscop -polly-import-jscop-postfix=transformed -polly-print-simplify -disable-output < %s | FileCheck %s -match-full-lines
+; RUN: opt %loadNPMPolly '-passes=polly-custom<import-jscop;simplify-0>' -plugin-arg=Polly,-polly-print-simplify -plugin-arg=Polly,-polly-import-jscop-postfix=transformed -disable-output < %s | FileCheck %s -match-full-lines
 ;
 ; Remove redundant scalar stores.
 ;

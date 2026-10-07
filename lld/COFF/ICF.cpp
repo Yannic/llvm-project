@@ -21,12 +21,9 @@
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
 #include "Symbols.h"
-#include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Timer.h"
-#include "llvm/ADT/Hashing.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/Parallel.h"
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <atomic>
@@ -38,16 +35,16 @@ namespace lld::coff {
 
 class ICF {
 public:
-  ICF(COFFLinkerContext &c) : ctx(c){};
+  ICF(COFFLinkerContext &c) : ctx(c) {}
   void run();
 
 private:
-  void segregate(size_t begin, size_t end, bool constant);
+  template <bool constant> void segregate(size_t begin, size_t end);
 
   bool assocEquals(const SectionChunk *a, const SectionChunk *b);
 
-  bool equalsConstant(const SectionChunk *a, const SectionChunk *b);
-  bool equalsVariable(const SectionChunk *a, const SectionChunk *b);
+  template <bool constant>
+  bool sectionsEqual(const SectionChunk *a, const SectionChunk *b);
 
   bool isEligible(SectionChunk *c);
 
@@ -78,7 +75,8 @@ private:
 // of the Visual C++ linker.
 bool ICF::isEligible(SectionChunk *c) {
   // Non-comdat chunks, dead chunks, and writable chunks are not eligible.
-  bool writable = c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_WRITE;
+  bool writable =
+      c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_WRITE;
   if (!c->isCOMDAT() || !c->live || writable)
     return false;
 
@@ -93,7 +91,10 @@ bool ICF::isEligible(SectionChunk *c) {
     return true;
 
   // So are vtables.
-  if (c->sym && c->sym->getName().startswith("??_7"))
+  const char *itaniumVtablePrefix =
+      ctx.config.machine == I386 ? "__ZTV" : "_ZTV";
+  if (c->sym && (c->sym->getName().starts_with("??_7") ||
+                 c->sym->getName().starts_with(itaniumVtablePrefix)))
     return true;
 
   // Anything else not in an address-significance table is eligible.
@@ -101,15 +102,13 @@ bool ICF::isEligible(SectionChunk *c) {
 }
 
 // Split an equivalence class into smaller classes.
-void ICF::segregate(size_t begin, size_t end, bool constant) {
+template <bool constant> void ICF::segregate(size_t begin, size_t end) {
   while (begin < end) {
     // Divide [Begin, End) into two. Let Mid be the start index of the
     // second group.
     auto bound = std::stable_partition(
         chunks.begin() + begin + 1, chunks.begin() + end, [&](SectionChunk *s) {
-          if (constant)
-            return equalsConstant(chunks[begin], s);
-          return equalsVariable(chunks[begin], s);
+          return sectionsEqual<constant>(chunks[begin], s);
         });
     size_t mid = bound - chunks.begin();
 
@@ -126,13 +125,14 @@ void ICF::segregate(size_t begin, size_t end, bool constant) {
   }
 }
 
-// Returns true if two sections' associative children are equal.
+// Returns true if two sections' associative children, i.e. exception handling
+// metadata such as .pdata and .xdata, are equal.
 bool ICF::assocEquals(const SectionChunk *a, const SectionChunk *b) {
   // Ignore associated metadata sections that don't participate in ICF, such as
   // debug info and CFGuard metadata.
   auto considerForICF = [](const SectionChunk &assoc) {
     StringRef Name = assoc.getSectionName();
-    return !(Name.startswith(".debug") || Name == ".gfids$y" ||
+    return !(Name.starts_with(".debug") || Name == ".gfids$y" ||
              Name == ".giats$y" || Name == ".gljmp$y");
   };
   auto ra = make_filter_range(a->children(), considerForICF);
@@ -143,56 +143,48 @@ bool ICF::assocEquals(const SectionChunk *a, const SectionChunk *b) {
                     });
 }
 
-// Compare "non-moving" part of two sections, namely everything
-// except relocation targets.
-bool ICF::equalsConstant(const SectionChunk *a, const SectionChunk *b) {
-  if (a->relocsSize != b->relocsSize)
-    return false;
-
-  // Compare relocations.
-  auto eq = [&](const coff_relocation &r1, const coff_relocation &r2) {
-    if (r1.Type != r2.Type ||
-        r1.VirtualAddress != r2.VirtualAddress) {
+// Compare the "non-moving" or "moving" parts of two sections.
+template <bool constant>
+bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
+  auto eqSym = [&](Symbol *b1, Symbol *b2) {
+    if (b1 == b2)
+      return true;
+    auto *d1 = dyn_cast<DefinedRegular>(b1);
+    auto *d2 = dyn_cast<DefinedRegular>(b2);
+    if (!d1 || !d2)
       return false;
-    }
-    Symbol *b1 = a->file->getSymbol(r1.SymbolTableIndex);
-    Symbol *b2 = b->file->getSymbol(r2.SymbolTableIndex);
-    if (b1 == b2)
-      return true;
-    if (auto *d1 = dyn_cast<DefinedRegular>(b1))
-      if (auto *d2 = dyn_cast<DefinedRegular>(b2))
-        return d1->getValue() == d2->getValue() &&
-               d1->getChunk()->eqClass[cnt % 2] == d2->getChunk()->eqClass[cnt % 2];
-    return false;
+    if constexpr (constant)
+      if (d1->getValue() != d2->getValue())
+        return false;
+    return d1->getChunk()->eqClass[cnt % 2] == d2->getChunk()->eqClass[cnt % 2];
   };
-  if (!std::equal(a->getRelocs().begin(), a->getRelocs().end(),
-                  b->getRelocs().begin(), eq))
+
+  auto eqReloc = [&](const coff_relocation &r1, const coff_relocation &r2) {
+    if constexpr (constant)
+      if (r1.Type != r2.Type || r1.VirtualAddress != r2.VirtualAddress)
+        return false;
+    return eqSym(a->file->getSymbol(r1.SymbolTableIndex),
+                 b->file->getSymbol(r2.SymbolTableIndex));
+  };
+  if (!llvm::equal(a->getRelocs(), b->getRelocs(), eqReloc))
     return false;
 
-  // Compare section attributes and contents.
-  return a->getOutputCharacteristics() == b->getOutputCharacteristics() &&
-         a->getSectionName() == b->getSectionName() &&
-         a->header->SizeOfRawData == b->header->SizeOfRawData &&
-         a->checksum == b->checksum && a->getContents() == b->getContents() &&
-         assocEquals(a, b);
-}
+  if constexpr (constant) {
+    return a->getOutputCharacteristics() == b->getOutputCharacteristics() &&
+           a->getSectionName() == b->getSectionName() &&
+           a->header->SizeOfRawData == b->header->SizeOfRawData &&
+           a->checksum == b->checksum && a->getContents() == b->getContents() &&
+           a->getMachine() == b->getMachine() && assocEquals(a, b);
+  } else {
+    Symbol *e1 = a->getEntryThunk();
+    Symbol *e2 = b->getEntryThunk();
+    if ((e1 || e2) && (!e1 || !e2 || !eqSym(e1, e2)))
+      return false;
 
-// Compare "moving" part of two sections, namely relocation targets.
-bool ICF::equalsVariable(const SectionChunk *a, const SectionChunk *b) {
-  // Compare relocations.
-  auto eq = [&](const coff_relocation &r1, const coff_relocation &r2) {
-    Symbol *b1 = a->file->getSymbol(r1.SymbolTableIndex);
-    Symbol *b2 = b->file->getSymbol(r2.SymbolTableIndex);
-    if (b1 == b2)
-      return true;
-    if (auto *d1 = dyn_cast<DefinedRegular>(b1))
-      if (auto *d2 = dyn_cast<DefinedRegular>(b2))
-        return d1->getChunk()->eqClass[cnt % 2] == d2->getChunk()->eqClass[cnt % 2];
-    return false;
-  };
-  return std::equal(a->getRelocs().begin(), a->getRelocs().end(),
-                    b->getRelocs().begin(), eq) &&
-         assocEquals(a, b);
+    // Check associated children sections, i.e. exception handling data, for
+    // equality.
+    return assocEquals(a, b);
+  }
 }
 
 // Find the first Chunk after Begin that has a different class from Begin.
@@ -246,11 +238,12 @@ void ICF::forEachClass(std::function<void(size_t, size_t)> fn) {
 // Two sections are considered the same if their section headers,
 // contents and relocations are all the same.
 void ICF::run() {
+  llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
-  for (Chunk *c : ctx.symtab.getChunks()) {
+  for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
       if (isEligible(sc))
         chunks.push_back(sc);
@@ -268,7 +261,7 @@ void ICF::run() {
 
   // Initially, we use hash values to partition sections.
   parallelForEach(chunks, [&](SectionChunk *sc) {
-    sc->eqClass[0] = xxHash64(sc->getContents());
+    sc->eqClass[0] = xxh3_64bits(sc->getContents());
   });
 
   // Combine the hashes of the sections referenced by each section into its
@@ -291,25 +284,25 @@ void ICF::run() {
   });
 
   // Compare static contents and assign unique IDs for each static content.
-  forEachClass([&](size_t begin, size_t end) { segregate(begin, end, true); });
+  forEachClass([&](size_t begin, size_t end) { segregate<true>(begin, end); });
 
   // Split groups by comparing relocations until convergence is obtained.
   do {
     repeat = false;
     forEachClass(
-        [&](size_t begin, size_t end) { segregate(begin, end, false); });
+        [&](size_t begin, size_t end) { segregate<false>(begin, end); });
   } while (repeat);
 
-  log("ICF needed " + Twine(cnt) + " iterations");
+  Log(ctx) << "ICF needed " << Twine(cnt) << " iterations";
 
   // Merge sections in the same classes.
   forEachClass([&](size_t begin, size_t end) {
     if (end - begin == 1)
       return;
 
-    log("Selected " + chunks[begin]->getDebugName());
+    Log(ctx) << "Selected " << chunks[begin]->getDebugName();
     for (size_t i = begin + 1; i < end; ++i) {
-      log("  Removed " + chunks[i]->getDebugName());
+      Log(ctx) << "  Removed " << chunks[i]->getDebugName();
       chunks[begin]->replace(chunks[i]);
     }
   });

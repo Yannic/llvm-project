@@ -51,7 +51,10 @@ static bool isLiteralsPair(const MachineInstr *FirstMI,
 static bool shouldScheduleAdjacent(const TargetInstrInfo &TII,
                                    const TargetSubtargetInfo &TSI,
                                    const MachineInstr *FirstMI,
-                                   const MachineInstr &SecondMI) {
+                                   const MachineInstr &SecondMI,
+                                   const SDep *Dep) {
+  if (isNonDataDep(Dep))
+    return false;
   const ARMSubtarget &ST = static_cast<const ARMSubtarget&>(TSI);
 
   if (ST.hasFuseAES() && isAESPair(FirstMI, SecondMI))
@@ -62,7 +65,7 @@ static bool shouldScheduleAdjacent(const TargetInstrInfo &TII,
   return false;
 }
 
-std::unique_ptr<ScheduleDAGMutation> createARMMacroFusionDAGMutation () {
+std::unique_ptr<ScheduleDAGMutation> createARMMacroFusionDAGMutation() {
   return createMacroFusionDAGMutation(shouldScheduleAdjacent);
 }
 

@@ -19,8 +19,8 @@
 
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace clang {
 
@@ -40,7 +40,7 @@ private:
   Kind TheKind;
 
   static const auto &getABIMap() {
-    static llvm::StringMap<Kind> ABIMap = {
+    static const llvm::StringMap<Kind> ABIMap = {
 #define CXXABI(Name, Str) {Str, Name},
 #include "TargetCXXABI.def"
     };
@@ -48,7 +48,7 @@ private:
   }
 
   static const auto &getSpellingMap() {
-    static std::map<Kind, std::string> SpellingMap = {
+    static const std::map<Kind, std::string> SpellingMap = {
 #define CXXABI(Name, Str) {Name, Str},
 #include "TargetCXXABI.def"
     };
@@ -60,9 +60,7 @@ public:
   static const auto &getSpelling(Kind ABIKind) {
     return getSpellingMap().find(ABIKind)->second;
   }
-  static bool isABI(StringRef Name) {
-    return getABIMap().find(Name) != getABIMap().end();
-  }
+  static bool isABI(StringRef Name) { return getABIMap().contains(Name); }
 
   // Return true if this target should use the relative vtables C++ ABI by
   // default.
@@ -118,7 +116,7 @@ public:
       return T.isKnownWindowsMSVCEnvironment();
     }
     llvm_unreachable("invalid CXXABI kind");
-  };
+  }
 
   /// Does this ABI generally fall into the Itanium family of ABIs?
   bool isItaniumFamily() const {

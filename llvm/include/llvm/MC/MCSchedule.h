@@ -14,9 +14,13 @@
 #ifndef LLVM_MC_MCSCHEDULE_H
 #define LLVM_MC_MCSCHEDULE_H
 
-#include "llvm/Config/llvm-config.h"
-#include "llvm/Support/DataTypes.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringTable.h"
+#include "llvm/MC/MCInstrDesc.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <cassert>
+#include <optional>
 
 namespace llvm {
 
@@ -25,7 +29,14 @@ struct InstrItinerary;
 class MCSubtargetInfo;
 class MCInstrInfo;
 class MCInst;
+class MCInstrDesc;
 class InstrItineraryData;
+
+namespace cl {
+class OptionCategory;
+}
+
+extern LLVM_ABI cl::OptionCategory MCScheduleOptions;
 
 /// Define a kind of processor resource that will be modeled by the scheduler.
 struct MCProcResourceDesc {
@@ -58,14 +69,23 @@ struct MCProcResourceDesc {
   }
 };
 
-/// Identify one of the processor resource kinds consumed by a particular
-/// scheduling class for the specified number of cycles.
+/// Identify one of the processor resource kinds consumed by a
+/// particular scheduling class for the specified number of cycles.
 struct MCWriteProcResEntry {
   uint16_t ProcResourceIdx;
-  uint16_t Cycles;
+  /// Cycle at which the resource will be released by an instruction,
+  /// relatively to the cycle in which the instruction is issued
+  /// (assuming no stalls inbetween).
+  uint16_t ReleaseAtCycle;
+  /// Cycle at which the resource will be aquired by an instruction,
+  /// relatively to the cycle in which the instruction is issued
+  /// (assuming no stalls inbetween).
+  uint16_t AcquireAtCycle;
 
   bool operator==(const MCWriteProcResEntry &Other) const {
-    return ProcResourceIdx == Other.ProcResourceIdx && Cycles == Other.Cycles;
+    return ProcResourceIdx == Other.ProcResourceIdx &&
+           ReleaseAtCycle == Other.ReleaseAtCycle &&
+           AcquireAtCycle == Other.AcquireAtCycle;
   }
 };
 
@@ -111,18 +131,18 @@ struct MCSchedClassDesc {
   static const unsigned short VariantNumMicroOps = InvalidNumMicroOps - 1;
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-  const char* Name;
+  uint32_t NameOff;
 #endif
   uint16_t NumMicroOps : 13;
   uint16_t BeginGroup : 1;
   uint16_t EndGroup : 1;
   uint16_t RetireOOO : 1;
+  uint16_t ReadAdvanceIdx;  // First index into ReadAdvanceTable.
   uint16_t WriteProcResIdx; // First index into WriteProcResTable.
-  uint16_t NumWriteProcResEntries;
   uint16_t WriteLatencyIdx; // First index into WriteLatencyTable.
-  uint16_t NumWriteLatencyEntries;
-  uint16_t ReadAdvanceIdx; // First index into ReadAdvanceTable.
   uint16_t NumReadAdvanceEntries;
+  uint8_t NumWriteProcResEntries;
+  uint8_t NumWriteLatencyEntries;
 
   bool isValid() const {
     return NumMicroOps != InvalidNumMicroOps;
@@ -131,6 +151,15 @@ struct MCSchedClassDesc {
     return NumMicroOps == VariantNumMicroOps;
   }
 };
+
+// Guard against accidental growth. If either assertion fails, try to repack
+// MCSchedClassDesc to preserve the compact layout; remove the assertion if the
+// layout can no longer be kept.
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+static_assert(sizeof(MCSchedClassDesc) == 16);
+#else
+static_assert(sizeof(MCSchedClassDesc) == 12);
+#endif
 
 /// Specify the cost of a register definition in terms of number of physical
 /// register allocated at register renaming stage. For example, AMD Jaguar.
@@ -214,12 +243,12 @@ struct MCExtraProcessorInfo {
 /// consistent. Inaccuracies arise when instructions have different execution
 /// delays relative to each other, in addition to their intrinsic latency. Those
 /// special cases can be handled by TableGen constructs such as, ReadAdvance,
-/// which reduces latency when reading data, and ResourceCycles, which consumes
+/// which reduces latency when reading data, and ReleaseAtCycles, which consumes
 /// a processor resource when writing data for a number of abstract
 /// cycles.
 ///
 /// TODO: One tool currently missing is the ability to add a delay to
-/// ResourceCycles. That would be easy to add and would likely cover all cases
+/// ReleaseAtCycles. That would be easy to add and would likely cover all cases
 /// currently handled by the legacy itinerary tables.
 ///
 /// A note on out-of-order execution and, more generally, instruction
@@ -254,7 +283,7 @@ struct MCSchedModel {
   // has a bandwidth limitation, then that can be naturally modeled by adding an
   // out-of-order processor resource.
   unsigned IssueWidth;
-  static const unsigned DefaultIssueWidth = 1;
+  static constexpr unsigned DefaultIssueWidth = 1;
 
   // MicroOpBufferSize is the number of micro-ops that the processor may buffer
   // for out-of-order execution.
@@ -271,7 +300,7 @@ struct MCSchedModel {
   // estimate of highly machine specific characteristics such as the register
   // renaming pool and reorder buffer.
   unsigned MicroOpBufferSize;
-  static const unsigned DefaultMicroOpBufferSize = 0;
+  static constexpr unsigned DefaultMicroOpBufferSize = 0;
 
   // LoopMicroOpBufferSize is the number of micro-ops that the processor may
   // buffer for optimized loop execution. More generally, this represents the
@@ -279,33 +308,39 @@ struct MCSchedModel {
   // unrolled to bring the count of micro-ops in the loop body closer to this
   // number.
   unsigned LoopMicroOpBufferSize;
-  static const unsigned DefaultLoopMicroOpBufferSize = 0;
+  static constexpr unsigned DefaultLoopMicroOpBufferSize = 0;
 
   // LoadLatency is the expected latency of load instructions.
   unsigned LoadLatency;
-  static const unsigned DefaultLoadLatency = 4;
+  static constexpr unsigned DefaultLoadLatency = 4;
 
   // HighLatency is the expected latency of "very high latency" operations.
   // See TargetInstrInfo::isHighLatencyDef().
   // By default, this is set to an arbitrarily high number of cycles
   // likely to have some impact on scheduling heuristics.
   unsigned HighLatency;
-  static const unsigned DefaultHighLatency = 10;
+  static constexpr unsigned DefaultHighLatency = 10;
 
   // MispredictPenalty is the typical number of extra cycles the processor
   // takes to recover from a branch misprediction.
   unsigned MispredictPenalty;
-  static const unsigned DefaultMispredictPenalty = 10;
+  static constexpr unsigned DefaultMispredictPenalty = 10;
 
   bool PostRAScheduler; // default value is false
 
   bool CompleteModel;
+
+  // Tells the MachineScheduler whether or not to track resource usage
+  // using intervals via ResourceSegments (see
+  // llvm/include/llvm/CodeGen/MachineScheduler.h).
+  bool EnableIntervals;
 
   unsigned ProcID;
   const MCProcResourceDesc *ProcResourceTable;
   const MCSchedClassDesc *SchedClassTable;
   unsigned NumProcResourceKinds;
   unsigned NumSchedClasses;
+  const StringTable *SchedClassNames;
   // Instruction itinerary tables used by InstrItineraryData.
   friend class InstrItineraryData;
   const InstrItinerary *InstrItineraries;
@@ -350,35 +385,112 @@ struct MCSchedModel {
     return &SchedClassTable[SchedClassIdx];
   }
 
-  /// Returns the latency value for the scheduling class.
-  static int computeInstrLatency(const MCSubtargetInfo &STI,
-                                 const MCSchedClassDesc &SCDesc);
+  StringRef getSchedClassName(unsigned SchedClassIdx) const {
+#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+    return (*SchedClassNames)[SchedClassTable[SchedClassIdx].NameOff];
+#else
+    return "<unknown>";
+#endif
+  }
 
-  int computeInstrLatency(const MCSubtargetInfo &STI, unsigned SClass) const;
-  int computeInstrLatency(const MCSubtargetInfo &STI, const MCInstrInfo &MCII,
-                          const MCInst &Inst) const;
+  /// Returns the latency value for the scheduling class.
+  LLVM_ABI static int computeInstrLatency(const MCSubtargetInfo &STI,
+                                          const MCSchedClassDesc &SCDesc);
+
+  LLVM_ABI int computeInstrLatency(const MCSubtargetInfo &STI,
+                                   unsigned SClass) const;
+
+  LLVM_ABI int computeInstrLatency(const MCSubtargetInfo &STI,
+                                   const MCInstrInfo &MCII,
+                                   const MCInst &Inst) const;
+
+  template <typename MCSubtargetInfo, typename MCInstrInfo,
+            typename InstrItineraryData, typename MCInstOrMachineInstr>
+  int computeInstrLatency(
+      const MCSubtargetInfo &STI, const MCInstrInfo &MCII,
+      const MCInstOrMachineInstr &Inst,
+      llvm::function_ref<const MCSchedClassDesc *(const MCSchedClassDesc *)>
+          ResolveVariantSchedClass =
+              [](const MCSchedClassDesc *SCDesc) { return SCDesc; }) const;
 
   // Returns the reciprocal throughput information from a MCSchedClassDesc.
-  static double
+  LLVM_ABI static double
   getReciprocalThroughput(const MCSubtargetInfo &STI,
                           const MCSchedClassDesc &SCDesc);
 
-  static double
-  getReciprocalThroughput(unsigned SchedClass, const InstrItineraryData &IID);
+  LLVM_ABI static double getReciprocalThroughput(unsigned SchedClass,
+                                                 const InstrItineraryData &IID);
 
-  double
-  getReciprocalThroughput(const MCSubtargetInfo &STI, const MCInstrInfo &MCII,
-                          const MCInst &Inst) const;
+  LLVM_ABI double getReciprocalThroughput(const MCSubtargetInfo &STI,
+                                          const MCInstrInfo &MCII,
+                                          const MCInst &Inst) const;
 
   /// Returns the maximum forwarding delay for register reads dependent on
   /// writes of scheduling class WriteResourceIdx.
-  static unsigned getForwardingDelayCycles(ArrayRef<MCReadAdvanceEntry> Entries,
-                                           unsigned WriteResourceIdx = 0);
+  LLVM_ABI static unsigned
+  getForwardingDelayCycles(ArrayRef<MCReadAdvanceEntry> Entries,
+                           unsigned WriteResourceIdx = 0);
+
+  /// Returns the bypass delay cycle for the maximum latency write cycle
+  LLVM_ABI static unsigned getBypassDelayCycles(const MCSubtargetInfo &STI,
+                                                const MCSchedClassDesc &SCDesc);
+
+  /// Return the buffer size of the resource. If a positive scale factor
+  /// is provided and the original buffer size is > 1, the size is scaled
+  /// accordingly.
+  LLVM_ABI int getResourceBufferSize(unsigned ProcResourceIdx) const;
 
   /// Returns the default initialized model.
-  static const MCSchedModel &GetDefaultSchedModel() { return Default; }
-  static const MCSchedModel Default;
+  LLVM_ABI static const MCSchedModel Default;
 };
+
+// The first three are only template'd arguments so we can get away with leaving
+// them as incomplete types below. The third is a template over
+// MCInst/MachineInstr so as to avoid a layering violation here that would make
+// the MC layer depend on CodeGen.
+template <typename MCSubtargetInfo, typename MCInstrInfo,
+          typename InstrItineraryData, typename MCInstOrMachineInstr>
+int MCSchedModel::computeInstrLatency(
+    const MCSubtargetInfo &STI, const MCInstrInfo &MCII,
+    const MCInstOrMachineInstr &Inst,
+    llvm::function_ref<const MCSchedClassDesc *(const MCSchedClassDesc *)>
+        ResolveVariantSchedClass) const {
+  static const int NoInformationAvailable = -1;
+  // Check if we have a scheduling model for instructions.
+  if (!hasInstrSchedModel()) {
+    // Try to fall back to the itinerary model if the scheduling model doesn't
+    // have a scheduling table.  Note the default does not have a table.
+
+    llvm::StringRef CPU = STI.getCPU();
+
+    // Check if we have a CPU to get the itinerary information.
+    if (CPU.empty())
+      return NoInformationAvailable;
+
+    // Get itinerary information.
+    InstrItineraryData IID = STI.getInstrItineraryForCPU(CPU);
+    // Get the scheduling class of the requested instruction.
+    const MCInstrDesc &Desc = MCII.get(Inst.getOpcode());
+    unsigned SCClass = Desc.getSchedClass();
+
+    unsigned Latency = 0;
+
+    for (unsigned Idx = 0, IdxEnd = Inst.getNumOperands(); Idx != IdxEnd; ++Idx)
+      if (std::optional<unsigned> OperCycle = IID.getOperandCycle(SCClass, Idx))
+        Latency = std::max(Latency, *OperCycle);
+
+    return int(Latency);
+  }
+
+  unsigned SchedClass = MCII.get(Inst.getOpcode()).getSchedClass();
+  const MCSchedClassDesc *SCDesc = getSchedClassDesc(SchedClass);
+  SCDesc = ResolveVariantSchedClass(SCDesc);
+
+  if (!SCDesc || !SCDesc->isValid())
+    return NoInformationAvailable;
+
+  return MCSchedModel::computeInstrLatency(STI, *SCDesc);
+}
 
 } // namespace llvm
 

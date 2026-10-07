@@ -12,9 +12,7 @@
 
 #include "flang/Lower/SymbolMap.h"
 #include "flang/Optimizer/Builder/Todo.h"
-#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/Debug.h"
-#include <optional>
 
 #define DEBUG_TYPE "flang-lower-symbol-map"
 
@@ -33,35 +31,48 @@ void Fortran::lower::SymMap::addSymbol(Fortran::semantics::SymbolRef sym,
             });
 }
 
-Fortran::lower::SymbolBox toSymbolBox(
-    std::variant<Fortran::lower::SymbolBox, fir::FortranVariableOpInterface>
-        symboxOrdefiningOp) {
-  if (const Fortran::lower::SymbolBox *symBox =
-          std::get_if<Fortran::lower::SymbolBox>(&symboxOrdefiningOp))
-    return *symBox;
-  auto definingOp =
-      std::get<fir::FortranVariableOpInterface>(symboxOrdefiningOp);
-  TODO(definingOp.getLoc(), "FortranVariableOpInterface lookup as SymbolBox");
-}
-
 Fortran::lower::SymbolBox
 Fortran::lower::SymMap::lookupSymbol(Fortran::semantics::SymbolRef symRef) {
-  Fortran::semantics::SymbolRef sym = symRef.get().GetUltimate();
+  auto *sym = symRef->HasLocalLocality() ? &*symRef : &symRef->GetUltimate();
   for (auto jmap = symbolMapStack.rbegin(), jend = symbolMapStack.rend();
        jmap != jend; ++jmap) {
-    auto iter = jmap->find(&*sym);
+    auto iter = jmap->find(sym);
     if (iter != jmap->end())
-      return toSymbolBox(iter->second);
+      return iter->second;
   }
   return SymbolBox::None{};
 }
 
+Fortran::lower::SymbolBox Fortran::lower::SymMap::lookupDeviceSymbol(
+    Fortran::semantics::SymbolRef symRef) {
+  auto *sym = symRef->HasLocalLocality() ? &*symRef : &symRef->GetUltimate();
+  for (auto jmap = deviceSymbolMapStack.rbegin(),
+            jend = deviceSymbolMapStack.rend();
+       jmap != jend; ++jmap) {
+    auto iter = jmap->find(sym);
+    if (iter != jmap->end())
+      return iter->second;
+  }
+  return SymbolBox::None{};
+}
+
+const Fortran::semantics::Symbol *
+Fortran::lower::SymMap::lookupSymbolByName(llvm::StringRef symName) {
+  for (auto jmap = symbolMapStack.rbegin(), jend = symbolMapStack.rend();
+       jmap != jend; ++jmap)
+    for (auto const &[sym, symBox] : *jmap)
+      if (sym->name().ToString() == symName)
+        return sym;
+  return nullptr;
+}
+
 Fortran::lower::SymbolBox Fortran::lower::SymMap::shallowLookupSymbol(
     Fortran::semantics::SymbolRef symRef) {
+  auto *sym = symRef->HasLocalLocality() ? &*symRef : &symRef->GetUltimate();
   auto &map = symbolMapStack.back();
-  auto iter = map.find(&symRef.get().GetUltimate());
+  auto iter = map.find(sym);
   if (iter != map.end())
-    return toSymbolBox(iter->second);
+    return iter->second;
   return SymbolBox::None{};
 }
 
@@ -70,16 +81,16 @@ Fortran::lower::SymbolBox Fortran::lower::SymMap::shallowLookupSymbol(
 /// host-association in OpenMP code.
 Fortran::lower::SymbolBox Fortran::lower::SymMap::lookupOneLevelUpSymbol(
     Fortran::semantics::SymbolRef symRef) {
-  Fortran::semantics::SymbolRef sym = symRef.get().GetUltimate();
+  auto *sym = symRef->HasLocalLocality() ? &*symRef : &symRef->GetUltimate();
   auto jmap = symbolMapStack.rbegin();
   auto jend = symbolMapStack.rend();
   if (jmap == jend)
     return SymbolBox::None{};
   // Skip one level in symbol map stack.
   for (++jmap; jmap != jend; ++jmap) {
-    auto iter = jmap->find(&*sym);
+    auto iter = jmap->find(sym);
     if (iter != jmap->end())
-      return toSymbolBox(iter->second);
+      return iter->second;
   }
   return SymbolBox::None{};
 }
@@ -92,22 +103,36 @@ Fortran::lower::SymMap::lookupImpliedDo(Fortran::lower::SymMap::AcDoVar var) {
   return {};
 }
 
-std::optional<fir::FortranVariableOpInterface>
-Fortran::lower::SymMap::lookupVariableDefinition(semantics::SymbolRef symRef) {
-  Fortran::semantics::SymbolRef sym = symRef.get().GetUltimate();
-  for (auto jmap = symbolMapStack.rbegin(), jend = symbolMapStack.rend();
-       jmap != jend; ++jmap) {
-    auto iter = jmap->find(&*sym);
-    if (iter != jmap->end()) {
-      if (const auto *varDef =
-              std::get_if<fir::FortranVariableOpInterface>(&iter->second))
-        return *varDef;
-      else
-        return std::nullopt;
-    }
-  }
-  return std::nullopt;
+void Fortran::lower::SymMap::registerStorage(
+    semantics::SymbolRef symRef, Fortran::lower::SymMap::StorageDesc storage) {
+  auto *sym = symRef->HasLocalLocality() ? &*symRef : &symRef->GetUltimate();
+  assert(storage.first && "registerting storage without an address");
+  storageMapStack.back().insert_or_assign(sym, std::move(storage));
 }
+
+Fortran::lower::SymMap::StorageDesc
+Fortran::lower::SymMap::lookupStorage(Fortran::semantics::SymbolRef symRef) {
+  auto *sym = symRef->HasLocalLocality() ? &*symRef : &symRef->GetUltimate();
+  auto &map = storageMapStack.back();
+  auto iter = map.find(sym);
+  if (iter != map.end())
+    return iter->second;
+  return {nullptr, 0};
+}
+
+void Fortran::lower::SymbolBox::dump() const { llvm::errs() << *this << '\n'; }
+
+void Fortran::lower::ComponentMap::dump() const {
+  llvm::errs() << "ComponentMap:\n";
+  for (const auto &entry : componentMap) {
+    const auto *component = entry.first;
+    llvm::errs() << "  component @" << static_cast<const void *>(component)
+                 << " ->\n    ";
+    llvm::errs() << entry.second << '\n';
+  }
+}
+
+void Fortran::lower::SymMap::dump() const { llvm::errs() << *this << '\n'; }
 
 llvm::raw_ostream &
 Fortran::lower::operator<<(llvm::raw_ostream &os,
@@ -123,18 +148,6 @@ Fortran::lower::operator<<(llvm::raw_ostream &os,
   return os;
 }
 
-static llvm::raw_ostream &
-dump(llvm::raw_ostream &os,
-     const std::variant<Fortran::lower::SymbolBox,
-                        fir::FortranVariableOpInterface> &symboxOrdefiningOp) {
-  if (const Fortran::lower::SymbolBox *symBox =
-          std::get_if<Fortran::lower::SymbolBox>(&symboxOrdefiningOp))
-    return os << *symBox;
-  auto definingOp =
-      std::get<fir::FortranVariableOpInterface>(symboxOrdefiningOp);
-  return os << definingOp << "\n";
-}
-
 llvm::raw_ostream &
 Fortran::lower::operator<<(llvm::raw_ostream &os,
                            const Fortran::lower::SymMap &symMap) {
@@ -144,9 +157,21 @@ Fortran::lower::operator<<(llvm::raw_ostream &os,
     for (auto iter : i.value()) {
       os << "  symbol @" << static_cast<const void *>(iter.first) << " ["
          << *iter.first << "] ->\n    ";
-      dump(os, iter.second);
+      os << iter.second;
     }
     os << " }>\n";
   }
+
+  os << "Component map:\n";
+  for (auto i : llvm::enumerate(symMap.componentMapStack)) {
+    if (!i.value()) {
+      os << " level " << i.index() << "<{}>\n";
+    } else {
+      os << " level " << i.index() << "<{\n";
+      (*i.value())->dump();
+      os << " }>\n";
+    }
+  }
+
   return os;
 }

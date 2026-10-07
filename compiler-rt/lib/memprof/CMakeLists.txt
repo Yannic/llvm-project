@@ -37,7 +37,6 @@ SET(MEMPROF_HEADERS
   memprof_interface_internal.h
   memprof_internal.h
   memprof_mapping.h
-  memprof_meminfoblock.h
   memprof_mibmap.h
   memprof_rawprofile.h
   memprof_stack.h
@@ -127,7 +126,10 @@ set(MEMPROF_COMMON_RUNTIME_OBJECT_LIBS
   RTSanitizerCommon
   RTSanitizerCommonLibc
   RTSanitizerCommonCoverage
-  RTSanitizerCommonSymbolizer)
+  RTSanitizerCommonSymbolizer
+  # FIXME: hangs.
+  # RTSanitizerCommonSymbolizerInternal
+)
 
 add_compiler_rt_runtime(clang_rt.memprof
   STATIC
@@ -193,12 +195,12 @@ foreach(arch ${MEMPROF_SUPPORTED_ARCH})
 
   if (SANITIZER_USE_SYMBOLS)
     add_sanitizer_rt_symbols(clang_rt.memprof_cxx
-      ARCHS ${arch})
-    add_dependencies(memprof clang_rt.memprof_cxx-${arch}-symbols)
+      ARCHS ${arch}
+      PARENT_TARGET memprof)
     add_sanitizer_rt_symbols(clang_rt.memprof
       ARCHS ${arch}
+      PARENT_TARGET memprof
       EXTRA memprof.syms.extra)
-    add_dependencies(memprof clang_rt.memprof-${arch}-symbols)
   endif()
 endforeach()
 

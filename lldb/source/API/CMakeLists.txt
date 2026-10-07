@@ -1,22 +1,48 @@
 get_property(LLDB_ALL_PLUGINS GLOBAL PROPERTY LLDB_PLUGINS)
 
+if(LLDB_BUILD_STATIC_LIBLLDB)
+  set(liblldb_library_type STATIC)
+else()
+  set(liblldb_library_type SHARED)
+endif()
+
 if(LLDB_BUILD_FRAMEWORK)
   set(option_install_prefix INSTALL_PREFIX ${LLDB_FRAMEWORK_INSTALL_DIR})
   set(option_framework FRAMEWORK)
 endif()
 
 if(LLDB_ENABLE_PYTHON)
-  get_target_property(python_bindings_dir swig_wrapper_python BINARY_DIR)
-  set(lldb_python_wrapper ${python_bindings_dir}/LLDBWrapPython.cpp)
+  if (APPLE AND LLVM_ENABLE_LOCAL_SUBMODULE_VISIBILITY)
+    # Work around an issue with the Python headers, which have a modular include
+    # inside an extern "C" block.
+    remove_module_flags()
+  endif()
 endif()
 
-if(LLDB_ENABLE_LUA)
-  get_target_property(lua_bindings_dir swig_wrapper_lua BINARY_DIR)
-  set(lldb_lua_wrapper ${lua_bindings_dir}/LLDBWrapLua.cpp)
-endif()
+# Generate SBLanguages.h from Dwarf.def.
+set(sb_languages_file
+  ${CMAKE_CURRENT_BINARY_DIR}/../../include/lldb/API/SBLanguages.h)
+set(sb_languages_generator
+  ${LLDB_SOURCE_DIR}/scripts/generate-sbapi-dwarf-enum.py)
+add_custom_command(
+  COMMENT "Generating SBLanguages.h from Dwarf.def"
+  COMMAND "${Python3_EXECUTABLE}"
+      ${sb_languages_generator}
+      ${LLVM_MAIN_INCLUDE_DIR}/llvm/BinaryFormat/Dwarf.def
+      -o ${sb_languages_file}
+  OUTPUT ${sb_languages_file}
+  DEPENDS ${LLVM_MAIN_INCLUDE_DIR}/llvm/BinaryFormat/Dwarf.def
+          ${sb_languages_generator}
+  WORKING_DIRECTORY ${LLVM_LIBRARY_OUTPUT_INTDIR}
+)
+add_custom_target(lldb-sbapi-dwarf-enums
+  DEPENDS ${sb_languages_file})
+set_target_properties(lldb-sbapi-dwarf-enums PROPERTIES FOLDER "LLDB/Tablegenning")
 
-add_lldb_library(liblldb SHARED ${option_framework}
+add_lldb_library(liblldb ${liblldb_library_type} ${option_framework}
   SBAddress.cpp
+  SBAddressRange.cpp
+  SBAddressRangeList.cpp
   SBAttachInfo.cpp
   SBBlock.cpp
   SBBreakpoint.cpp
@@ -37,10 +63,12 @@ add_lldb_library(liblldb SHARED ${option_framework}
   SBEvent.cpp
   SBExecutionContext.cpp
   SBExpressionOptions.cpp
-  SBFileSpec.cpp
   SBFile.cpp
+  SBFileSpec.cpp
   SBFileSpecList.cpp
+  SBFormat.cpp
   SBFrame.cpp
+  SBFrameList.cpp
   SBFunction.cpp
   SBHostOS.cpp
   SBInstruction.cpp
@@ -53,14 +81,21 @@ add_lldb_library(liblldb SHARED ${option_framework}
   SBMemoryRegionInfoList.cpp
   SBModule.cpp
   SBModuleSpec.cpp
+  SBMutex.cpp
   SBPlatform.cpp
   SBProcess.cpp
   SBProcessInfo.cpp
+  SBProcessInfoList.cpp
+  SBProgress.cpp
+  SBProtocolServer.cpp
   SBQueue.cpp
   SBQueueItem.cpp
   SBReproducer.cpp
+  SBSaveCoreOptions.cpp
+  SBScriptObject.cpp
   SBSection.cpp
   SBSourceManager.cpp
+  SBStatisticsOptions.cpp
   SBStream.cpp
   SBStringList.cpp
   SBStructuredData.cpp
@@ -81,15 +116,22 @@ add_lldb_library(liblldb SHARED ${option_framework}
   SBTypeNameSpecifier.cpp
   SBTypeSummary.cpp
   SBTypeSynthetic.cpp
+  SBUnixSignals.cpp
   SBValue.cpp
   SBValueList.cpp
   SBVariablesOptions.cpp
   SBWatchpoint.cpp
-  SBUnixSignals.cpp
+  SBWatchpointOptions.cpp
+  ScriptInterpreterBridge.cpp
   SystemInitializerFull.cpp
-  ${lldb_python_wrapper}
-  ${lldb_lua_wrapper}
 
+  ADDITIONAL_HEADER_DIRS
+    ${LLDB_INCLUDE_DIR}/lldb/API
+  DEPENDS
+    lldb-sbapi-dwarf-enums
+
+  LINK_COMPONENTS
+    Support
   LINK_LIBS
     lldbBreakpoint
     lldbCore
@@ -101,60 +143,21 @@ add_lldb_library(liblldb SHARED ${option_framework}
     lldbSymbol
     lldbTarget
     lldbUtility
+    lldbValueObject
     lldbVersion
     ${LLDB_ALL_PLUGINS}
-  LINK_COMPONENTS
-    Support
 
   ${option_install_prefix}
 )
 
-# lib/pythonX.Y/dist-packages/lldb/_lldb.so is a symlink to lib/liblldb.so,
-# which depends on lib/libLLVM*.so (BUILD_SHARED_LIBS) or lib/libLLVM-10git.so
-# (LLVM_LINK_LLVM_DYLIB). Add an additional rpath $ORIGIN/../../../../lib so
-# that _lldb.so can be loaded from Python.
-if(LLDB_ENABLE_PYTHON AND (BUILD_SHARED_LIBS OR LLVM_LINK_LLVM_DYLIB) AND UNIX AND NOT APPLE)
-  set_property(TARGET liblldb APPEND PROPERTY INSTALL_RPATH "\$ORIGIN/../../../../lib${LLVM_LIBDIR_SUFFIX}")
-endif()
-
-if(Python3_RPATH)
-  set_property(TARGET liblldb APPEND PROPERTY INSTALL_RPATH "${Python3_RPATH}")
-  set_property(TARGET liblldb APPEND PROPERTY BUILD_RPATH   "${Python3_RPATH}")
-endif()
-
-
-if(LLDB_ENABLE_PYTHON)
-  add_dependencies(liblldb swig_wrapper_python)
-
-  if (MSVC)
-    set_property(SOURCE ${lldb_python_wrapper} APPEND_STRING PROPERTY COMPILE_FLAGS " /W0")
-  else()
-    set_property(SOURCE ${lldb_python_wrapper} APPEND_STRING PROPERTY COMPILE_FLAGS " -w")
+if (NOT LLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS)
+  if (LLDB_ENABLE_PYTHON)
+    add_python_wrapper(liblldb)
   endif()
 
-  set_source_files_properties(${lldb_python_wrapper} PROPERTIES GENERATED ON)
-  if (CLANG_CL)
-    set_property(SOURCE ${lldb_python_wrapper} APPEND_STRING
-      PROPERTY COMPILE_FLAGS " -Wno-unused-function")
+  if(LLDB_ENABLE_LUA)
+    add_lua_wrapper(liblldb)
   endif()
-  if (LLVM_COMPILER_IS_GCC_COMPATIBLE AND
-      NOT "${CMAKE_SYSTEM_NAME}" MATCHES "Darwin")
-    set_property(SOURCE ${lldb_python_wrapper} APPEND_STRING
-      PROPERTY COMPILE_FLAGS " -Wno-sequence-point -Wno-cast-qual")
-  endif ()
-endif()
-
-if(LLDB_ENABLE_LUA)
-  add_dependencies(liblldb swig_wrapper_lua)
-  target_include_directories(liblldb PRIVATE ${LUA_INCLUDE_DIR})
-
-  if (MSVC)
-    set_property(SOURCE ${lldb_lua_wrapper} APPEND_STRING PROPERTY COMPILE_FLAGS " /W0")
-  else()
-    set_property(SOURCE ${lldb_lua_wrapper} APPEND_STRING PROPERTY COMPILE_FLAGS " -w")
-  endif()
-
-  set_source_files_properties(${lldb_lua_wrapper} PROPERTIES GENERATED ON)
 endif()
 
 set_target_properties(liblldb
@@ -163,23 +166,100 @@ set_target_properties(liblldb
 )
 
 target_compile_definitions(liblldb PRIVATE LLDB_IN_LIBLLDB)
-if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
-  if (NOT LLDB_EXPORT_ALL_SYMBOLS)
+
+if (NOT LLDB_BUILD_STATIC_LIBLLDB AND
+    NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
+  if (LLDB_EXPORT_ALL_SYMBOLS)
+    if (LLDB_EXPORT_ALL_SYMBOLS_EXPORTS_FILE)
+      message(STATUS "Symbols (liblldb): exporting all symbols specified in the exports "
+              " file '${LLDB_EXPORT_ALL_SYMBOLS_EXPORTS_FILE}'")
+      message(WARNING "Private LLDB symbols frequently change and no API stability is guaranteed. "
+                      "Only the SB API is guaranteed to be stable.")
+      add_llvm_symbol_exports(liblldb "${LLDB_EXPORT_ALL_SYMBOLS_EXPORTS_FILE}")
+    else ()
+      message(STATUS "Symbols (liblldb): exporting all symbols from the lldb and lldb_private namespaces")
+      message(WARNING "Private LLDB symbols frequently change and no API stability is guaranteed. "
+                      "Only the SB API is guaranteed to be stable.")
+      add_llvm_symbol_exports(liblldb ${CMAKE_CURRENT_SOURCE_DIR}/liblldb-private.exports)
+    endif()
+  elseif (LLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS)
+    # Each script interpreter plugin contributes a list of its undefined
+    # LLDB symbols. Concatenating those with liblldb.exports yields the
+    # smallest export set that satisfies dynamically loaded plugins.
+    get_property(plugin_symbol_files GLOBAL
+      PROPERTY LLDB_DYNAMIC_SCRIPTINTERPRETER_SYMBOL_FILES)
+    set(generated_exports_file
+      ${CMAKE_CURRENT_BINARY_DIR}/liblldb-script-interpreter.exports)
+    add_custom_command(
+      OUTPUT ${generated_exports_file}
+      COMMAND ${CMAKE_COMMAND} -P
+        ${LLDB_SOURCE_DIR}/cmake/modules/LLDBConcatFiles.cmake
+        ${generated_exports_file}
+        ${CMAKE_CURRENT_SOURCE_DIR}/liblldb.exports
+        ${plugin_symbol_files}
+      DEPENDS
+        ${LLDB_SOURCE_DIR}/cmake/modules/LLDBConcatFiles.cmake
+        ${CMAKE_CURRENT_SOURCE_DIR}/liblldb.exports
+        ${plugin_symbol_files}
+      VERBATIM
+      COMMENT "Merging script interpreter export lists for liblldb"
+    )
+    add_custom_target(liblldb-script-interpreter-exports
+      DEPENDS ${generated_exports_file})
+    message(STATUS "Symbols (liblldb): exporting the lldb namespace plus "
+                   "script interpreter dependencies")
+    lldb_apply_exports_file(liblldb ${generated_exports_file})
+  else ()
     # If we're not exporting all symbols, we'll want to explicitly set
     # the exported symbols here.  This prevents 'log enable --stack ...'
     # from working on some systems but limits the liblldb size.
-    MESSAGE("-- Symbols (liblldb): exporting all symbols from the lldb namespace")
+    message(STATUS "Symbols (liblldb): exporting all symbols from the lldb namespace")
     add_llvm_symbol_exports(liblldb ${CMAKE_CURRENT_SOURCE_DIR}/liblldb.exports)
-  else()
-    # Don't use an explicit export.  Instead, tell the linker to
-    # export all symbols.
-    MESSAGE("-- Symbols (liblldb): exporting all symbols from the lldb and lldb_private namespaces")
-    add_llvm_symbol_exports(liblldb ${CMAKE_CURRENT_SOURCE_DIR}/liblldb-private.exports)
   endif()
-  set_target_properties(liblldb_exports PROPERTIES FOLDER "lldb misc")
+elseif (NOT LLDB_BUILD_STATIC_LIBLLDB AND
+        (LLDB_EXPORT_ALL_SYMBOLS OR LLDB_ENABLE_DYNAMIC_SCRIPTINTERPRETERS))
+  # On Windows there is no per-plugin symbol extraction, so dynamically loaded
+  # script interpreter plugins resolve their imports against the full set of
+  # private symbols, same as LLDB_EXPORT_ALL_SYMBOLS.
+  message(STATUS "Symbols (liblldb): exporting all symbols from the lldb and lldb_private namespaces")
+  # Pull out the various lldb libraries linked into liblldb, these will be used
+  # when looking for symbols to extract. We ignore most plugin libraries here,
+  # because we may expose more symbols than the DLL limit and these symbols
+  # aren't useful to expose.
+  get_target_property(all_liblldb_libs liblldb LINK_LIBRARIES)
+  set(lldb_libs "")
+  foreach(lib ${all_liblldb_libs})
+    if(TARGET ${lib} AND ${lib} MATCHES "^lldb" AND
+       (${lib} IN_LIST LLDB_EXPORT_ALL_SYMBOLS_PLUGINS OR
+        NOT ${lib} MATCHES "^lldbPlugin"))
+      get_target_property(lib_type ${lib} TYPE)
+      if("${lib_type}" STREQUAL "STATIC_LIBRARY")
+        list(APPEND lldb_libs ${lib})
+      endif()
+    endif()
+  endforeach(lib)
+  list(REMOVE_DUPLICATES lldb_libs)
+
+  # Extract all of the private symbols and produce a single file we can use for
+  # the exports.
+  set(exported_symbol_file ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_CFG_INTDIR}/liblldb_private.symbols)
+  get_host_tool_path(llvm-nm LLVM_NM llvm_nm_exe llvm_nm_target)
+  add_custom_command(
+    OUTPUT ${exported_symbol_file}
+    COMMAND "${Python3_EXECUTABLE}"
+      ${LLDB_SOURCE_DIR}/scripts/msvc_extract_private_symbols.py
+      ${lldb_libs} -o ${exported_symbol_file} --nm=${llvm_nm_exe}
+    WORKING_DIRECTORY ${LLVM_LIBRARY_OUTPUT_INTDIR}
+    DEPENDS ${LLDB_SOURCE_DIR}/scripts/msvc_extract_private_symbols.py
+      ${lldb_libs} ${llvm_nm_target}
+    VERBATIM
+    COMMENT "Generating liblldb private export list"
+  )
+
+  add_llvm_symbol_exports(liblldb ${exported_symbol_file})
 endif()
 
-if (NOT MSVC)
+if(NOT WIN32 OR MINGW)
   set_target_properties(liblldb
     PROPERTIES
     OUTPUT_NAME lldb
@@ -198,16 +278,90 @@ else()
   # When building the LLDB framework, this isn't necessary as there we copy everything we need into
   # the framework (including the Clang resourece directory).
   if(NOT LLDB_BUILD_FRAMEWORK)
-    set(LLDB_CLANG_RESOURCE_DIR_PARENT "$<TARGET_FILE_DIR:liblldb>/clang")
-    file(MAKE_DIRECTORY "${LLDB_CLANG_RESOURCE_DIR_PARENT}")
+    set(LLDB_CLANG_RESOURCE_DIR "$<TARGET_FILE_DIR:liblldb>/clang")
     add_custom_command(TARGET liblldb POST_BUILD
-      COMMENT "Linking Clang resource dir into LLDB build directory: ${LLDB_CLANG_RESOURCE_DIR_PARENT}"
-      COMMAND ${CMAKE_COMMAND} -E make_directory "${LLDB_CLANG_RESOURCE_DIR_PARENT}"
-      COMMAND ${CMAKE_COMMAND} -E create_symlink "${LLDB_EXTERNAL_CLANG_RESOURCE_DIR}"
-              "${LLDB_CLANG_RESOURCE_DIR_PARENT}/${LLDB_CLANG_RESOURCE_DIR_NAME}"
+      COMMENT "Linking Clang resource dir into LLDB build directory: ${LLDB_CLANG_RESOURCE_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E create_symlink
+      "${LLDB_EXTERNAL_CLANG_RESOURCE_DIR}" "${LLDB_CLANG_RESOURCE_DIR}"
     )
   endif()
 endif()
+
+# Stage all headers in the include directory in the build dir.
+file(GLOB public_headers ${LLDB_SOURCE_DIR}/include/lldb/API/*.h)
+set(lldb_header_staging_dir ${CMAKE_BINARY_DIR}/include/lldb)
+set(generated_public_headers ${LLDB_OBJ_DIR}/include/lldb/API/SBLanguages.h)
+file(GLOB root_public_headers ${LLDB_SOURCE_DIR}/include/lldb/lldb-*.h)
+file(GLOB root_private_headers ${LLDB_SOURCE_DIR}/include/lldb/lldb-private*.h)
+list(REMOVE_ITEM root_public_headers ${root_private_headers})
+
+file(MAKE_DIRECTORY ${lldb_header_staging_dir})
+
+find_program(unifdef_EXECUTABLE unifdef)
+
+add_custom_target(liblldb-header-staging)
+set_target_properties(liblldb-header-staging PROPERTIES FOLDER "LLDB/Resources")
+
+if (LLDB_BUILD_FRAMEWORK)
+  add_custom_target(lldb-framework-fixup-all-headers)
+  set_target_properties(lldb-framework-fixup-all-headers PROPERTIES FOLDER "LLDB/Resources")
+  
+  add_dependencies(lldb-framework-fixup-all-headers liblldb-header-staging)
+  add_dependencies(liblldb lldb-framework-fixup-all-headers)
+endif()
+
+foreach(header
+    ${public_headers}
+    ${generated_public_headers}
+    ${root_public_headers})
+  get_filename_component(basename ${header} NAME)
+  set(staged_header ${lldb_header_staging_dir}/${basename})
+
+  if(basename STREQUAL "lldb-defines.h")
+    set(copy_command "${Python3_EXECUTABLE}"
+        ${LLDB_SOURCE_DIR}/scripts/version-header-fix.py
+        -i ${header} -o ${staged_header}
+        -m ${LLDB_VERSION_MAJOR} -n ${LLDB_VERSION_MINOR} -p ${LLDB_VERSION_PATCH})
+  endif()
+  if(unifdef_EXECUTABLE)
+    # unifdef returns 0 when the file is unchanged and 1 if something was changed.
+    # That means if we successfully remove SWIG code, the build system believes
+    # that the command has failed and stops. This is undesirable.
+    set(copy_command ${unifdef_EXECUTABLE} -USWIG ${header} > ${staged_header} || (exit 0))
+  else()
+    set(copy_command ${CMAKE_COMMAND} -E copy ${header} ${staged_header})
+  endif()
+
+  add_custom_target(liblldb-stage-header-${basename} DEPENDS ${staged_header})
+  set_target_properties(liblldb-stage-header-${basename} PROPERTIES FOLDER "LLDB/Resources/liblldb-header-staging")
+
+  add_dependencies(liblldb-stage-header-${basename} lldb-sbapi-dwarf-enums)
+  add_dependencies(liblldb-header-staging liblldb-stage-header-${basename})
+  add_custom_command(
+    OUTPUT ${staged_header}
+    COMMAND ${copy_command}
+    DEPENDS ${header}
+    COMMENT "LLDB headers: stage LLDB headers in include directory")
+
+  list(APPEND lldb_staged_headers ${staged_header})
+
+  if (LLDB_BUILD_FRAMEWORK)
+    set(output_header $<TARGET_FILE_DIR:liblldb>/Headers/${basename})
+
+    add_custom_target(lldb-framework-fixup-header-${basename} DEPENDS ${staged_header})
+    set_target_properties(lldb-framework-fixup-header-${basename} PROPERTIES FOLDER "LLDB/Resources/lldb-framework-fixup-all-headers")
+
+    add_dependencies(lldb-framework-fixup-header-${basename} liblldb-stage-header-${basename})
+    add_dependencies(lldb-framework-fixup-all-headers lldb-framework-fixup-header-${basename})
+
+    add_custom_command(TARGET lldb-framework-fixup-header-${basename} POST_BUILD
+      COMMAND "${Python3_EXECUTABLE}" ${LLDB_SOURCE_DIR}/scripts/framework-header-fix.py -i ${staged_header} -o ${output_header}
+      COMMENT "LLDB.framework: Fix up and copy framework headers"
+    )
+  endif()
+endforeach()
+
+add_dependencies(liblldb liblldb-header-staging)
 
 if(LLDB_BUILD_FRAMEWORK)
   include(LLDBFramework)

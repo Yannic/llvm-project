@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/MemoryOpRemark.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/DebugInfo.h"
@@ -50,8 +51,8 @@ bool MemoryOpRemark::canHandle(const Instruction *I, const TargetLibraryInfo &TL
     if (!CF->hasName())
       return false;
 
-    LibFunc LF;
-    bool KnownLibCall = TLI.getLibFunc(*CF, LF) && TLI.has(LF);
+    LibFunc LF = TLI.getLibFunc(*CF);
+    bool KnownLibCall = TLI.has(LF);
     if (!KnownLibCall)
       return false;
 
@@ -247,8 +248,8 @@ void MemoryOpRemark::visitCall(const CallInst &CI) {
   if (!F)
     return visitUnknown(CI);
 
-  LibFunc LF;
-  bool KnownLibCall = TLI.getLibFunc(*F, LF) && TLI.has(LF);
+  LibFunc LF = TLI.getLibFunc(*F);
+  bool KnownLibCall = TLI.has(LF);
   auto R = makeRemark(RemarkPass.data(), remarkName(RK_Call), &CI);
   visitCallee(F, KnownLibCall, *R);
   visitKnownLibCall(CI, LF, *R);
@@ -318,10 +319,9 @@ void MemoryOpRemark::visitVariable(const Value *V,
 
   // If we find some information in the debug info, take that.
   bool FoundDI = false;
-  // Try to get an llvm.dbg.declare, which has a DILocalVariable giving us the
+  // Try to get a dbg.declare, which has a DILocalVariable giving us the
   // real debug info name and size of the variable.
-  for (const DbgVariableIntrinsic *DVI :
-       FindDbgAddrUses(const_cast<Value *>(V))) {
+  auto FindDI = [&](const DbgVariableRecord *DVI) {
     if (DILocalVariable *DILV = DVI->getVariable()) {
       std::optional<uint64_t> DISize = getSizeInBytes(DILV->getSizeInBits());
       VariableInfo Var{DILV->getName(), DISize};
@@ -330,7 +330,9 @@ void MemoryOpRemark::visitVariable(const Value *V,
         FoundDI = true;
       }
     }
-  }
+  };
+  for_each(findDVRDeclares(const_cast<Value *>(V)), FindDI);
+
   if (FoundDI) {
     assert(!Result.empty());
     return;
@@ -352,15 +354,18 @@ void MemoryOpRemark::visitVariable(const Value *V,
 void MemoryOpRemark::visitPtr(Value *Ptr, bool IsRead, DiagnosticInfoIROptimization &R) {
   // Find if Ptr is a known variable we can give more information on.
   SmallVector<Value *, 2> Objects;
-  getUnderlyingObjectsForCodeGen(Ptr, Objects);
   SmallVector<VariableInfo, 2> VIs;
+
+  if (!getUnderlyingObjectsForCodeGen(Ptr, Objects))
+    Objects.clear();
+
   for (const Value *V : Objects)
     visitVariable(V, VIs);
 
   if (VIs.empty()) {
     bool CanBeNull;
-    bool CanBeFreed;
-    uint64_t Size = Ptr->getPointerDereferenceableBytes(DL, CanBeNull, CanBeFreed);
+    uint64_t Size = Ptr->getPointerDereferenceableBytes(DL, CanBeNull,
+                                                        /*CanBeFreed=*/nullptr);
     if (!Size)
       return;
     VIs.push_back({std::nullopt, Size});
@@ -387,7 +392,8 @@ bool AutoInitRemark::canHandle(const Instruction *I) {
     return false;
   return any_of(I->getMetadata(LLVMContext::MD_annotation)->operands(),
                 [](const MDOperand &Op) {
-                  return cast<MDString>(Op.get())->getString() == "auto-init";
+                  return isa<MDString>(Op.get()) &&
+                         cast<MDString>(Op.get())->getString() == "auto-init";
                 });
 }
 

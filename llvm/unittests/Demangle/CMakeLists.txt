@@ -7,8 +7,8 @@ add_llvm_unittest(DemangleTests
   DemangleTest.cpp
   DLangDemangleTest.cpp
   ItaniumDemangleTest.cpp
+  MicrosoftDemangleTest.cpp
   OutputBufferTest.cpp
   PartialDemangleTest.cpp
   RustDemangleTest.cpp
-  StringViewTest.cpp
 )

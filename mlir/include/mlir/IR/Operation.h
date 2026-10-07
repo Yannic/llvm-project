@@ -18,13 +18,18 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/Region.h"
-#include "llvm/ADT/Twine.h"
 #include <optional>
 
 namespace mlir {
+namespace detail {
+/// This is a "tag" used for mapping the properties storage in
+/// llvm::TrailingObjects.
+enum class OpProperties : char {};
+} // namespace detail
+
 /// Operation is the basic unit of execution within MLIR.
 ///
-/// The following documentation are recommended to understand this class:
+/// The following documentations are recommended to understand this class:
 /// - https://mlir.llvm.org/docs/LangRef/#operations
 /// - https://mlir.llvm.org/docs/Tutorials/UnderstandingTheIRStructure/
 ///
@@ -60,25 +65,41 @@ namespace mlir {
 /// tail allocated with the operation class itself, but can be dynamically moved
 /// out-of-line in a dynamic allocation as needed.
 ///
-/// An Operation may contain optionally one or multiple Regions, stored in a
+/// An Operation may optionally contain one or multiple Regions, stored in a
 /// tail allocated array. Each `Region` is a list of Blocks. Each `Block` is
 /// itself a list of Operations. This structure is effectively forming a tree.
 ///
 /// Some operations like branches also refer to other Block, in which case they
 /// would have an array of `BlockOperand`.
 ///
+/// An Operation may optionally contain a "Properties" object: this is a
+/// pre-defined C++ object with a fixed size. This object is owned by the
+/// operation and deleted with the operation. It can be converted to an
+/// Attribute on demand, or loaded from an Attribute.
+///
+///
 /// Finally an Operation also contain an optional `DictionaryAttr`, a Location,
 /// and a pointer to its parent Block (if any).
 class alignas(8) Operation final
     : public llvm::ilist_node_with_parent<Operation, Block>,
       private llvm::TrailingObjects<Operation, detail::OperandStorage,
-                                    BlockOperand, Region, OpOperand> {
+                                    detail::OpProperties, BlockOperand, Region,
+                                    OpOperand> {
 public:
-  /// Create a new Operation with the specific fields.
+  /// Create a new Operation with the specific fields. This constructor
+  /// populates the provided attribute list with default attributes if
+  /// necessary.
   static Operation *create(Location location, OperationName name,
                            TypeRange resultTypes, ValueRange operands,
-                           NamedAttrList &&attributes, BlockRange successors,
-                           unsigned numRegions);
+                           NamedAttrList &&attributes, PropertyRef properties,
+                           BlockRange successors, unsigned numRegions);
+
+  /// Create a new Operation with the specific fields. This constructor uses an
+  /// existing attribute dictionary to avoid uniquing a list of attributes.
+  static Operation *create(Location location, OperationName name,
+                           TypeRange resultTypes, ValueRange operands,
+                           DictionaryAttr attributes, PropertyRef properties,
+                           BlockRange successors, unsigned numRegions);
 
   /// Create a new Operation from the fields stored in `state`.
   static Operation *create(const OperationState &state);
@@ -86,7 +107,7 @@ public:
   /// Create a new Operation with the specific fields.
   static Operation *create(Location location, OperationName name,
                            TypeRange resultTypes, ValueRange operands,
-                           NamedAttrList &&attributes,
+                           NamedAttrList &&attributes, PropertyRef properties,
                            BlockRange successors = {},
                            RegionRange regions = {});
 
@@ -115,18 +136,20 @@ public:
   /// * Whether cloning should recursively traverse into the regions of the
   ///   operation or not.
   /// * Whether cloning should also clone the operands of the operation.
+  /// * Whether to use different result types or clone them.
   class CloneOptions {
   public:
     /// Default constructs an option with all flags set to false. That means all
     /// parts of an operation that may optionally not be cloned, are not cloned.
     CloneOptions();
 
-    /// Constructs an instance with the clone regions and clone operands flags
-    /// set accordingly.
-    CloneOptions(bool cloneRegions, bool cloneOperands);
+    /// Constructs an instance with the options set accordingly.
+    CloneOptions(bool cloneRegions, bool cloneOperands,
+                 std::optional<SmallVector<Type>> resultTypes);
 
-    /// Returns an instance with all flags set to true. This is the default
-    /// when using the clone method and clones all parts of the operation.
+    /// Returns an instance such that all elements of the operation are cloned.
+    /// This is the default when using the clone method and clones all parts of
+    /// the operation.
     static CloneOptions all();
 
     /// Configures whether cloning should traverse into any of the regions of
@@ -147,11 +170,29 @@ public:
     /// Returns whether operands should be cloned as well.
     bool shouldCloneOperands() const { return cloneOperandsFlag; }
 
+    /// Configures different result types to use for the cloned operation.
+    /// If an empty optional, the result types are cloned from the original
+    /// operation.
+    CloneOptions &withResultTypes(std::optional<SmallVector<Type>> resultTypes);
+
+    /// Returns true if the results are cloned from the operation.
+    bool shouldCloneResults() const { return !resultTypes.has_value(); }
+
+    /// Returns the result types that should be used for the created operation
+    /// or `defaultResultTypes` if none were set.
+    TypeRange resultTypesOr(TypeRange defaultResultTypes) const {
+      if (resultTypes)
+        return *resultTypes;
+      return defaultResultTypes;
+    }
+
   private:
     /// Whether regions should be cloned.
     bool cloneRegionsFlag : 1;
     /// Whether operands should be cloned.
     bool cloneOperandsFlag : 1;
+    /// New result types to use in the cloned operation.
+    std::optional<SmallVector<Type>> resultTypes;
   };
 
   /// Create a deep copy of this operation, remapping any operands that use
@@ -160,7 +201,8 @@ public:
   /// sub-operations to the corresponding operation that is copied, and adds
   /// those mappings to the map.
   /// Optionally, one may configure what parts of the operation to clone using
-  /// the options parameter.
+  /// the options parameter. If parts of the operation (e.g. results or regions)
+  /// are not cloned, they will not appear in the mapper.
   ///
   /// Calling this method from multiple threads is generally safe if through the
   /// process of cloning no new uses of 'Value's from outside the operation are
@@ -169,8 +211,8 @@ public:
   /// mapper, it is possible to avoid adding uses to outside operands by
   /// remapping them to 'Value's owned by the caller thread.
   Operation *clone(IRMapping &mapper,
-                   CloneOptions options = CloneOptions::all());
-  Operation *clone(CloneOptions options = CloneOptions::all());
+                   const CloneOptions &options = CloneOptions::all());
+  Operation *clone(const CloneOptions &options = CloneOptions::all());
 
   /// Create a partial copy of this operation without traversing into attached
   /// regions. The new operation will have the same number of regions as the
@@ -217,6 +259,14 @@ public:
         return parentOp;
     return OpTy();
   }
+  template <typename... OpTy>
+  std::enable_if_t<(sizeof...(OpTy) > 1), Operation *> getParentOfType() {
+    auto *op = this;
+    while ((op = op->getParentOp()))
+      if (isa<OpTy...>(op))
+        return op;
+    return nullptr;
+  }
 
   /// Returns the closest surrounding parent operation with trait `Trait`.
   template <template <typename T> class Trait>
@@ -248,11 +298,20 @@ public:
     getResults().replaceAllUsesWith(std::forward<ValuesT>(values));
   }
 
+  /// Replace uses of results of this operation with the provided `values` if
+  /// the given callback returns true.
+  template <typename ValuesT>
+  void replaceUsesWithIf(ValuesT &&values,
+                         function_ref<bool(OpOperand &)> shouldReplace) {
+    getResults().replaceUsesWithIf(std::forward<ValuesT>(values),
+                                   shouldReplace);
+  }
+
   /// Destroys this operation and its subclass data.
   void destroy();
 
   /// This drops all operand uses from this operation, which is an essential
-  /// step in breaking cyclic dependences between references when they are to
+  /// step in breaking cyclic dependencies between references when they are to
   /// be deleted.
   void dropAllReferences();
 
@@ -284,9 +343,14 @@ public:
   /// take O(N) where N is the number of operations within the parent block.
   bool isBeforeInBlock(Operation *other);
 
-  void print(raw_ostream &os, const OpPrintingFlags &flags = std::nullopt);
+  void print(raw_ostream &os, const OpPrintingFlags &flags = {});
   void print(raw_ostream &os, AsmState &state);
   void dump();
+
+  // Dump pretty printed IR. This method is helpful for better readability if
+  // the Operation is not verified because it won't disable custom printers to
+  // fall back to the generic one.
+  LLVM_DUMP_METHOD void dumpPretty();
 
   //===--------------------------------------------------------------------===//
   // Operands
@@ -396,38 +460,169 @@ public:
   // constants to names.  Attributes may be dynamically added and removed over
   // the lifetime of an operation.
 
+  /// Access an inherent attribute by name: returns an empty optional if there
+  /// is no inherent attribute with this name.
+  ///
+  /// This method is available as a transient facility in the migration process
+  /// to use Properties instead.
+  std::optional<Attribute> getInherentAttr(StringRef name);
+
+  /// Access an inherent attribute by name and cast it to `AttrClass`.
+  template <typename AttrClass>
+  AttrClass getInherentAttrOfType(StringRef name) {
+    return llvm::dyn_cast_or_null<AttrClass>(
+        getInherentAttr(name).value_or(Attribute{}));
+  }
+
+  /// Set an inherent attribute by name.
+  ///
+  /// This method is available as a transient facility in the migration process
+  /// to use Properties instead.
+  void setInherentAttr(StringAttr name, Attribute value);
+
+  /// Access a discardable attribute by name, returns a null Attribute if the
+  /// discardable attribute does not exist.
+  Attribute getDiscardableAttr(StringRef name) { return attrs.get(name); }
+
+  /// Access a discardable attribute by name, returns a null Attribute if the
+  /// discardable attribute does not exist.
+  Attribute getDiscardableAttr(StringAttr name) { return attrs.get(name); }
+
+  /// Access a discardable attribute by name and cast it to `AttrClass`.
+  template <typename AttrClass>
+  AttrClass getDiscardableAttrOfType(StringRef name) {
+    return llvm::dyn_cast_or_null<AttrClass>(getDiscardableAttr(name));
+  }
+  template <typename AttrClass>
+  AttrClass getDiscardableAttrOfType(StringAttr name) {
+    return llvm::dyn_cast_or_null<AttrClass>(getDiscardableAttr(name));
+  }
+
+  /// Return true if this operation has a discardable attribute with the
+  /// provided name.
+  bool hasDiscardableAttr(StringRef name) { return bool(attrs.get(name)); }
+  bool hasDiscardableAttr(StringAttr name) { return bool(attrs.get(name)); }
+  template <typename AttrClass, typename NameT>
+  bool hasDiscardableAttrOfType(NameT &&name) {
+    return static_cast<bool>(
+        getDiscardableAttrOfType<AttrClass>(std::forward<NameT>(name)));
+  }
+
+  /// Set a discardable attribute by name.
+  void setDiscardableAttr(StringAttr name, Attribute value) {
+    NamedAttrList attributes(attrs);
+    if (attributes.set(name, value) != value)
+      attrs = attributes.getDictionary(getContext());
+  }
+  void setDiscardableAttr(StringRef name, Attribute value) {
+    setDiscardableAttr(StringAttr::get(getContext(), name), value);
+  }
+
+  /// Remove the discardable attribute with the specified name if it exists.
+  /// Return the attribute that was erased, or nullptr if there was no attribute
+  /// with such name.
+  Attribute removeDiscardableAttr(StringAttr name) {
+    NamedAttrList attributes(attrs);
+    Attribute removedAttr = attributes.erase(name);
+    if (removedAttr)
+      attrs = attributes.getDictionary(getContext());
+    return removedAttr;
+  }
+  Attribute removeDiscardableAttr(StringRef name) {
+    return removeDiscardableAttr(StringAttr::get(getContext(), name));
+  }
+
+  /// Return a range of all of discardable attributes on this operation. Note
+  /// that for unregistered operations that are not storing inherent attributes
+  /// as properties, all attributes are considered discardable.
+  auto getDiscardableAttrs() {
+    std::optional<RegisteredOperationName> opName = getRegisteredInfo();
+    ArrayRef<StringAttr> attributeNames =
+        opName ? getRegisteredInfo()->getAttributeNames()
+               : ArrayRef<StringAttr>();
+    return llvm::make_filter_range(
+        attrs.getValue(),
+        [this, attributeNames](const NamedAttribute attribute) {
+          return getPropertiesStorage() ||
+                 !llvm::is_contained(attributeNames, attribute.getName());
+        });
+  }
+
+  /// Return all of the discardable attributes on this operation as a
+  /// DictionaryAttr.
+  DictionaryAttr getDiscardableAttrDictionary() {
+    if (getPropertiesStorage())
+      return attrs;
+    return DictionaryAttr::get(getContext(),
+                               llvm::to_vector(getDiscardableAttrs()));
+  }
+
+  /// Return all attributes that are not stored as properties.
+  DictionaryAttr getRawDictionaryAttrs() { return attrs; }
+
   /// Return all of the attributes on this operation.
-  ArrayRef<NamedAttribute> getAttrs() { return attrs.getValue(); }
+  ArrayRef<NamedAttribute> getAttrs() { return getAttrDictionary().getValue(); }
 
   /// Return all of the attributes on this operation as a DictionaryAttr.
-  DictionaryAttr getAttrDictionary() { return attrs; }
+  DictionaryAttr getAttrDictionary();
 
-  /// Set the attribute dictionary on this operation.
-  void setAttrs(DictionaryAttr newAttrs) {
+  /// Set the attributes from a dictionary on this operation.
+  /// These methods are expensive: if the dictionary only contains discardable
+  /// attributes, `setDiscardableAttrs` is more efficient.
+  void setAttrs(DictionaryAttr newAttrs);
+  void setAttrs(ArrayRef<NamedAttribute> newAttrs);
+  /// Set the discardable attribute dictionary on this operation.
+  void setDiscardableAttrs(DictionaryAttr newAttrs) {
     assert(newAttrs && "expected valid attribute dictionary");
     attrs = newAttrs;
   }
-  void setAttrs(ArrayRef<NamedAttribute> newAttrs) {
-    setAttrs(DictionaryAttr::get(getContext(), newAttrs));
+  void setDiscardableAttrs(ArrayRef<NamedAttribute> newAttrs) {
+    setDiscardableAttrs(DictionaryAttr::get(getContext(), newAttrs));
   }
 
   /// Return the specified attribute if present, null otherwise.
-  Attribute getAttr(StringAttr name) { return attrs.get(name); }
-  Attribute getAttr(StringRef name) { return attrs.get(name); }
+  /// These methods are expensive: if the dictionary only contains discardable
+  /// attributes, `getDiscardableAttr` is more efficient.
+  Attribute getAttr(StringAttr name) {
+    if (getPropertiesStorageSize()) {
+      if (std::optional<Attribute> inherentAttr = getInherentAttr(name))
+        return *inherentAttr;
+    }
+    return attrs.get(name);
+  }
+  Attribute getAttr(StringRef name) {
+    if (getPropertiesStorageSize()) {
+      if (std::optional<Attribute> inherentAttr = getInherentAttr(name))
+        return *inherentAttr;
+    }
+    return attrs.get(name);
+  }
 
   template <typename AttrClass>
   AttrClass getAttrOfType(StringAttr name) {
-    return getAttr(name).dyn_cast_or_null<AttrClass>();
+    return llvm::dyn_cast_or_null<AttrClass>(getAttr(name));
   }
   template <typename AttrClass>
   AttrClass getAttrOfType(StringRef name) {
-    return getAttr(name).dyn_cast_or_null<AttrClass>();
+    return llvm::dyn_cast_or_null<AttrClass>(getAttr(name));
   }
 
   /// Return true if the operation has an attribute with the provided name,
   /// false otherwise.
-  bool hasAttr(StringAttr name) { return attrs.contains(name); }
-  bool hasAttr(StringRef name) { return attrs.contains(name); }
+  bool hasAttr(StringAttr name) {
+    if (getPropertiesStorageSize()) {
+      if (std::optional<Attribute> inherentAttr = getInherentAttr(name))
+        return (bool)*inherentAttr;
+    }
+    return attrs.contains(name);
+  }
+  bool hasAttr(StringRef name) {
+    if (getPropertiesStorageSize()) {
+      if (std::optional<Attribute> inherentAttr = getInherentAttr(name))
+        return (bool)*inherentAttr;
+    }
+    return attrs.contains(name);
+  }
   template <typename AttrClass, typename NameT>
   bool hasAttrOfType(NameT &&name) {
     return static_cast<bool>(
@@ -437,6 +632,12 @@ public:
   /// If the an attribute exists with the specified name, change it to the new
   /// value. Otherwise, add a new attribute with the specified name/value.
   void setAttr(StringAttr name, Attribute value) {
+    if (getPropertiesStorageSize()) {
+      if (getInherentAttr(name)) {
+        setInherentAttr(name, value);
+        return;
+      }
+    }
     NamedAttrList attributes(attrs);
     if (attributes.set(name, value) != value)
       attrs = attributes.getDictionary(getContext());
@@ -449,6 +650,12 @@ public:
   /// attribute that was erased, or nullptr if there was no attribute with such
   /// name.
   Attribute removeAttr(StringAttr name) {
+    if (getPropertiesStorageSize()) {
+      if (std::optional<Attribute> inherentAttr = getInherentAttr(name)) {
+        setInherentAttr(name, {});
+        return *inherentAttr;
+      }
+    }
     NamedAttrList attributes(attrs);
     Attribute removedAttr = attributes.erase(name);
     if (removedAttr)
@@ -493,7 +700,7 @@ public:
     return dialect_attr_iterator(attrs.end(), attrs.end());
   }
 
-  /// Set the dialect attributes for this operation, and preserve all dependent.
+  /// Set the dialect attributes for this operation, and preserve all inherent.
   template <typename DialectAttrT>
   void setDialectAttrs(DialectAttrT &&dialectAttrs) {
     NamedAttrList attrs;
@@ -506,9 +713,9 @@ public:
 
   /// Sets default attributes on unset attributes.
   void populateDefaultAttrs() {
-      NamedAttrList attrs(getAttrDictionary());
-      name.populateDefaultAttrs(attrs);
-      setAttrs(attrs.getDictionary(getContext()));
+    NamedAttrList attrs(getAttrDictionary());
+    name.populateDefaultAttrs(attrs);
+    setAttrs(attrs.getDictionary(getContext()));
   }
 
   //===--------------------------------------------------------------------===//
@@ -524,8 +731,7 @@ public:
     if (numRegions == 0)
       return MutableArrayRef<Region>();
 
-    auto *regions = getTrailingObjects<Region>();
-    return {regions, numRegions};
+    return getTrailingObjects<Region>(numRegions);
   }
 
   /// Returns the region held by this operation at position 'index'.
@@ -539,7 +745,7 @@ public:
   //===--------------------------------------------------------------------===//
 
   MutableArrayRef<BlockOperand> getBlockOperands() {
-    return {getTrailingObjects<BlockOperand>(), numSuccs};
+    return getTrailingObjects<BlockOperand>(numSuccs);
   }
 
   // Successor iteration.
@@ -563,10 +769,31 @@ public:
 
   /// Attempt to fold this operation with the specified constant operand values
   /// - the elements in "operands" will correspond directly to the operands of
-  /// the operation, but may be null if non-constant. If folding is successful,
-  /// this fills in the `results` vector. If not, `results` is unspecified.
+  /// the operation, but may be null if non-constant.
+  ///
+  /// If folding was successful, this function returns "success".
+  /// * If this operation was modified in-place (but not folded away),
+  ///   `results` is empty.
+  /// * Otherwise, `results` is filled with the folded results.
+  /// If folding was unsuccessful, this function returns "failure".
   LogicalResult fold(ArrayRef<Attribute> operands,
                      SmallVectorImpl<OpFoldResult> &results);
+
+  /// Attempt to fold this operation.
+  ///
+  /// If folding was successful, this function returns "success".
+  /// * If this operation was modified in-place (but not folded away),
+  ///   `results` is empty.
+  /// * Otherwise, `results` is filled with the folded results.
+  /// If folding was unsuccessful, this function returns "failure".
+  LogicalResult fold(SmallVectorImpl<OpFoldResult> &results);
+
+  /// Returns true if `InterfaceT` has been promised by the dialect or
+  /// implemented.
+  template <typename InterfaceT>
+  bool hasPromiseOrImplementsInterface() const {
+    return name.hasPromiseOrImplementsInterface<InterfaceT>();
+  }
 
   /// Returns true if the operation was registered with a particular trait, e.g.
   /// hasTrait<OperandsAreSignlessIntegerLike>().
@@ -589,9 +816,10 @@ public:
 
   /// Walk the operation by calling the callback for each nested operation
   /// (including this one), block or region, depending on the callback provided.
-  /// Regions, blocks and operations at the same nesting level are visited in
-  /// lexicographical order. The walk order for enclosing regions, blocks and
-  /// operations with respect to their nested ones is specified by 'Order'
+  /// The order in which regions, blocks and operations at the same nesting
+  /// level are visited (e.g., lexicographical or reverse lexicographical order)
+  /// is determined by 'Iterator'. The walk order for enclosing regions, blocks
+  /// and operations with respect to their nested ones is specified by 'Order'
   /// (post-order by default). A callback on a block or operation is allowed to
   /// erase that block or operation if either:
   ///   * the walk is in post-order, or
@@ -613,12 +841,13 @@ public:
   ///           return WalkResult::interrupt();
   ///         return WalkResult::advance();
   ///       });
-  template <WalkOrder Order = WalkOrder::PostOrder, typename FnT,
+  template <WalkOrder Order = WalkOrder::PostOrder,
+            typename Iterator = ForwardIterator, typename FnT,
             typename RetT = detail::walkResultType<FnT>>
   std::enable_if_t<llvm::function_traits<std::decay_t<FnT>>::num_args == 1,
                    RetT>
   walk(FnT &&callback) {
-    return detail::walk<Order>(this, std::forward<FnT>(callback));
+    return detail::walk<Order, Iterator>(this, std::forward<FnT>(callback));
   }
 
   /// Generic walker with a stage aware callback. Walk the operation by calling
@@ -715,6 +944,57 @@ public:
   /// handlers that may be listening.
   InFlightDiagnostic emitRemark(const Twine &message = {});
 
+  /// Returns the properties storage size.
+  int getPropertiesStorageSize() const {
+    return ((int)propertiesStorageSize) * 8;
+  }
+
+  /// Return a generic (but typed) reference to the property type storage.
+  PropertyRef getPropertiesStorage() {
+    if (propertiesStorageSize)
+      return PropertyRef(name.getOpPropertiesTypeID(),
+                         getRawPropertiesStorageUnsafe());
+    return {};
+  }
+
+  PropertyRef getPropertiesStorage() const {
+    if (propertiesStorageSize)
+      return PropertyRef(
+          name.getOpPropertiesTypeID(),
+          reinterpret_cast<void *>(const_cast<detail::OpProperties *>(
+              getTrailingObjects<detail::OpProperties>())));
+    return {};
+  }
+
+  /// Returns a pointer to the properties storage (if it exists) with no type
+  /// information.
+  void *getRawPropertiesStorageUnsafe() {
+    return reinterpret_cast<void *>(const_cast<detail::OpProperties *>(
+        getTrailingObjects<detail::OpProperties>()));
+  }
+
+  /// Return the properties converted to an attribute.
+  /// This is expensive, and mostly useful when dealing with unregistered
+  /// operation. Returns an empty attribute if no properties are present.
+  Attribute getPropertiesAsAttribute();
+
+  /// Set the properties from the provided attribute.
+  /// This is an expensive operation that can fail if the attribute is not
+  /// matching the expectations of the properties for this operation. This is
+  /// mostly useful for unregistered operations or used when parsing the
+  /// generic format. An optional diagnostic emitter can be passed in for richer
+  /// errors, if none is passed then behavior is undefined in error case.
+  LogicalResult
+  setPropertiesFromAttribute(Attribute attr,
+                             function_ref<InFlightDiagnostic()> emitError);
+
+  /// Copy properties from an existing other properties object. The two objects
+  /// must be the same type.
+  void copyProperties(PropertyRef rhs);
+
+  /// Compute a hash for the op properties (if any).
+  llvm::hash_code hashProperties();
+
 private:
   //===--------------------------------------------------------------------===//
   // Ordering
@@ -728,7 +1008,7 @@ private:
   /// operation.
   static constexpr unsigned kOrderStride = 5;
 
-  /// Update the order index of this operation of this operation if necessary,
+  /// Update the order index of this operation if necessary,
   /// potentially recomputing the order of the parent block.
   void updateOrderIfNecessary();
 
@@ -738,7 +1018,8 @@ private:
 private:
   Operation(Location location, OperationName name, unsigned numResults,
             unsigned numSuccessors, unsigned numRegions,
-            DictionaryAttr attributes, bool hasOperandStorage);
+            int propertiesStorageSize, DictionaryAttr attributes,
+            PropertyRef properties, bool hasOperandStorage);
 
   // Operations are deleted through the destroy() member because they are
   // allocated with malloc.
@@ -784,6 +1065,8 @@ private:
   /// Returns a pointer to the use list for the given result, which may be
   /// either inline or out-of-line.
   detail::OpResultImpl *getOpResultImpl(unsigned resultNumber) {
+    assert(resultNumber < getNumResults() &&
+           "Result number is out of range for operation");
     unsigned maxInlineResults = detail::OpResultImpl::getMaxInlineResults();
     if (resultNumber < maxInlineResults)
       return getInlineOpResult(resultNumber);
@@ -823,12 +1106,20 @@ private:
 
   const unsigned numResults;
   const unsigned numSuccs;
-  const unsigned numRegions : 31;
+  const unsigned numRegions : 23;
 
   /// This bit signals whether this operation has an operand storage or not. The
   /// operand storage may be elided for operations that are known to never have
   /// operands.
   bool hasOperandStorage : 1;
+
+  /// The size of the storage for properties (if any), divided by 8: since the
+  /// Properties storage will always be rounded up to the next multiple of 8 we
+  /// save some bits here.
+  unsigned char propertiesStorageSize : 8;
+  /// This is the maximum size we support to allocate properties inline with an
+  /// operation: this must match the bitwidth above.
+  static constexpr int64_t propertiesCapacity = 8 * 256;
 
   /// This holds the name of the operation.
   OperationName name;
@@ -849,8 +1140,9 @@ private:
   friend class llvm::ilist_node_with_parent<Operation, Block>;
 
   // This stuff is used by the TrailingObjects template.
-  friend llvm::TrailingObjects<Operation, detail::OperandStorage, BlockOperand,
-                               Region, OpOperand>;
+  friend llvm::TrailingObjects<Operation, detail::OperandStorage,
+                               detail::OpProperties, BlockOperand, Region,
+                               OpOperand>;
   size_t numTrailingObjects(OverloadToken<detail::OperandStorage>) const {
     return hasOperandStorage ? 1 : 0;
   }
@@ -858,10 +1150,59 @@ private:
     return numSuccs;
   }
   size_t numTrailingObjects(OverloadToken<Region>) const { return numRegions; }
+  size_t numTrailingObjects(OverloadToken<detail::OpProperties>) const {
+    return getPropertiesStorageSize();
+  }
 };
 
 inline raw_ostream &operator<<(raw_ostream &os, const Operation &op) {
   const_cast<Operation &>(op).print(os, OpPrintingFlags().useLocalScope());
+  return os;
+}
+
+/// A wrapper class that allows for printing an operation with a set of flags,
+/// useful to act as a "stream modifier" to customize printing an operation
+/// with a stream using the operator<< overload, e.g.:
+///   llvm::dbgs() << OpWithFlags(op, OpPrintingFlags().skipRegions());
+/// This always prints the operation with the local scope, to avoid introducing
+/// spurious newlines in the stream.
+class OpWithFlags {
+public:
+  OpWithFlags(Operation *op, OpPrintingFlags flags = {})
+      : op(op), theFlags(flags) {}
+  OpPrintingFlags &flags() { return theFlags; }
+  const OpPrintingFlags &flags() const { return theFlags; }
+  Operation *getOperation() const { return op; }
+
+private:
+  Operation *op;
+  OpPrintingFlags theFlags;
+  friend raw_ostream &operator<<(raw_ostream &os, OpWithFlags op);
+};
+
+inline raw_ostream &operator<<(raw_ostream &os, OpWithFlags opWithFlags) {
+  opWithFlags.flags().useLocalScope();
+  opWithFlags.op->print(os, opWithFlags.flags());
+  return os;
+}
+
+/// A wrapper class that allows for printing an operation with a custom
+/// AsmState, useful to act as a "stream modifier" to customize printing an
+/// operation with a stream using the operator<< overload, e.g.:
+///   llvm::dbgs() << OpWithState(op, OpPrintingFlags().skipRegions());
+class OpWithState {
+public:
+  OpWithState(Operation *op, AsmState &state) : op(op), theState(state) {}
+
+private:
+  Operation *op;
+  AsmState &theState;
+  friend raw_ostream &operator<<(raw_ostream &os, const OpWithState &op);
+};
+
+inline raw_ostream &operator<<(raw_ostream &os,
+                               const OpWithState &opWithState) {
+  opWithState.op->print(os, const_cast<OpWithState &>(opWithState).theState);
   return os;
 }
 

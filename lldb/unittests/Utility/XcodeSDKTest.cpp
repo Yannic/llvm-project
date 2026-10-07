@@ -12,7 +12,7 @@
 #include "lldb/Utility/XcodeSDK.h"
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <tuple>
 
@@ -27,17 +27,24 @@ TEST(XcodeSDKTest, ParseTest) {
   EXPECT_EQ(XcodeSDK("AppleTVOS.sdk").GetType(), XcodeSDK::AppleTVOS);
   EXPECT_EQ(XcodeSDK("WatchSimulator.sdk").GetType(), XcodeSDK::WatchSimulator);
   EXPECT_EQ(XcodeSDK("WatchOS.sdk").GetType(), XcodeSDK::watchOS);
+  EXPECT_EQ(XcodeSDK("BridgeOS.sdk").GetType(), XcodeSDK::BridgeOS);
+  EXPECT_EQ(XcodeSDK("XRSimulator.sdk").GetType(), XcodeSDK::XRSimulator);
+  EXPECT_EQ(XcodeSDK("XROS.sdk").GetType(), XcodeSDK::XROS);
   EXPECT_EQ(XcodeSDK("Linux.sdk").GetType(), XcodeSDK::Linux);
   EXPECT_EQ(XcodeSDK("MacOSX.sdk").GetVersion(), llvm::VersionTuple());
   EXPECT_EQ(XcodeSDK("MacOSX10.9.sdk").GetVersion(), llvm::VersionTuple(10, 9));
   EXPECT_EQ(XcodeSDK("MacOSX10.15.4.sdk").GetVersion(), llvm::VersionTuple(10, 15));
   EXPECT_EQ(XcodeSDK("MacOSX.sdk").IsAppleInternalSDK(), false);
+  EXPECT_EQ(XcodeSDKAndSysroot("MacOSX.sdk", FileSpec{"/Path/To/MacOSX.sdk"})
+                .GetSysroot(),
+            FileSpec("/Path/To/MacOSX.sdk"));
   EXPECT_EQ(XcodeSDK("MacOSX10.15.Internal.sdk").GetType(), XcodeSDK::MacOSX);
   EXPECT_EQ(XcodeSDK("MacOSX10.15.Internal.sdk").GetVersion(),
             llvm::VersionTuple(10, 15));
   EXPECT_EQ(XcodeSDK("MacOSX10.15.Internal.sdk").IsAppleInternalSDK(), true);
   EXPECT_EQ(XcodeSDK().GetType(), XcodeSDK::unknown);
   EXPECT_EQ(XcodeSDK().GetVersion(), llvm::VersionTuple());
+  EXPECT_FALSE(XcodeSDKAndSysroot().GetSysroot());
 }
 
 TEST(XcodeSDKTest, MergeTest) {
@@ -58,6 +65,46 @@ TEST(XcodeSDKTest, MergeTest) {
   XcodeSDK empty;
   empty.Merge(XcodeSDK("MacOSX10.14.Internal.sdk"));
   EXPECT_EQ(empty.GetString(), llvm::StringRef("MacOSX10.14.Internal.sdk"));
+  XcodeSDKAndSysroot merged("MacOSX10.14.Internal.sdk",
+                            FileSpec{"/Path/To/MacOSX10.14.Internal.sdk"});
+  merged.Merge(XcodeSDKAndSysroot("MacOSX9.5.Internal.sdk",
+                                  FileSpec{"/Path/To/MacOSX9.5.Internal.sdk"}));
+  EXPECT_EQ(merged.GetSysroot(), FileSpec{"/Path/To/MacOSX10.14.Internal.sdk"});
+  merged.Merge(XcodeSDKAndSysroot("MacOSX12.5.sdk",
+                                  FileSpec{"/Path/To/MacOSX12.5.sdk"}));
+  EXPECT_EQ(merged.GetSysroot(), FileSpec{"/Path/To/MacOSX12.5.sdk"});
+  merged.Merge(XcodeSDKAndSysroot(
+      "MacOSX11.5.Internal.sdk", FileSpec{"/Path/To/MacOSX11.5.Internal.sdk"}));
+  EXPECT_EQ(merged.GetSysroot(), FileSpec{"/Path/To/MacOSX12.5.Internal.sdk"});
+
+  // A sysroot that doesn't name an SDK directory was remapped by the compiler
+  // (-fdebug-prefix-map), so it is only meaningful verbatim: adding the
+  // Internal suffix to the SDK name must leave it alone.
+  XcodeSDKAndSysroot remapped("MacOSX12.5.sdk", FileSpec{"/REMAPPED_SYSROOT"});
+  remapped.Merge(XcodeSDKAndSysroot(
+      "MacOSX11.5.Internal.sdk", FileSpec{"/Path/To/MacOSX11.5.Internal.sdk"}));
+  EXPECT_EQ(remapped.GetString(), llvm::StringRef("MacOSX12.5.Internal.sdk"));
+  EXPECT_EQ(remapped.GetSysroot(), FileSpec{"/REMAPPED_SYSROOT"});
+
+  // But an SDK that wins the merge outright brings its own sysroot with it.
+  XcodeSDKAndSysroot outranked("MacOSX10.14.sdk",
+                               FileSpec{"/REMAPPED_SYSROOT"});
+  outranked.Merge(XcodeSDKAndSysroot("MacOSX12.5.sdk",
+                                     FileSpec{"/Path/To/MacOSX12.5.sdk"}));
+  EXPECT_EQ(outranked.GetString(), llvm::StringRef("MacOSX12.5.sdk"));
+  EXPECT_EQ(outranked.GetSysroot(), FileSpec{"/Path/To/MacOSX12.5.sdk"});
+
+  // The renamed sysroot can name a directory that doesn't exist, when the
+  // internal SDK lives in a different Xcode.
+  XcodeSDKAndSysroot other_xcode("MacOSX12.5.sdk",
+                                 FileSpec{"/Xcode1.app/MacOSX12.5.sdk"});
+  other_xcode.Merge(
+      XcodeSDKAndSysroot("MacOSX11.5.Internal.sdk",
+                         FileSpec{"/Xcode2.app/MacOSX11.5.Internal.sdk"}));
+  EXPECT_EQ(other_xcode.GetString(),
+            llvm::StringRef("MacOSX12.5.Internal.sdk"));
+  EXPECT_EQ(other_xcode.GetSysroot(),
+            FileSpec{"/Xcode1.app/MacOSX12.5.Internal.sdk"});
 }
 
 #ifndef _WIN32
@@ -85,17 +132,6 @@ TEST(XcodeSDKTest, SDKSupportsModules) {
       FileSpec(base + "MacOSX.platform/Developer/SDKs/MacOSX10.9.sdk")));
 }
 #endif
-
-TEST(XcodeSDKTest, SDKSupportsSwift) {
-  EXPECT_TRUE(XcodeSDK("iPhoneSimulator12.0.sdk").SupportsSwift());
-  EXPECT_TRUE(XcodeSDK("iPhoneSimulator12.0.Internal.sdk").SupportsSwift());
-  EXPECT_FALSE(XcodeSDK("iPhoneSimulator7.2.sdk").SupportsSwift());
-  EXPECT_TRUE(XcodeSDK("MacOSX10.10.sdk").SupportsSwift());
-  EXPECT_FALSE(XcodeSDK("MacOSX10.9.sdk").SupportsSwift());
-  EXPECT_TRUE(XcodeSDK("Linux.sdk").SupportsSwift());
-  EXPECT_TRUE(XcodeSDK("MacOSX.sdk").SupportsSwift());
-  EXPECT_FALSE(XcodeSDK("EverythingElse.sdk").SupportsSwift());
-}
 
 TEST(XcodeSDKTest, GetCanonicalNameAndConstruct) {
   XcodeSDK::Info info;
@@ -125,6 +161,14 @@ TEST(XcodeSDKTest, GetCanonicalNameAndConstruct) {
 
   info.type = XcodeSDK::Type::watchOS;
   EXPECT_EQ("watchos", XcodeSDK::GetCanonicalName(info));
+  EXPECT_EQ(XcodeSDK(info).Parse(), info);
+
+  info.type = XcodeSDK::Type::XRSimulator;
+  EXPECT_EQ("xrsimulator", XcodeSDK::GetCanonicalName(info));
+  EXPECT_EQ(XcodeSDK(info).Parse(), info);
+
+  info.type = XcodeSDK::Type::XROS;
+  EXPECT_EQ("xros", XcodeSDK::GetCanonicalName(info));
   EXPECT_EQ(XcodeSDK(info).Parse(), info);
 
   info.type = XcodeSDK::Type::Linux;
@@ -164,6 +208,13 @@ TEST(XcodeSDKTest, GetCanonicalNameAndConstruct) {
   EXPECT_EQ("watchos.internal", XcodeSDK::GetCanonicalName(info));
   EXPECT_EQ(XcodeSDK(info).Parse(), info);
 
+  info.type = XcodeSDK::Type::XRSimulator;
+  EXPECT_EQ("xrsimulator.internal", XcodeSDK::GetCanonicalName(info));
+  EXPECT_EQ(XcodeSDK(info).Parse(), info);
+
+  info.type = XcodeSDK::Type::XROS;
+  EXPECT_EQ("xros.internal", XcodeSDK::GetCanonicalName(info));
+  EXPECT_EQ(XcodeSDK(info).Parse(), info);
   info.type = XcodeSDK::Type::MacOSX;
   info.version = llvm::VersionTuple(10, 9);
   EXPECT_EQ("macosx10.9.internal", XcodeSDK::GetCanonicalName(info));
@@ -199,6 +250,11 @@ TEST(XcodeSDKTest, GetSDKTypeForTriple) {
             XcodeSDK::Type::WatchSimulator);
   EXPECT_EQ(XcodeSDK::GetSDKTypeForTriple(llvm::Triple("arm64-apple-watchos")),
             XcodeSDK::Type::watchOS);
+  EXPECT_EQ(XcodeSDK::GetSDKTypeForTriple(
+                llvm::Triple("arm64e-apple-xros-simulator")),
+            XcodeSDK::Type::XRSimulator);
+  EXPECT_EQ(XcodeSDK::GetSDKTypeForTriple(llvm::Triple("arm64e-apple-xros")),
+            XcodeSDK::Type::XROS);
   EXPECT_EQ(XcodeSDK::GetSDKTypeForTriple(llvm::Triple("x86_64-unknown-linux")),
             XcodeSDK::Type::Linux);
   EXPECT_EQ(XcodeSDK::GetSDKTypeForTriple(llvm::Triple("i386-unknown-netbsd")),

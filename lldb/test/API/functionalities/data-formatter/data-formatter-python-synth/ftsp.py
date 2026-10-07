@@ -4,7 +4,6 @@ counter = 0
 
 
 class ftsp:
-
     def __init__(self, valobj, dict):
         self.valobj = valobj
 
@@ -20,14 +19,13 @@ class ftsp:
         if index == 0:
             return self.x.Cast(self.char)
         if index == 4:
-            return self.valobj.CreateValueFromExpression(
-                str(index), '(char)(' + str(self.count) + ')')
-        return self.x.CreateChildAtOffset(str(index),
-                                          index,
-                                          self.char)
+            data = lldb.SBData.CreateDataFromInt(self.count)
+            type = self.valobj.target.FindFirstType("char")
+            return self.valobj.CreateValueFromData(str(index), data, type)
+        return self.x.CreateChildAtOffset(str(index), index, self.char)
 
     def update(self):
-        self.x = self.valobj.GetChildMemberWithName('x')
+        self.x = self.valobj.GetChildMemberWithName("x")
         self.char = self.valobj.GetType().GetBasicType(lldb.eBasicTypeChar)
         global counter
         self.count = counter

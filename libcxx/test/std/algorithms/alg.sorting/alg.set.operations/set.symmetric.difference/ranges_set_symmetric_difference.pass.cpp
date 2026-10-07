@@ -9,6 +9,7 @@
 // <algorithm>
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
+// UNSUPPORTED: GCC-ALWAYS_INLINE-FIXME
 
 // template<input_iterator I1, sentinel_for<I1> S1, input_iterator I2, sentinel_for<I2> S2,
 //          weakly_incrementable O, class Comp = ranges::less,
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <concepts>
 
 #include "almost_satisfies_types.h"
@@ -290,7 +292,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
       assert(std::ranges::equal(out, std::array<TracedCopy, 4>{1, 5, 15, 16}));
 
       assert(std::ranges::all_of(out, &TracedCopy::copiedOnce));
@@ -303,7 +305,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
       assert(std::ranges::equal(out, std::array<TracedCopy, 4>{1, 5, 15, 16}));
 
       assert(std::ranges::all_of(out, &TracedCopy::copiedOnce));
@@ -367,7 +369,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
 
     // range overload
@@ -381,7 +383,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
   }
 
@@ -402,7 +404,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
 
     // range overload
@@ -414,7 +416,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
   }
 

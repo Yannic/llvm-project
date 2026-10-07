@@ -1,4 +1,6 @@
-; RUN: llc -march=hexagon < %s | FileCheck %s
+; RUN: llc -mtriple=hexagon -disable-copyprop < %s | FileCheck %s
+; Disable MachineCopyPropagation to expose this opportunity to RDF copy.
+
 ;
 ; Check that
 ;     {
@@ -26,7 +28,7 @@ target triple = "hexagon"
 %struct.t = type { [12 x i8], ptr, double }
 %struct.r = type opaque
 
-define ptr @foo(ptr %chain) nounwind readonly {
+define ptr @foo(ptr %chain) nounwind readonly #0 {
 entry:
   %tobool = icmp eq ptr %chain, null
   br i1 %tobool, label %if.end, label %while.cond.preheader
@@ -48,6 +50,9 @@ if.end:                                           ; preds = %if.end.loopexit, %e
   ret ptr %chain.addr.1
 }
 
-!0 = !{!"any pointer", !1}
+attributes #0 = { nounwind "target-features"="-packets" }
+
+!0 = !{!3, !3, i64 0}
 !1 = !{!"omnipotent char", !2}
 !2 = !{!"Simple C/C++ TBAA"}
+!3 = !{!"any pointer", !1}

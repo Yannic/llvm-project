@@ -1,6 +1,9 @@
 // RUN: %clang -c -o %t %s
 // RUN: %llvm_jitlink -preload libobjc.A.dylib %t
 //
+// REQUIRES: jit-compatible-osx-swift-runtime
+// UNSUPPORTED: host-jit-triple=arm64e-{{.*}}
+//
 // Test that Objective-C class and instance methods work.
 
 	.section	__TEXT,__text,regular,pure_instructions

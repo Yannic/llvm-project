@@ -9,10 +9,8 @@ from lldbsuite.test.decorators import *
 
 
 class LLDBUtilFailedToHitBreakpointTest(TestBase):
-
     NO_DEBUG_INFO_TESTCASE = True
 
-    @expectedFailureAll(oslist=["windows"])
     def test_error_message(self):
         """
         Tests that run_to_source_breakpoint prints the right error message
@@ -20,8 +18,9 @@ class LLDBUtilFailedToHitBreakpointTest(TestBase):
         """
         self.build()
         with self.assertRaisesRegex(
-                AssertionError,
-                "Test process is not stopped at breakpoint: state: exited, exit code: 0, stdout: 'stdout_needlestderr_needle'"
+            AssertionError,
+            "Test process is not stopped at breakpoint: state: exited, exit code: 0, stdout: 'stdout_needlestderr_needle'",
         ):
-            lldbutil.run_to_source_breakpoint(self, "// break here",
-                                              lldb.SBFileSpec("main.cpp"))
+            lldbutil.run_to_source_breakpoint(
+                self, "// break here", lldb.SBFileSpec("main.cpp")
+            )

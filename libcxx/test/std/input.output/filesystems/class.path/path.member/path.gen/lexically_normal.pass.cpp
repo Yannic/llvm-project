@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// UNSUPPORTED: c++03
+// UNSUPPORTED: c++03, c++11, c++14
 
 // <filesystem>
 
@@ -14,14 +14,15 @@
 
 // path lexically_normal() const;
 
-#include "filesystem_include.h"
-#include <cstdio>
+#include <filesystem>
 #include <string>
 
-#include "test_macros.h"
+#include "../../path_helper.h"
 #include "count_new.h"
-#include "filesystem_test_helper.h"
-
+#include "test_macros.h"
+#include "assert_macros.h"
+#include "concat_macros.h"
+namespace fs = std::filesystem;
 
 int main(int, char**) {
   // clang-format off
@@ -59,6 +60,10 @@ int main(int, char**) {
       {"//a/b/", "//a/b/"},
       {"//a/b/.", "//a/b/"},
       {"//a/..", "//a/"},
+      {"C:/..", "C:/"},
+      {"C:/../foo", "C:/foo"},
+      {"C:./", "C:"},
+      {"C:.", "C:"},
 #else
       {"//a/", "/a/"},
       {"//a/b/", "/a/b/"},
@@ -106,6 +111,12 @@ int main(int, char**) {
       {"foo/bar/baz/../../", "foo/"},
       {"foo/bar/./..", "foo/"},
       {"foo/bar/./../", "foo/"},
+#ifdef _WIN32
+      // A root-name followed by a dot-dot filename should not be removed.
+      {"C:..", "C:.."},
+      {"C:..\\..", "C:..\\.."},
+      {"C:foo\\..\\..", "C:.."},
+#endif
       // p6: If there is a root-directory, remove all dot-dot filenames and any
       // directory-separators immediately following them. [ Note: These dot-dot
       // filenames attempt to refer to nonexistent parent directories. - end note ]
@@ -126,22 +137,15 @@ int main(int, char**) {
       {"foo/..", "."}
   };
   // clang-format on
-  int ID = 0;
-  bool Failed = false;
   for (auto& TC : TestCases) {
-    ++ID;
     fs::path p(TC.input);
     const fs::path output = p.lexically_normal();
     fs::path expect(TC.expect);
     expect.make_preferred();
-    if (!PathEq(output, expect)) {
-      Failed = true;
-      std::fprintf(stderr, "TEST CASE #%d FAILED:\n"
-                  "  Input: '%s'\n"
-                  "  Expected: '%s'\n"
-                  "  Output: '%s'\n",
-        ID, TC.input.c_str(), expect.string().c_str(), output.string().c_str());
-    }
+
+    TEST_REQUIRE(
+        PathEq(output, expect),
+        TEST_WRITE_CONCATENATED("Input: ", TC.input, "\nExpected: ", expect.string(), "\nOutput: ", output.string()));
   }
-  return Failed;
+  return 0;
 }

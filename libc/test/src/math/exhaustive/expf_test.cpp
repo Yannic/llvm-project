@@ -6,70 +6,65 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "exhaustive_test.h"
-#include "src/__support/FPUtil/FPBits.h"
+#include "src/__support/math/expf_double_eval.h"
+#include "src/__support/math/expf_float_eval.h"
+#include "src/__support/math/expf_integer_eval.h"
 #include "src/math/expf.h"
+#include "test/src/math/exhaustive/exhaustive_test.h"
+#include "test/src/math/exhaustive/exhaustive_test_static_rounding.h"
 #include "utils/MPFRWrapper/MPFRUtils.h"
-#include "utils/UnitTest/FPMatcher.h"
 
-#include <thread>
+namespace mpfr = LIBC_NAMESPACE::testing::mpfr;
 
-using FPBits = __llvm_libc::fputil::FPBits<float>;
-
-namespace mpfr = __llvm_libc::testing::mpfr;
-
-struct LlvmLibcExpfExhaustiveTest : public LlvmLibcExhaustiveTest<uint32_t> {
-  bool check(uint32_t start, uint32_t stop,
-             mpfr::RoundingMode rounding) override {
-    mpfr::ForceRoundingMode r(rounding);
-    uint32_t bits = start;
-    bool result = true;
-    do {
-      FPBits xbits(bits);
-      float x = float(xbits);
-      result &= EXPECT_MPFR_MATCH(mpfr::Operation::Exp, x, __llvm_libc::expf(x),
-                                  0.5, rounding);
-    } while (bits++ < stop);
-    return result;
-  }
-};
-
-// Range: [0, 89];
+// Range: [0, Inf];
 static constexpr uint32_t POS_START = 0x0000'0000U;
-static constexpr uint32_t POS_STOP = 0x42b2'0000U;
+static constexpr uint32_t POS_STOP = 0x7f80'0000U;
 
-TEST_F(LlvmLibcExpfExhaustiveTest, PostiveRangeRoundNearestTieToEven) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Nearest);
-}
-
-TEST_F(LlvmLibcExpfExhaustiveTest, PostiveRangeRoundUp) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Upward);
-}
-
-TEST_F(LlvmLibcExpfExhaustiveTest, PostiveRangeRoundDown) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Downward);
-}
-
-TEST_F(LlvmLibcExpfExhaustiveTest, PostiveRangeRoundTowardZero) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::TowardZero);
-}
-
-// Range: [-104, 0];
+// Range: [-Inf, 0];
 static constexpr uint32_t NEG_START = 0x8000'0000U;
-static constexpr uint32_t NEG_STOP = 0xc2d0'0000U;
+static constexpr uint32_t NEG_STOP = 0xff80'0000U;
 
-TEST_F(LlvmLibcExpfExhaustiveTest, NegativeRangeRoundNearestTieToEven) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Nearest);
+using LlvmLibcExpfExhaustiveTest =
+    LlvmLibcUnaryOpExhaustiveMathTest<float, mpfr::Operation::Exp,
+                                      LIBC_NAMESPACE::expf>;
+
+TEST_F(LlvmLibcExpfExhaustiveTest, PositiveRange) {
+  test_full_range_all_roundings(POS_START, POS_STOP);
 }
 
-TEST_F(LlvmLibcExpfExhaustiveTest, NegativeRangeRoundUp) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Upward);
+TEST_F(LlvmLibcExpfExhaustiveTest, NegativeRange) {
+  test_full_range_all_roundings(NEG_START, NEG_STOP);
 }
 
-TEST_F(LlvmLibcExpfExhaustiveTest, NegativeRangeRoundDown) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Downward);
+// Float-eval implementation: tested against the correctly rounded double
+// precision version for round-to-nearest with 1 ULP bound.
+static float expf_float_eval(float x) {
+  return LIBC_NAMESPACE::math::float_eval::expf(x);
 }
 
-TEST_F(LlvmLibcExpfExhaustiveTest, NegativeRangeRoundTowardZero) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::TowardZero);
+using LlvmLibcExpfFloatExhaustiveTest =
+    LlvmLibcUnaryOpAgainstBaselineExhaustiveMathTest<
+        float, LIBC_NAMESPACE::expf, expf_float_eval, 1>;
+
+TEST_F(LlvmLibcExpfFloatExhaustiveTest, PositiveRange) {
+  test_full_range(mpfr::RoundingMode::Nearest, POS_START, POS_STOP);
+}
+
+TEST_F(LlvmLibcExpfFloatExhaustiveTest, NegativeRange) {
+  test_full_range(mpfr::RoundingMode::Nearest, NEG_START, NEG_STOP);
+}
+
+// Statically rounded implementation: tested against double_eval across all
+// roundings.
+using LlvmLibcExpfStaticRoundingExhaustiveTest =
+    LlvmLibcStaticallyRoundedUnaryOpExhaustiveMathTest<
+        float, LIBC_NAMESPACE::math::double_eval::expf,
+        LIBC_NAMESPACE::shared::math::static_rounding::expf>;
+
+TEST_F(LlvmLibcExpfStaticRoundingExhaustiveTest, PositiveRange) {
+  test_full_range_all_roundings(POS_START, POS_STOP);
+}
+
+TEST_F(LlvmLibcExpfStaticRoundingExhaustiveTest, NegativeRange) {
+  test_full_range_all_roundings(NEG_START, NEG_STOP);
 }

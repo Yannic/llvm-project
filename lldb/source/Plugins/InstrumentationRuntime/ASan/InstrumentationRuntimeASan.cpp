@@ -13,17 +13,17 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginInterface.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/StreamFile.h"
-#include "lldb/Core/ValueObject.h"
 #include "lldb/Expression/UserExpression.h"
-#include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Symbol/Symbol.h"
+#include "lldb/Symbol/SymbolContext.h"
 #include "lldb/Target/InstrumentationRuntimeStopInfo.h"
-#include "lldb/Target/StopInfo.h"
+#include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
-#include "lldb/Target/Thread.h"
+#include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/RegularExpression.h"
-#include "lldb/Utility/Stream.h"
+#include "lldb/ValueObject/ValueObject.h"
+
+#include "Plugins/InstrumentationRuntime/Utility/Utility.h"
 
 #include "llvm/ADT/StringSwitch.h"
 
@@ -69,7 +69,7 @@ bool InstrumentationRuntimeASan::CheckIfRuntimeIsValid(
   return symbol != nullptr;
 }
 
-const char *address_sanitizer_retrieve_report_data_prefix = R"(
+static const char *address_sanitizer_retrieve_report_data_prefix = R"(
 extern "C"
 {
 int __asan_report_present();
@@ -83,7 +83,7 @@ size_t __asan_get_report_access_size();
 }
 )";
 
-const char *address_sanitizer_retrieve_report_data_command = R"(
+static const char *address_sanitizer_retrieve_report_data_command = R"(
 struct {
     int present;
     int access_type;
@@ -113,7 +113,12 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
 
   ThreadSP thread_sp =
       process_sp->GetThreadList().GetExpressionExecutionThread();
-  StackFrameSP frame_sp = thread_sp->GetSelectedFrame();
+
+  if (!thread_sp)
+    return StructuredData::ObjectSP();
+
+  StackFrameSP frame_sp =
+      thread_sp->GetSelectedFrame(DoNoSelectMostRelevantFrame);
 
   if (!frame_sp)
     return StructuredData::ObjectSP();
@@ -126,19 +131,25 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
   options.SetTimeout(process_sp->GetUtilityExpressionTimeout());
   options.SetPrefix(address_sanitizer_retrieve_report_data_prefix);
   options.SetAutoApplyFixIts(false);
-  options.SetLanguage(eLanguageTypeObjC_plus_plus);
+  options.SetLanguage(eLanguageTypeC);
+
+  if (auto [m, _] = GetPreferredAsanModule(process_sp->GetTarget()); m) {
+    SymbolContextList sc_list;
+    sc_list.Append(SymbolContext(std::move(m)));
+    options.SetPreferredSymbolContexts(std::move(sc_list));
+  }
 
   ValueObjectSP return_value_sp;
   ExecutionContext exe_ctx;
-  Status eval_error;
   frame_sp->CalculateExecutionContext(exe_ctx);
   ExpressionResults result = UserExpression::Evaluate(
       exe_ctx, options, address_sanitizer_retrieve_report_data_command, "",
-      return_value_sp, eval_error);
+      return_value_sp);
   if (result != eExpressionCompleted) {
     StreamString ss;
     ss << "cannot evaluate AddressSanitizer expression:\n";
-    ss << eval_error.AsCString();
+    if (return_value_sp)
+      ss << return_value_sp->GetError().AsCString();
     Debugger::ReportWarning(ss.GetString().str(),
                             process_sp->GetTarget().GetDebugger().GetID());
     return StructuredData::ObjectSP();
@@ -151,12 +162,10 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
 
   addr_t pc =
       return_value_sp->GetValueForExpressionPath(".pc")->GetValueAsUnsigned(0);
-  /* commented out because rdar://problem/18533301
   addr_t bp =
-  return_value_sp->GetValueForExpressionPath(".bp")->GetValueAsUnsigned(0);
+      return_value_sp->GetValueForExpressionPath(".bp")->GetValueAsUnsigned(0);
   addr_t sp =
-  return_value_sp->GetValueForExpressionPath(".sp")->GetValueAsUnsigned(0);
-  */
+      return_value_sp->GetValueForExpressionPath(".sp")->GetValueAsUnsigned(0);
   addr_t address = return_value_sp->GetValueForExpressionPath(".address")
                        ->GetValueAsUnsigned(0);
   addr_t access_type =
@@ -172,14 +181,15 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
   Status error;
   process_sp->ReadCStringFromMemory(description_ptr, description, error);
 
-  StructuredData::Dictionary *dict = new StructuredData::Dictionary();
+  auto dict = std::make_shared<StructuredData::Dictionary>();
+  if (!dict)
+    return StructuredData::ObjectSP();
+
   dict->AddStringItem("instrumentation_class", "AddressSanitizer");
   dict->AddStringItem("stop_type", "fatal_error");
   dict->AddIntegerItem("pc", pc);
-  /* commented out because rdar://problem/18533301
   dict->AddIntegerItem("bp", bp);
   dict->AddIntegerItem("sp", sp);
-  */
   dict->AddIntegerItem("address", address);
   dict->AddIntegerItem("access_type", access_type);
   dict->AddIntegerItem("access_size", access_size);
@@ -188,8 +198,7 @@ StructuredData::ObjectSP InstrumentationRuntimeASan::RetrieveReportData() {
   return StructuredData::ObjectSP(dict);
 }
 
-std::string
-InstrumentationRuntimeASan::FormatDescription(StructuredData::ObjectSP report) {
+static std::string FormatDescription(StructuredData::ObjectSP report) {
   std::string description = std::string(report->GetAsDictionary()
                                             ->GetValueForKey("description")
                                             ->GetAsString()
@@ -247,32 +256,34 @@ bool InstrumentationRuntimeASan::NotifyBreakpointHit(
 
   ProcessSP process_sp = instance->GetProcessSP();
 
+  // Make sure this is the right process
+  if (!process_sp || process_sp != context->exe_ctx_ref.GetProcessSP())
+    return false;
+
   if (process_sp->GetModIDRef().IsLastResumeForUserExpression())
     return false;
 
   StructuredData::ObjectSP report = instance->RetrieveReportData();
-  std::string description;
-  if (report) {
-    description = instance->FormatDescription(report);
+  if (!report || report->GetType() != lldb::eStructuredDataTypeDictionary) {
+    LLDB_LOGF(GetLog(LLDBLog::InstrumentationRuntime),
+              "InstrumentationRuntimeASan::RetrieveReportData() failed");
+    return false;
   }
-  // Make sure this is the right process
-  if (process_sp && process_sp == context->exe_ctx_ref.GetProcessSP()) {
-    ThreadSP thread_sp = context->exe_ctx_ref.GetThreadSP();
-    if (thread_sp)
-      thread_sp->SetStopInfo(InstrumentationRuntimeStopInfo::
-                                 CreateStopReasonWithInstrumentationData(
-                                     *thread_sp, description, report));
 
-    StreamFileSP stream_sp(
-        process_sp->GetTarget().GetDebugger().GetOutputStreamSP());
-    if (stream_sp) {
-      stream_sp->Printf("AddressSanitizer report breakpoint hit. Use 'thread "
-                        "info -s' to get extended information about the "
-                        "report.\n");
-    }
-    return true; // Return true to stop the target
-  } else
-    return false; // Let target run
+  std::string description = FormatDescription(report);
+
+  if (ThreadSP thread_sp = context->exe_ctx_ref.GetThreadSP())
+    thread_sp->SetStopInfo(
+        InstrumentationRuntimeStopInfo::CreateStopReasonWithInstrumentationData(
+            *thread_sp, description, report));
+
+  if (StreamSP stream_sp =
+          process_sp->GetTarget().GetDebugger().GetAsyncOutputStream())
+    stream_sp->Printf("AddressSanitizer report breakpoint hit. Use 'thread "
+                      "info -s' to get extended information about the "
+                      "report.\n");
+
+  return true; // Return true to stop the target
 }
 
 void InstrumentationRuntimeASan::Activate() {
@@ -283,29 +294,29 @@ void InstrumentationRuntimeASan::Activate() {
   if (!process_sp)
     return;
 
-  ConstString symbol_name("_ZN6__asanL7AsanDieEv");
-  const Symbol *symbol = GetRuntimeModuleSP()->FindFirstSymbolWithNameAndType(
-      symbol_name, eSymbolTypeCode);
+  ModuleSP module_sp = GetRuntimeModuleSP();
+  if (!module_sp)
+    return;
 
-  if (symbol == nullptr)
+  const Symbol *symbol = module_sp->FindFirstSymbolWithNameAndType(
+      ConstString("_ZN6__asanL7AsanDieEv"), eSymbolTypeCode);
+  if (!symbol)
     return;
 
   if (!symbol->ValueIsAddress() || !symbol->GetAddressRef().IsValid())
     return;
 
-  Target &target = process_sp->GetTarget();
-  addr_t symbol_address = symbol->GetAddressRef().GetOpcodeLoadAddress(&target);
-
-  if (symbol_address == LLDB_INVALID_ADDRESS)
-    return;
-
   const bool internal = true;
   const bool hardware = false;
-  const bool sync = false;
   Breakpoint *breakpoint =
       process_sp->GetTarget()
-          .CreateBreakpoint(symbol_address, internal, hardware)
+          .CreateBreakpoint(symbol->GetAddressRef(), internal, hardware)
           .get();
+  if (!breakpoint)
+    return;
+
+  const bool sync = false;
+
   breakpoint->SetCallback(InstrumentationRuntimeASan::NotifyBreakpointHit, this,
                           sync);
   breakpoint->SetBreakpointKind("address-sanitizer-report");
@@ -315,12 +326,13 @@ void InstrumentationRuntimeASan::Activate() {
 }
 
 void InstrumentationRuntimeASan::Deactivate() {
-  if (GetBreakpointID() != LLDB_INVALID_BREAK_ID) {
-    ProcessSP process_sp = GetProcessSP();
-    if (process_sp) {
-      process_sp->GetTarget().RemoveBreakpointByID(GetBreakpointID());
-      SetBreakpointID(LLDB_INVALID_BREAK_ID);
-    }
-  }
   SetActive(false);
+
+  if (GetBreakpointID() == LLDB_INVALID_BREAK_ID)
+    return;
+
+  if (ProcessSP process_sp = GetProcessSP()) {
+    process_sp->GetTarget().RemoveBreakpointByID(GetBreakpointID());
+    SetBreakpointID(LLDB_INVALID_BREAK_ID);
+  }
 }

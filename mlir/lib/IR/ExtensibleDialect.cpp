@@ -11,7 +11,7 @@
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/StorageUniquerSupport.h"
-#include "mlir/Support/LogicalResult.h"
+#include "llvm/Support/InterleavedRange.h"
 
 using namespace mlir;
 
@@ -48,9 +48,7 @@ static void typeOrAttrPrinter(AsmPrinter &printer, ArrayRef<Attribute> params) {
   if (params.empty())
     return;
 
-  printer << "<";
-  interleaveComma(params, printer.getStream());
-  printer << ">";
+  printer << "<" << llvm::interleaved(params) << ">";
 }
 
 //===----------------------------------------------------------------------===//
@@ -306,6 +304,8 @@ DynamicOpDefinition::DynamicOpDefinition(
       getCanonicalizationPatternsFn(std::move(getCanonicalizationPatternsFn)),
       populateDefaultAttrsFn(std::move(populateDefaultAttrsFn)) {
   typeID = dialect->allocateTypeID();
+  // DynamicOpDefinition doesn't support properties, so use the ID of void.
+  propertiesTypeID = TypeID();
 }
 
 std::unique_ptr<DynamicOpDefinition> DynamicOpDefinition::get(
@@ -407,9 +407,16 @@ void ExtensibleDialect::registerDynamicType(
   assert(registered &&
          "Trying to create a new dynamic type with an existing name");
 
-  auto abstractType =
-      AbstractType::get(*dialect, DynamicAttr::getInterfaceMap(),
-                        DynamicType::getHasTraitFn(), typeID);
+  // The StringAttr allocates the type name StringRef for the duration of the
+  // MLIR context.
+  MLIRContext *ctx = getContext();
+  auto nameAttr =
+      StringAttr::get(ctx, getNamespace() + "." + typePtr->getName());
+
+  auto abstractType = AbstractType::get(
+      *dialect, DynamicAttr::getInterfaceMap(), DynamicType::getHasTraitFn(),
+      DynamicType::getWalkImmediateSubElementsFn(),
+      DynamicType::getReplaceImmediateSubElementsFn(), typeID, nameAttr);
 
   /// Add the type to the dialect and the type uniquer.
   addType(typeID, std::move(abstractType));
@@ -436,9 +443,16 @@ void ExtensibleDialect::registerDynamicAttr(
   assert(registered &&
          "Trying to create a new dynamic attribute with an existing name");
 
-  auto abstractAttr =
-      AbstractAttribute::get(*dialect, DynamicAttr::getInterfaceMap(),
-                             DynamicAttr::getHasTraitFn(), typeID);
+  // The StringAttr allocates the attribute name StringRef for the duration of
+  // the MLIR context.
+  MLIRContext *ctx = getContext();
+  auto nameAttr =
+      StringAttr::get(ctx, getNamespace() + "." + attrPtr->getName());
+
+  auto abstractAttr = AbstractAttribute::get(
+      *dialect, DynamicAttr::getInterfaceMap(), DynamicAttr::getHasTraitFn(),
+      DynamicAttr::getWalkImmediateSubElementsFn(),
+      DynamicAttr::getReplaceImmediateSubElementsFn(), typeID, nameAttr);
 
   /// Add the type to the dialect and the type uniquer.
   addAttribute(typeID, std::move(abstractAttr));
@@ -472,7 +486,7 @@ OptionalParseResult ExtensibleDialect::parseOptionalDynamicType(
 
 LogicalResult ExtensibleDialect::printIfDynamicType(Type type,
                                                     AsmPrinter &printer) {
-  if (auto dynType = type.dyn_cast<DynamicType>()) {
+  if (auto dynType = llvm::dyn_cast<DynamicType>(type)) {
     dynType.print(printer);
     return success();
   }
@@ -494,7 +508,7 @@ OptionalParseResult ExtensibleDialect::parseOptionalDynamicAttr(
 
 LogicalResult ExtensibleDialect::printIfDynamicAttr(Attribute attribute,
                                                     AsmPrinter &printer) {
-  if (auto dynAttr = attribute.dyn_cast<DynamicAttr>()) {
+  if (auto dynAttr = llvm::dyn_cast<DynamicAttr>(attribute)) {
     dynAttr.print(printer);
     return success();
   }

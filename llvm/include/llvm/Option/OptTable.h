@@ -12,9 +12,12 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringTable.h"
 #include "llvm/Option/OptSpecifier.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/StringSaver.h"
 #include <cassert>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,6 +33,18 @@ class ArgList;
 class InputArgList;
 class Option;
 
+/// Helper for overload resolution while transitioning from
+/// FlagsToInclude/FlagsToExclude APIs to VisibilityMask APIs.
+class Visibility {
+  unsigned Mask = ~0U;
+
+public:
+  explicit Visibility(unsigned Mask) : Mask(Mask) {}
+  Visibility() = default;
+
+  operator unsigned() const { return Mask; }
+};
+
 /// Provide access to the Option info table.
 ///
 /// The OptTable class provides a layer of indirection which allows Option
@@ -37,71 +52,228 @@ class Option;
 /// be needed at runtime; the OptTable class maintains enough information to
 /// parse command lines without instantiating Options, while letting other
 /// parts of the driver still use Option instances where convenient.
-class OptTable {
+class LLVM_ABI OptTable {
 public:
-  /// Entry for a single option instance in the option data table.
-  struct Info {
-    /// A null terminated array of prefix strings to apply to name while
-    /// matching.
-    ArrayRef<StringLiteral> Prefixes;
-    StringRef Name;
+  /// Represents a subcommand and its options in the option table.
+  struct SubCommand {
+    const char *Name;
     const char *HelpText;
-    const char *MetaVar;
-    unsigned ID;
-    unsigned char Kind;
-    unsigned char Param;
-    unsigned int Flags;
-    unsigned short GroupID;
-    unsigned short AliasID;
-    const char *AliasArgs;
-    const char *Values;
+    const char *Usage;
   };
 
+  /// Values of options declared with TableGen `ValuesCode`: only the generated
+  /// code knows them, so they cannot go in the string table. The generated
+  /// table supplies getOptionValuesCode() for this.
+  using ValuesCodeFnTy = StringRef (*)(unsigned);
+
+  /// Help text that replaces Info::HelpTextOffset when the visibility mask
+  /// being printed intersects Visibility. An option's variants form a run
+  /// ended by a zero Visibility.
+  struct HelpTextVariant {
+    unsigned Visibility;
+    StringTable::Offset HelpTextOffset;
+  };
+
+  /// Fields that are rarely set or take few distinct values, shared by the
+  /// options with equal values. Row 0 is all zero.
+  struct InfoExtra {
+    StringTable::Offset MetaVarOffset;
+    StringTable::Offset AliasArgsOffset;
+    /// The possible values as a comma separated list, empty for an option whose
+    /// values only getOptionValuesCode() knows.
+    StringTable::Offset ValuesOffset;
+    unsigned Flags;
+    uint16_t Visibility;
+    // Offset into OptTable's HelpTextVariantsTable; 0 for none.
+    uint16_t HelpTextVariantsOffset;
+    // Offset into OptTable's SubCommandIDsTable.
+    uint16_t SubCommandIDsOffset;
+    uint8_t Param;
+  };
+
+  /// Entry for a single option instance in the option data table. An option's
+  /// ID is its 1-based position in the table.
+  struct Info {
+    StringTable::Offset PrefixedNameOffset;
+    /// Offset 0 means the .td supplied no HelpText. A HelpText<""> maps to a
+    /// distinct empty string, marking the option deliberately undocumented.
+    StringTable::Offset HelpTextOffset;
+    uint16_t GroupID;
+    uint16_t AliasID;
+    // Offset into OptTable's InfoExtrasTable.
+    uint16_t ExtraOffset;
+    // Offset into OptTable's PrefixesTable.
+    uint8_t PrefixesOffset;
+    uint8_t Kind;
+
+    bool hasNoPrefix() const { return PrefixesOffset == 0; }
+
+    unsigned getNumPrefixes(ArrayRef<StringTable::Offset> PrefixesTable) const {
+      // We embed the number of prefixes in the value of the first offset.
+      return PrefixesTable[PrefixesOffset].value();
+    }
+
+    ArrayRef<StringTable::Offset>
+    getPrefixOffsets(ArrayRef<StringTable::Offset> PrefixesTable) const {
+      return hasNoPrefix() ? ArrayRef<StringTable::Offset>()
+                           : PrefixesTable.slice(PrefixesOffset + 1,
+                                                 getNumPrefixes(PrefixesTable));
+    }
+
+    bool hasHelpText() const { return HelpTextOffset.value() != 0; }
+
+    void appendPrefixes(const StringTable &StrTable,
+                        ArrayRef<StringTable::Offset> PrefixesTable,
+                        SmallVectorImpl<StringRef> &Prefixes) const {
+      for (auto PrefixOffset : getPrefixOffsets(PrefixesTable))
+        Prefixes.push_back(StrTable[PrefixOffset]);
+    }
+
+    StringRef getPrefix(const StringTable &StrTable,
+                        ArrayRef<StringTable::Offset> PrefixesTable,
+                        unsigned PrefixIndex) const {
+      return StrTable[getPrefixOffsets(PrefixesTable)[PrefixIndex]];
+    }
+
+    StringRef getPrefixedName(const StringTable &StrTable) const {
+      return StrTable[PrefixedNameOffset];
+    }
+
+    StringRef getName(const StringTable &StrTable,
+                      ArrayRef<StringTable::Offset> PrefixesTable) const {
+      unsigned PrefixLength =
+          hasNoPrefix() ? 0 : getPrefix(StrTable, PrefixesTable, 0).size();
+      return getPrefixedName(StrTable).drop_front(PrefixLength);
+    }
+  };
+
+  /// The tables TableGen emits for an option set under OPTTABLE_CODE.
+  struct Tables {
+    StringTable StrTable;
+    ArrayRef<StringTable::Offset> PrefixesTable;
+    ArrayRef<Info> Infos;
+    ArrayRef<InfoExtra> InfoExtras;
+    ArrayRef<HelpTextVariant> HelpTextVariants;
+    ArrayRef<SubCommand> SubCommands;
+    ArrayRef<unsigned> SubCommandIDs;
+  };
+
+public:
+  bool isValidForSubCommand(const Info *CandidateInfo,
+                            StringRef SubCommand) const {
+    assert(!SubCommand.empty() &&
+           "This helper is only for valid registered subcommands.");
+    auto SCIT = llvm::find_if(
+        SubCommands, [&](const auto &C) { return SubCommand == C.Name; });
+    assert(SCIT != SubCommands.end() &&
+           "This helper is only for valid registered subcommands.");
+    auto SubCommandIDs = getSubCommandIDs(*CandidateInfo);
+    unsigned CurrentSubCommandID = SCIT - &SubCommands[0];
+    return llvm::is_contained(SubCommandIDs, CurrentSubCommandID);
+  }
+
 private:
+  // A unified string table for these options. Individual strings are stored as
+  // null terminated C-strings at offsets within this table.
+  StringTable StrTable;
+
+  // A table of different sets of prefixes. Each set starts with the number of
+  // prefixes in that set followed by that many offsets into the string table
+  // for each of the prefix strings. This is essentially a Pascal-string style
+  // encoding.
+  ArrayRef<StringTable::Offset> PrefixesTable;
+
   /// The option information table.
   ArrayRef<Info> OptionInfos;
+
+  ArrayRef<InfoExtra> InfoExtrasTable;
+
   bool IgnoreCase;
+
+  /// The subcommand information table.
+  ArrayRef<SubCommand> SubCommands;
+
+  /// The subcommand IDs table.
+  ArrayRef<unsigned> SubCommandIDsTable;
+
+  ArrayRef<HelpTextVariant> HelpTextVariantsTable;
+
+  ValuesCodeFnTy ValuesCodeFn = nullptr;
+
   bool GroupedShortOptions = false;
+  bool DashDashParsing = false;
   const char *EnvVar = nullptr;
 
   unsigned InputOptionID = 0;
   unsigned UnknownOptionID = 0;
 
-protected:
   /// The index of the first option which can be parsed (i.e., is not a
   /// special option like 'input' or 'unknown', and is not an option group).
   unsigned FirstSearchableIndex = 0;
 
+  /// The union of all option prefixes. If an argument does not begin with
+  /// one of these, it is an input.
+  SmallVector<StringRef> PrefixesUnion;
+
   /// The union of the first element of all option prefixes.
   SmallString<8> PrefixChars;
 
-  /// The union of all option prefixes. If an argument does not begin with
-  /// one of these, it is an input.
-  virtual ArrayRef<StringLiteral> getPrefixesUnion() const = 0;
-
-private:
   const Info &getInfo(OptSpecifier Opt) const {
     unsigned id = Opt.getID();
     assert(id > 0 && id - 1 < getNumOptions() && "Invalid Option ID.");
     return OptionInfos[id - 1];
   }
 
+  StringTable::Offset getHelpTextOffset(const Info &I,
+                                        Visibility VisibilityMask) const {
+    for (const HelpTextVariant *V =
+             &HelpTextVariantsTable[getExtra(I).HelpTextVariantsOffset];
+         V->Visibility; ++V)
+      if (VisibilityMask & V->Visibility)
+        return V->HelpTextOffset;
+    return I.HelpTextOffset;
+  }
+
+  StringRef getOptionValues(const Info &I) const {
+    StringRef Values = StrTable[getExtra(I).ValuesOffset];
+    if (Values.empty() && ValuesCodeFn)
+      Values = ValuesCodeFn(getOptionID(I));
+    return Values;
+  }
+
+  ArrayRef<unsigned> getSubCommandIDs(const Info &I) const {
+    // A set starts with its size.
+    unsigned Offset = getExtra(I).SubCommandIDsOffset;
+    return SubCommandIDsTable.slice(Offset + 1, SubCommandIDsTable[Offset]);
+  }
+
   std::unique_ptr<Arg> parseOneArgGrouped(InputArgList &Args,
                                           unsigned &Index) const;
 
 protected:
-  /// Initialize OptTable using Tablegen'ed OptionInfos. Child class must
-  /// manually call \c buildPrefixChars once they are fully constructed.
-  OptTable(ArrayRef<Info> OptionInfos, bool IgnoreCase = false);
+  OptTable(const Tables &Tables, bool IgnoreCase = false);
 
-  /// Build (or rebuild) the PrefixChars member.
-  void buildPrefixChars();
+  void setValuesCodeFn(ValuesCodeFnTy Fn) { ValuesCodeFn = Fn; }
 
 public:
   virtual ~OptTable();
 
+  /// Return the string table used for option names.
+  const StringTable &getStrTable() const { return StrTable; }
+
+  ArrayRef<SubCommand> getSubCommands() const { return SubCommands; }
+
+  /// Return the prefixes table used for option names.
+  ArrayRef<StringTable::Offset> getPrefixesTable() const {
+    return PrefixesTable;
+  }
+
   /// Return the total number of option classes.
   unsigned getNumOptions() const { return OptionInfos.size(); }
+
+  unsigned getOptionID(const Info &I) const {
+    return &I - OptionInfos.data() + 1;
+  }
 
   /// Get the given Opt's Option instance, lazily creating it
   /// if necessary.
@@ -110,7 +282,31 @@ public:
   const Option getOption(OptSpecifier Opt) const;
 
   /// Lookup the name of the given option.
-  StringRef getOptionName(OptSpecifier id) const { return getInfo(id).Name; }
+  StringRef getOptionName(OptSpecifier id) const {
+    return getInfo(id).getName(StrTable, PrefixesTable);
+  }
+
+  /// Lookup the prefix of the given option.
+  StringRef getOptionPrefix(OptSpecifier id) const {
+    const Info &I = getInfo(id);
+    return I.hasNoPrefix() ? StringRef()
+                           : I.getPrefix(StrTable, PrefixesTable, 0);
+  }
+
+  void appendOptionPrefixes(OptSpecifier id,
+                            SmallVectorImpl<StringRef> &Prefixes) const {
+    const Info &I = getInfo(id);
+    I.appendPrefixes(StrTable, PrefixesTable, Prefixes);
+  }
+
+  /// Lookup the prefixed name of the given option.
+  StringRef getOptionPrefixedName(OptSpecifier id) const {
+    return getInfo(id).getPrefixedName(StrTable);
+  }
+
+  const InfoExtra &getExtra(const Info &I) const {
+    return InfoExtrasTable[I.ExtraOffset];
+  }
 
   /// Get the kind of the given option.
   unsigned getOptionKind(OptSpecifier id) const {
@@ -123,14 +319,27 @@ public:
   }
 
   /// Get the help text to use to describe this option.
-  const char *getOptionHelpText(OptSpecifier id) const {
-    return getInfo(id).HelpText;
+  StringRef getOptionHelpText(OptSpecifier id) const {
+    return getOptionHelpText(id, Visibility(0));
+  }
+
+  // Get the help text to use to describe this option.
+  // If it has visibility specific help text and that visibility is in the
+  // visibility mask, use that text instead of the generic text.
+  StringRef getOptionHelpText(OptSpecifier id,
+                              Visibility VisibilityMask) const {
+    return StrTable[getHelpTextOffset(getInfo(id), VisibilityMask)];
   }
 
   /// Get the meta-variable name to use when describing
   /// this options values in the help text.
-  const char *getOptionMetaVar(OptSpecifier id) const {
-    return getInfo(id).MetaVar;
+  StringRef getOptionMetaVar(OptSpecifier id) const {
+    return StrTable[getExtra(getInfo(id)).MetaVarOffset];
+  }
+
+  /// Get the alias arguments as a \0 separated list, e.g. "foo\0bar\0".
+  const char *getOptionAliasArgs(OptSpecifier id) const {
+    return StrTable.getCString(getExtra(getInfo(id)).AliasArgsOffset);
   }
 
   /// Specify the environment variable where initial options should be read.
@@ -138,6 +347,10 @@ public:
 
   /// Support grouped short options. e.g. -ab represents -a -b.
   void setGroupedShortOptions(bool Value) { GroupedShortOptions = Value; }
+
+  /// Set whether "--" stops option parsing and treats all subsequent arguments
+  /// as positional. E.g. -- -a -b gives two positional inputs.
+  void setDashDashParsing(bool Value) { DashDashParsing = Value; }
 
   /// Find possible value for given flags. This is used for shell
   /// autocompletion.
@@ -159,6 +372,7 @@ public:
   ///
   /// \return The vector of flags which start with Cur.
   std::vector<std::string> findByPrefix(StringRef Cur,
+                                        Visibility VisibilityMask,
                                         unsigned int DisableFlags) const;
 
   /// Find the OptTable option that most closely matches the given string.
@@ -168,10 +382,8 @@ public:
   /// string includes prefix dashes "-" as well as values "=l".
   /// \param [out] NearestString - The nearest option string found in the
   /// OptTable.
-  /// \param [in] FlagsToInclude - Only find options with any of these flags.
-  /// Zero is the default, which includes all flags.
-  /// \param [in] FlagsToExclude - Don't find options with this flag. Zero
-  /// is the default, and means exclude nothing.
+  /// \param [in] VisibilityMask - Only include options with any of these
+  ///                              visibility flags set.
   /// \param [in] MinimumLength - Don't find options shorter than this length.
   /// For example, a minimum length of 3 prevents "-x" from being considered
   /// near to "-S".
@@ -180,13 +392,29 @@ public:
   ///
   /// \return The edit distance of the nearest string found.
   unsigned findNearest(StringRef Option, std::string &NearestString,
-                       unsigned FlagsToInclude = 0, unsigned FlagsToExclude = 0,
+                       Visibility VisibilityMask = Visibility(),
                        unsigned MinimumLength = 4,
                        unsigned MaximumDistance = UINT_MAX) const;
 
+  unsigned findNearest(StringRef Option, std::string &NearestString,
+                       unsigned FlagsToInclude, unsigned FlagsToExclude = 0,
+                       unsigned MinimumLength = 4,
+                       unsigned MaximumDistance = UINT_MAX) const;
+
+private:
+  unsigned
+  internalFindNearest(StringRef Option, std::string &NearestString,
+                      unsigned MinimumLength, unsigned MaximumDistance,
+                      std::function<bool(const Info &)> ExcludeOption) const;
+
+public:
   bool findExact(StringRef Option, std::string &ExactString,
-                 unsigned FlagsToInclude = 0,
-                 unsigned FlagsToExclude = 0) const {
+                 Visibility VisibilityMask = Visibility()) const {
+    return findNearest(Option, ExactString, VisibilityMask, 4, 0) == 0;
+  }
+
+  bool findExact(StringRef Option, std::string &ExactString,
+                 unsigned FlagsToInclude, unsigned FlagsToExclude = 0) const {
     return findNearest(Option, ExactString, FlagsToInclude, FlagsToExclude, 4,
                        0) == 0;
   }
@@ -197,18 +425,26 @@ public:
   /// \param [in,out] Index - The current parsing position in the argument
   /// string list; on return this will be the index of the next argument
   /// string to parse.
-  /// \param [in] FlagsToInclude - Only parse options with any of these flags.
-  /// Zero is the default which includes all flags.
-  /// \param [in] FlagsToExclude - Don't parse options with this flag.  Zero
-  /// is the default and means exclude nothing.
+  /// \param [in] VisibilityMask - Only include options with any of these
+  /// visibility flags set.
   ///
   /// \return The parsed argument, or 0 if the argument is missing values
   /// (in which case Index still points at the conceptual next argument string
   /// to parse).
-  std::unique_ptr<Arg> ParseOneArg(const ArgList &Args, unsigned &Index,
-                                   unsigned FlagsToInclude = 0,
-                                   unsigned FlagsToExclude = 0) const;
+  std::unique_ptr<Arg>
+  ParseOneArg(const ArgList &Args, unsigned &Index,
+              Visibility VisibilityMask = Visibility()) const;
 
+  std::unique_ptr<Arg> ParseOneArg(const ArgList &Args, unsigned &Index,
+                                   unsigned FlagsToInclude,
+                                   unsigned FlagsToExclude) const;
+
+private:
+  std::unique_ptr<Arg>
+  internalParseOneArg(const ArgList &Args, unsigned &Index,
+                      std::function<bool(const Option &)> ExcludeOption) const;
+
+public:
   /// Parse an list of arguments into an InputArgList.
   ///
   /// The resulting InputArgList will reference the strings in [\p ArgBegin,
@@ -221,16 +457,25 @@ public:
   /// \param MissingArgIndex - On error, the index of the option which could
   /// not be parsed.
   /// \param MissingArgCount - On error, the number of missing options.
-  /// \param FlagsToInclude - Only parse options with any of these flags.
-  /// Zero is the default which includes all flags.
-  /// \param FlagsToExclude - Don't parse options with this flag.  Zero
-  /// is the default and means exclude nothing.
+  /// \param VisibilityMask - Only include options with any of these
+  /// visibility flags set.
   /// \return An InputArgList; on error this will contain all the options
   /// which could be parsed.
   InputArgList ParseArgs(ArrayRef<const char *> Args, unsigned &MissingArgIndex,
-                         unsigned &MissingArgCount, unsigned FlagsToInclude = 0,
+                         unsigned &MissingArgCount,
+                         Visibility VisibilityMask = Visibility()) const;
+
+  InputArgList ParseArgs(ArrayRef<const char *> Args, unsigned &MissingArgIndex,
+                         unsigned &MissingArgCount, unsigned FlagsToInclude,
                          unsigned FlagsToExclude = 0) const;
 
+private:
+  InputArgList
+  internalParseArgs(ArrayRef<const char *> Args, unsigned &MissingArgIndex,
+                    unsigned &MissingArgCount,
+                    std::function<bool(const Option &)> ExcludeOption) const;
+
+public:
   /// A convenience helper which handles optional initial options populated from
   /// an environment variable, expands response files recursively and parses
   /// options.
@@ -241,56 +486,54 @@ public:
   /// could be parsed.
   InputArgList parseArgs(int Argc, char *const *Argv, OptSpecifier Unknown,
                          StringSaver &Saver,
-                         function_ref<void(StringRef)> ErrorFn) const;
+                         std::function<void(StringRef)> ErrorFn) const;
 
   /// Render the help text for an option table.
   ///
   /// \param OS - The stream to write the help text to.
   /// \param Usage - USAGE: Usage
   /// \param Title - OVERVIEW: Title
-  /// \param FlagsToInclude - If non-zero, only include options with any
-  ///                         of these flags set.
-  /// \param FlagsToExclude - Exclude options with any of these flags set.
+  /// \param VisibilityMask - Only in                 Visibility VisibilityMask,clude options with any of these
+  ///                         visibility flags set.
+  /// \param ShowHidden     - If true, display options marked as HelpHidden
   /// \param ShowAllAliases - If true, display all options including aliases
   ///                         that don't have help texts. By default, we display
   ///                         only options that are not hidden and have help
   ///                         texts.
   void printHelp(raw_ostream &OS, const char *Usage, const char *Title,
+                 bool ShowHidden = false, bool ShowAllAliases = false,
+                 Visibility VisibilityMask = Visibility(),
+                 StringRef SubCommand = {}) const;
+
+  void printHelp(raw_ostream &OS, const char *Usage, const char *Title,
                  unsigned FlagsToInclude, unsigned FlagsToExclude,
                  bool ShowAllAliases) const;
 
-  void printHelp(raw_ostream &OS, const char *Usage, const char *Title,
-                 bool ShowHidden = false, bool ShowAllAliases = false) const;
-};
-
-/// Specialization of OptTable
-class GenericOptTable : public OptTable {
-  SmallVector<StringLiteral> PrefixesUnionBuffer;
-
-protected:
-  GenericOptTable(ArrayRef<Info> OptionInfos, bool IgnoreCase = false);
-  ArrayRef<StringLiteral> getPrefixesUnion() const final {
-    return PrefixesUnionBuffer;
-  }
-};
-
-class PrecomputedOptTable : public OptTable {
-  ArrayRef<StringLiteral> PrefixesUnion;
-
-protected:
-  PrecomputedOptTable(ArrayRef<Info> OptionInfos,
-                      ArrayRef<StringLiteral> PrefixesTable,
-                      bool IgnoreCase = false)
-      : OptTable(OptionInfos, IgnoreCase), PrefixesUnion(PrefixesTable) {
-    buildPrefixChars();
-  }
-  ArrayRef<StringLiteral> getPrefixesUnion() const final {
-    return PrefixesUnion;
-  }
+private:
+  void internalPrintHelp(raw_ostream &OS, const char *Usage, const char *Title,
+                         StringRef SubCommand, bool ShowHidden,
+                         bool ShowAllAliases,
+                         std::function<bool(const Info &)> ExcludeOption,
+                         Visibility VisibilityMask) const;
 };
 
 } // end namespace opt
 
 } // end namespace llvm
+
+#define LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(                                       \
+    ID_PREFIX, PREFIXES_OFFSET, PREFIXED_NAME_OFFSET, ID, KIND, GROUP, ALIAS,  \
+    ALIASARGS, FLAGS, VISIBILITY, PARAM, HELPTEXT, HELPTEXTSFORVARIANTS,       \
+    METAVAR, VALUES, SUBCOMMANDIDS_OFFSET)                                     \
+  ID_PREFIX##ID
+
+#define LLVM_MAKE_OPT_ID(PREFIXES_OFFSET, PREFIXED_NAME_OFFSET, ID, KIND,      \
+                         GROUP, ALIAS, ALIASARGS, FLAGS, VISIBILITY, PARAM,    \
+                         HELPTEXT, HELPTEXTSFORVARIANTS, METAVAR, VALUES,      \
+                         SUBCOMMANDIDS_OFFSET)                                 \
+  LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(                                             \
+      OPT_, PREFIXES_OFFSET, PREFIXED_NAME_OFFSET, ID, KIND, GROUP, ALIAS,     \
+      ALIASARGS, FLAGS, VISIBILITY, PARAM, HELPTEXT, HELPTEXTSFORVARIANTS,     \
+      METAVAR, VALUES, SUBCOMMANDIDS_OFFSET)
 
 #endif // LLVM_OPTION_OPTTABLE_H

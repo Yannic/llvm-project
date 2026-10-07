@@ -9,9 +9,7 @@ if(LLVM_ENABLE_PIC)
     libremarks.cpp
     )
 
-  if (LLVM_LINK_LLVM_DYLIB)
-    set(LLVM_EXPORTED_SYMBOL_FILE ${CMAKE_CURRENT_SOURCE_DIR}/Remarks.dylib.exports)
-  else()
+  if (NOT (BUILD_SHARED_LIBS OR LLVM_LINK_LLVM_DYLIB))
     set(LLVM_EXPORTED_SYMBOL_FILE ${CMAKE_CURRENT_SOURCE_DIR}/Remarks.exports)
   endif()
 
@@ -27,10 +25,7 @@ if(LLVM_ENABLE_PIC)
     COMPONENT Remarks)
 
   if (APPLE)
-    set(REMARKS_VERSION ${LLVM_VERSION_MAJOR})
-    set_property(TARGET Remarks APPEND_STRING PROPERTY
-                 LINK_FLAGS
-                 " -compatibility_version 1 -current_version ${REMARKS_VERSION}.${LLVM_VERSION_MINOR}.${LLVM_VERSION_PATCH}")
+    llvm_set_macho_current_version(Remarks ${LLVM_VERSION_MAJOR})
   endif()
 
 endif()

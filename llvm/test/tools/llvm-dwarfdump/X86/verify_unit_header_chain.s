@@ -28,6 +28,7 @@ Linfo_string:
 Lsection_abbrev:
 	.byte	1                       ## Abbreviation Code
 	.byte	17                      ## DW_TAG_compile_unit
+        .byte   0                       ## DW_CHILDREN_no
 	.byte	0                       ## EOM(1)
 	.byte	0                       ## EOM(2)
 	.byte	0                       ## EOM(3)
@@ -52,7 +53,7 @@ Ltu_begin0:
 	.byte 	0
 Lcu_begin1:
 	.long	10                      ## Length of Unit
-	.short	6                       ## DWARF version number -- Error: The 16 bit unit header version is not valid.
+	.short	7                       ## DWARF version number -- Error: The 16 bit unit header version is not valid.
 	.byte	1                       ## DWARF Unit Type
 	.byte	4                       ## Address Size (in bytes) -- The offset into the .debug_abbrev section is not valid.
 	.long	Lline_table_start0

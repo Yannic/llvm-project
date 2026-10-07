@@ -25,7 +25,6 @@
 #include "lldb/Breakpoint/StoppointCallbackContext.h"
 #include "lldb/Core/Address.h"
 #include "lldb/Core/Debugger.h"
-#include "lldb/Core/StreamFile.h"
 #include "lldb/Core/StructuredDataImpl.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/ScriptInterpreter.h"
@@ -120,8 +119,8 @@ void SBBreakpoint::ClearAllBreakpointSites() {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->ClearAllBreakpointSites();
   }
 }
@@ -134,11 +133,11 @@ SBBreakpointLocation SBBreakpoint::FindLocationByAddress(addr_t vm_addr) {
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
     if (vm_addr != LLDB_INVALID_ADDRESS) {
-      std::lock_guard<std::recursive_mutex> guard(
-          bkpt_sp->GetTarget().GetAPIMutex());
+      TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+      std::lock_guard<TargetAPIMutex> guard(api_lock);
       Address address;
       Target &target = bkpt_sp->GetTarget();
-      if (!target.GetSectionLoadList().ResolveLoadAddress(vm_addr, address)) {
+      if (!target.ResolveLoadAddress(vm_addr, address)) {
         address.SetRawAddress(vm_addr);
       }
       sb_bp_location.SetLocation(bkpt_sp->FindLocationByAddress(address));
@@ -154,11 +153,11 @@ break_id_t SBBreakpoint::FindLocationIDByAddress(addr_t vm_addr) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp && vm_addr != LLDB_INVALID_ADDRESS) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     Address address;
     Target &target = bkpt_sp->GetTarget();
-    if (!target.GetSectionLoadList().ResolveLoadAddress(vm_addr, address)) {
+    if (!target.ResolveLoadAddress(vm_addr, address)) {
       address.SetRawAddress(vm_addr);
     }
     break_id = bkpt_sp->FindLocationIDByAddress(address);
@@ -174,8 +173,8 @@ SBBreakpointLocation SBBreakpoint::FindLocationByID(break_id_t bp_loc_id) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     sb_bp_location.SetLocation(bkpt_sp->FindLocationByID(bp_loc_id));
   }
 
@@ -189,8 +188,8 @@ SBBreakpointLocation SBBreakpoint::GetLocationAtIndex(uint32_t index) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     sb_bp_location.SetLocation(bkpt_sp->GetLocationAtIndex(index));
   }
 
@@ -203,8 +202,8 @@ void SBBreakpoint::SetEnabled(bool enable) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->SetEnabled(enable);
   }
 }
@@ -214,8 +213,8 @@ bool SBBreakpoint::IsEnabled() {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     return bkpt_sp->IsEnabled();
   } else
     return false;
@@ -227,8 +226,8 @@ void SBBreakpoint::SetOneShot(bool one_shot) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->SetOneShot(one_shot);
   }
 }
@@ -238,8 +237,8 @@ bool SBBreakpoint::IsOneShot() const {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     return bkpt_sp->IsOneShot();
   } else
     return false;
@@ -250,8 +249,8 @@ bool SBBreakpoint::IsInternal() {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     return bkpt_sp->IsInternal();
   } else
     return false;
@@ -263,8 +262,8 @@ void SBBreakpoint::SetIgnoreCount(uint32_t count) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->SetIgnoreCount(count);
   }
 }
@@ -274,9 +273,13 @@ void SBBreakpoint::SetCondition(const char *condition) {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
-    bkpt_sp->SetCondition(condition);
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
+    // Treat a null pointer as resetting the condition.
+    if (!condition)
+      bkpt_sp->SetCondition(StopCondition());
+    else
+      bkpt_sp->SetCondition(StopCondition(condition));
   }
 }
 
@@ -284,12 +287,38 @@ const char *SBBreakpoint::GetCondition() {
   LLDB_INSTRUMENT_VA(this);
 
   BreakpointSP bkpt_sp = GetSP();
+  if (!bkpt_sp)
+    return nullptr;
+
+  TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+  std::lock_guard<TargetAPIMutex> guard(api_lock);
+  StopCondition cond = bkpt_sp->GetCondition();
+  if (!cond)
+    return nullptr;
+  return ConstString(cond.GetText()).GetCString();
+}
+
+void SBBreakpoint::SetConditionMode(lldb::BreakpointConditionMode mode) {
+  LLDB_INSTRUMENT_VA(this, mode);
+
+  BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
-    return bkpt_sp->GetConditionText();
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
+    bkpt_sp->GetCondition().SetMode(mode);
   }
-  return nullptr;
+}
+
+lldb::BreakpointConditionMode SBBreakpoint::GetConditionMode() {
+  LLDB_INSTRUMENT_VA(this);
+
+  BreakpointSP bkpt_sp = GetSP();
+  if (bkpt_sp) {
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
+    return bkpt_sp->GetCondition().GetMode();
+  }
+  return BreakpointConditionMode::eBreakpointConditionModeDefault;
 }
 
 void SBBreakpoint::SetAutoContinue(bool auto_continue) {
@@ -297,8 +326,8 @@ void SBBreakpoint::SetAutoContinue(bool auto_continue) {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->SetAutoContinue(auto_continue);
   }
 }
@@ -308,8 +337,8 @@ bool SBBreakpoint::GetAutoContinue() {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     return bkpt_sp->IsAutoContinue();
   }
   return false;
@@ -321,8 +350,8 @@ uint32_t SBBreakpoint::GetHitCount() const {
   uint32_t count = 0;
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     count = bkpt_sp->GetHitCount();
   }
 
@@ -335,33 +364,33 @@ uint32_t SBBreakpoint::GetIgnoreCount() const {
   uint32_t count = 0;
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     count = bkpt_sp->GetIgnoreCount();
   }
 
   return count;
 }
 
-void SBBreakpoint::SetThreadID(tid_t tid) {
+void SBBreakpoint::SetThreadID(lldb::tid_t tid) {
   LLDB_INSTRUMENT_VA(this, tid);
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->SetThreadID(tid);
   }
 }
 
-tid_t SBBreakpoint::GetThreadID() {
+lldb::tid_t SBBreakpoint::GetThreadID() {
   LLDB_INSTRUMENT_VA(this);
 
-  tid_t tid = LLDB_INVALID_THREAD_ID;
+  lldb::tid_t tid = LLDB_INVALID_THREAD_ID;
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     tid = bkpt_sp->GetThreadID();
   }
 
@@ -373,8 +402,8 @@ void SBBreakpoint::SetThreadIndex(uint32_t index) {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->GetOptions().GetThreadSpec()->SetIndex(index);
   }
 }
@@ -385,8 +414,8 @@ uint32_t SBBreakpoint::GetThreadIndex() const {
   uint32_t thread_idx = UINT32_MAX;
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     const ThreadSpec *thread_spec =
         bkpt_sp->GetOptions().GetThreadSpecNoCreate();
     if (thread_spec != nullptr)
@@ -402,8 +431,8 @@ void SBBreakpoint::SetThreadName(const char *thread_name) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->GetOptions().GetThreadSpec()->SetName(thread_name);
   }
 }
@@ -411,18 +440,17 @@ void SBBreakpoint::SetThreadName(const char *thread_name) {
 const char *SBBreakpoint::GetThreadName() const {
   LLDB_INSTRUMENT_VA(this);
 
-  const char *name = nullptr;
   BreakpointSP bkpt_sp = GetSP();
-  if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
-    const ThreadSpec *thread_spec =
-        bkpt_sp->GetOptions().GetThreadSpecNoCreate();
-    if (thread_spec != nullptr)
-      name = thread_spec->GetName();
-  }
+  if (!bkpt_sp)
+    return nullptr;
 
-  return name;
+  TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+  std::lock_guard<TargetAPIMutex> guard(api_lock);
+  if (const ThreadSpec *thread_spec =
+          bkpt_sp->GetOptions().GetThreadSpecNoCreate())
+    return ConstString(thread_spec->GetName()).GetCString();
+
+  return nullptr;
 }
 
 void SBBreakpoint::SetQueueName(const char *queue_name) {
@@ -430,8 +458,8 @@ void SBBreakpoint::SetQueueName(const char *queue_name) {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     bkpt_sp->GetOptions().GetThreadSpec()->SetQueueName(queue_name);
   }
 }
@@ -439,18 +467,17 @@ void SBBreakpoint::SetQueueName(const char *queue_name) {
 const char *SBBreakpoint::GetQueueName() const {
   LLDB_INSTRUMENT_VA(this);
 
-  const char *name = nullptr;
   BreakpointSP bkpt_sp = GetSP();
-  if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
-    const ThreadSpec *thread_spec =
-        bkpt_sp->GetOptions().GetThreadSpecNoCreate();
-    if (thread_spec)
-      name = thread_spec->GetQueueName();
-  }
+  if (!bkpt_sp)
+    return nullptr;
 
-  return name;
+  TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+  std::lock_guard<TargetAPIMutex> guard(api_lock);
+  if (const ThreadSpec *thread_spec =
+          bkpt_sp->GetOptions().GetThreadSpecNoCreate())
+    return ConstString(thread_spec->GetQueueName()).GetCString();
+
+  return nullptr;
 }
 
 size_t SBBreakpoint::GetNumResolvedLocations() const {
@@ -459,8 +486,8 @@ size_t SBBreakpoint::GetNumResolvedLocations() const {
   size_t num_resolved = 0;
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     num_resolved = bkpt_sp->GetNumResolvedLocations();
   }
   return num_resolved;
@@ -472,8 +499,8 @@ size_t SBBreakpoint::GetNumLocations() const {
   BreakpointSP bkpt_sp = GetSP();
   size_t num_locs = 0;
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     num_locs = bkpt_sp->GetNumLocations();
   }
   return num_locs;
@@ -488,8 +515,8 @@ void SBBreakpoint::SetCommandLineCommands(SBStringList &commands) {
   if (commands.GetSize() == 0)
     return;
 
-  std::lock_guard<std::recursive_mutex> guard(
-      bkpt_sp->GetTarget().GetAPIMutex());
+  TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+  std::lock_guard<TargetAPIMutex> guard(api_lock);
   std::unique_ptr<BreakpointOptions::CommandData> cmd_data_up(
       new BreakpointOptions::CommandData(*commands, eScriptLanguageNone));
 
@@ -521,8 +548,8 @@ bool SBBreakpoint::GetDescription(SBStream &s, bool include_locations) {
 
   BreakpointSP bkpt_sp = GetSP();
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     s.Printf("SBBreakpoint: id = %i, ", bkpt_sp->GetID());
     bkpt_sp->GetResolverDescription(s.get());
     bkpt_sp->GetFilterDescription(s.get());
@@ -543,17 +570,18 @@ SBError SBBreakpoint::AddLocation(SBAddress &address) {
   SBError error;
 
   if (!address.IsValid()) {
-    error.SetErrorString("Can't add an invalid address.");
+    error = Status::FromErrorString("Can't add an invalid address.");
     return error;
   }
 
   if (!bkpt_sp) {
-    error.SetErrorString("No breakpoint to add a location to.");
+    error = Status::FromErrorString("No breakpoint to add a location to.");
     return error;
   }
 
   if (!llvm::isa<BreakpointResolverScripted>(bkpt_sp->GetResolver().get())) {
-    error.SetErrorString("Only a scripted resolver can add locations.");
+    error =
+        Status::FromErrorString("Only a scripted resolver can add locations.");
     return error;
   }
 
@@ -563,10 +591,19 @@ SBError SBBreakpoint::AddLocation(SBAddress &address) {
     StreamString s;
     address.get()->Dump(&s, &bkpt_sp->GetTarget(),
                         Address::DumpStyleModuleWithFileAddress);
-    error.SetErrorStringWithFormat("Address: %s didn't pass the filter.",
-                                   s.GetData());
+    error = Status::FromErrorStringWithFormat(
+        "Address: %s didn't pass the filter.", s.GetData());
   }
   return error;
+}
+
+SBBreakpointLocation SBBreakpoint::AddFacadeLocation() {
+  BreakpointSP bkpt_sp = GetSP();
+  if (!bkpt_sp)
+    return {};
+
+  BreakpointLocationSP loc_sp = bkpt_sp->AddFacadeLocation();
+  return SBBreakpointLocation(loc_sp);
 }
 
 SBStructuredData SBBreakpoint::SerializeToStructuredData() {
@@ -589,8 +626,8 @@ void SBBreakpoint::SetCallback(SBBreakpointHitCallback callback, void *baton) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     BatonSP baton_sp(new SBBreakpointCallbackBaton(callback, baton));
     bkpt_sp->SetCallback(SBBreakpointCallbackBaton
       ::PrivateBreakpointHitCallback, baton_sp,
@@ -614,8 +651,8 @@ SBError SBBreakpoint::SetScriptCallbackFunction(
 
   if (bkpt_sp) {
     Status error;
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     BreakpointOptions &bp_options = bkpt_sp->GetOptions();
     error = bkpt_sp->GetTarget()
         .GetDebugger()
@@ -624,9 +661,9 @@ SBError SBBreakpoint::SetScriptCallbackFunction(
                                                callback_function_name,
                                                extra_args.m_impl_up
                                                    ->GetObjectSP());
-    sb_error.SetError(error);
+    sb_error.SetError(std::move(error));
   } else
-    sb_error.SetErrorString("invalid breakpoint");
+    sb_error = Status::FromErrorString("invalid breakpoint");
 
   return sb_error;
 }
@@ -638,17 +675,18 @@ SBError SBBreakpoint::SetScriptCallbackBody(const char *callback_body_text) {
 
   SBError sb_error;
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     BreakpointOptions &bp_options = bkpt_sp->GetOptions();
     Status error =
         bkpt_sp->GetTarget()
             .GetDebugger()
             .GetScriptInterpreter()
-            ->SetBreakpointCommandCallback(bp_options, callback_body_text);
-    sb_error.SetError(error);
+            ->SetBreakpointCommandCallback(bp_options, callback_body_text,
+                                           /*is_callback=*/false);
+    sb_error.SetError(std::move(error));
   } else
-    sb_error.SetErrorString("invalid breakpoint");
+    sb_error = Status::FromErrorString("invalid breakpoint");
 
   return sb_error;
 }
@@ -667,13 +705,13 @@ SBError SBBreakpoint::AddNameWithErrorHandling(const char *new_name) {
 
   SBError status;
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     Status error;
     bkpt_sp->GetTarget().AddNameToBreakpoint(bkpt_sp, new_name, error);
-    status.SetError(error);
+    status.SetError(std::move(error));
   } else {
-    status.SetErrorString("invalid breakpoint");
+    status = Status::FromErrorString("invalid breakpoint");
   }
 
   return status;
@@ -685,10 +723,10 @@ void SBBreakpoint::RemoveName(const char *name_to_remove) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
-    bkpt_sp->GetTarget().RemoveNameFromBreakpoint(bkpt_sp,
-                                                  ConstString(name_to_remove));
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
+    bkpt_sp->GetTarget().RemoveNameFromBreakpoint(
+        bkpt_sp, llvm::StringRef(name_to_remove));
   }
 }
 
@@ -698,8 +736,8 @@ bool SBBreakpoint::MatchesName(const char *name) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     return bkpt_sp->MatchesName(name);
   }
 
@@ -712,11 +750,11 @@ void SBBreakpoint::GetNames(SBStringList &names) {
   BreakpointSP bkpt_sp = GetSP();
 
   if (bkpt_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        bkpt_sp->GetTarget().GetAPIMutex());
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
     std::vector<std::string> names_vec;
     bkpt_sp->GetNames(names_vec);
-    for (std::string name : names_vec) {
+    for (const std::string &name : names_vec) {
       names.AppendString(name.c_str());
     }
   }
@@ -780,6 +818,18 @@ bool SBBreakpoint::IsHardware() const {
   if (bkpt_sp)
     return bkpt_sp->IsHardware();
   return false;
+}
+
+lldb::SBError SBBreakpoint::SetIsHardware(bool is_hardware) {
+  LLDB_INSTRUMENT_VA(this, is_hardware);
+
+  BreakpointSP bkpt_sp = GetSP();
+  if (bkpt_sp) {
+    TargetAPIMutex api_lock = bkpt_sp->GetTarget().GetAPIMutex();
+    std::lock_guard<TargetAPIMutex> guard(api_lock);
+    return SBError(Status::FromError(bkpt_sp->SetIsHardware(is_hardware)));
+  }
+  return SBError();
 }
 
 BreakpointSP SBBreakpoint::GetSP() const { return m_opaque_wp.lock(); }

@@ -25,7 +25,6 @@
 
 namespace fir {
 class FirOpBuilder;
-class ArrayLoadOp;
 
 class ArrayBoxValue;
 class BoxValue;
@@ -78,7 +77,7 @@ class CharBoxValue : public AbstractBox {
 public:
   CharBoxValue(mlir::Value addr, mlir::Value len)
       : AbstractBox{addr}, len{len} {
-    if (addr && addr.getType().template isa<fir::BoxCharType>())
+    if (addr && mlir::isa<fir::BoxCharType>(addr.getType()))
       fir::emitFatalError(addr.getLoc(),
                           "BoxChar should not be in CharBoxValue");
   }
@@ -127,8 +126,7 @@ public:
   AbstractArrayBox() = default;
   AbstractArrayBox(llvm::ArrayRef<mlir::Value> extents,
                    llvm::ArrayRef<mlir::Value> lbounds)
-      : extents{extents.begin(), extents.end()}, lbounds{lbounds.begin(),
-                                                         lbounds.end()} {}
+      : extents{extents}, lbounds{lbounds} {}
 
   // Every array has extents that describe its shape.
   const llvm::SmallVectorImpl<mlir::Value> &getExtents() const {
@@ -221,7 +219,7 @@ public:
     auto type = getAddr().getType();
     if (auto pointedTy = fir::dyn_cast_ptrEleTy(type))
       type = pointedTy;
-    return type.cast<fir::BaseBoxType>();
+    return mlir::cast<fir::BaseBoxType>(type);
   }
   /// Return the part of the address type after memory and box types. That is
   /// the element type, maybe wrapped in a fir.array type.
@@ -237,28 +235,28 @@ public:
     auto ty = getBoxTy().getEleTy();
     if (fir::isa_ref_type(ty))
       return ty;
-    return fir::ReferenceType::get(ty);
+    return fir::ReferenceType::get(ty, fir::isa_volatile_type(getBoxTy()));
   }
 
   /// Get the scalar type related to the described entity
   mlir::Type getEleTy() const {
     auto type = getBaseTy();
-    if (auto seqTy = type.dyn_cast<fir::SequenceType>())
+    if (auto seqTy = mlir::dyn_cast<fir::SequenceType>(type))
       return seqTy.getEleTy();
     return type;
   }
 
   /// Is the entity an array or an assumed rank ?
-  bool hasRank() const { return getBaseTy().isa<fir::SequenceType>(); }
+  bool hasRank() const { return mlir::isa<fir::SequenceType>(getBaseTy()); }
   /// Is this an assumed rank ?
   bool hasAssumedRank() const {
-    auto seqTy = getBaseTy().dyn_cast<fir::SequenceType>();
+    auto seqTy = mlir::dyn_cast<fir::SequenceType>(getBaseTy());
     return seqTy && seqTy.hasUnknownShape();
   }
   /// Returns the rank of the entity. Beware that zero will be returned for
   /// both scalars and assumed rank.
   unsigned rank() const {
-    if (auto seqTy = getBaseTy().dyn_cast<fir::SequenceType>())
+    if (auto seqTy = mlir::dyn_cast<fir::SequenceType>(getBaseTy()))
       return seqTy.getDimension();
     return 0;
   }
@@ -267,7 +265,7 @@ public:
   bool isCharacter() const { return fir::isa_char(getEleTy()); }
 
   /// Is this a derived type entity ?
-  bool isDerived() const { return getEleTy().isa<fir::RecordType>(); }
+  bool isDerived() const { return mlir::isa<fir::RecordType>(getEleTy()); }
 
   bool isDerivedWithLenParameters() const {
     return fir::isRecordWithTypeParameters(getEleTy());
@@ -280,6 +278,8 @@ public:
   bool isUnlimitedPolymorphic() const {
     return fir::isUnlimitedPolymorphicType(getBoxTy());
   }
+
+  unsigned corank() const { return fir::getBoxCorank(getBoxTy()); }
 };
 
 /// An entity described by a fir.box value that cannot be read into
@@ -296,7 +296,7 @@ public:
            llvm::ArrayRef<mlir::Value> explicitParams,
            llvm::ArrayRef<mlir::Value> explicitExtents = {})
       : AbstractIrBox{addr, lbounds, explicitExtents},
-        explicitParams{explicitParams.begin(), explicitParams.end()} {
+        explicitParams{explicitParams} {
     assert(verify());
   }
   // TODO: check contiguous attribute of addr
@@ -377,11 +377,11 @@ public:
   }
   /// Is this a Fortran pointer ?
   bool isPointer() const {
-    return getBoxTy().getEleTy().isa<fir::PointerType>();
+    return mlir::isa<fir::PointerType>(getBoxTy().getEleTy());
   }
   /// Is this an allocatable ?
   bool isAllocatable() const {
-    return getBoxTy().getEleTy().isa<fir::HeapType>();
+    return mlir::isa<fir::HeapType>(getBoxTy().getEleTy());
   }
   // Replace the fir.ref<fir.box>, keeping any non-deferred parameters.
   MutableBoxValue clone(mlir::Value newBox) const {
@@ -433,7 +433,8 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &, const ExtendedValue &);
 /// substituted.
 ExtendedValue substBase(const ExtendedValue &exv, mlir::Value base);
 
-/// Is the extended value `exv` an array?
+/// Is the extended value `exv` an array? Note that this returns true for
+/// assumed-ranks that could actually be scalars at runtime.
 bool isArray(const ExtendedValue &exv);
 
 /// Get the type parameters for `exv`.
@@ -452,21 +453,11 @@ llvm::SmallVector<mlir::Value> getTypeParams(mlir::Location loc,
                                              FirOpBuilder &builder,
                                              const ExtendedValue &exv);
 
-/// Specialization of get type parameters for an ArrayLoadOp. An array load must
-/// either have all type parameters given as arguments or be a boxed value.
-llvm::SmallVector<mlir::Value>
-getTypeParams(mlir::Location loc, FirOpBuilder &builder, ArrayLoadOp load);
-
 // The generalized function to get a vector of extents is
 /// Get extents from \p box. For fir::BoxValue and
 /// fir::MutableBoxValue, this will generate code to read the extents.
 llvm::SmallVector<mlir::Value>
 getExtents(mlir::Location loc, FirOpBuilder &builder, const ExtendedValue &box);
-
-/// Get exactly one extent for any array-like extended value, \p exv. If \p exv
-/// is not an array or has rank less then \p dim, the result will be a nullptr.
-mlir::Value getExtentAtDimension(mlir::Location loc, FirOpBuilder &builder,
-                                 const ExtendedValue &exv, unsigned dim);
 
 } // namespace factory
 
@@ -488,7 +479,7 @@ public:
     if (const auto *b = getUnboxed()) {
       if (*b) {
         auto type = b->getType();
-        if (type.template isa<fir::BoxCharType>())
+        if (mlir::isa<fir::BoxCharType>(type))
           fir::emitFatalError(b->getLoc(), "BoxChar should be unboxed");
         type = fir::unwrapSequenceType(fir::unwrapRefType(type));
         if (fir::isa_char(type))
@@ -527,8 +518,14 @@ public:
                  [](const auto &box) -> bool { return false; });
   }
 
-  /// Is this an assumed size array ?
-  bool isAssumedSize() const;
+  bool hasAssumedRank() const {
+    return match(
+        [](const fir::BoxValue &box) -> bool { return box.hasAssumedRank(); },
+        [](const fir::MutableBoxValue &box) -> bool {
+          return box.hasAssumedRank();
+        },
+        [](const auto &box) -> bool { return false; });
+  }
 
   /// LLVM style debugging of extended values
   LLVM_DUMP_METHOD void dump() const { llvm::errs() << *this << '\n'; }

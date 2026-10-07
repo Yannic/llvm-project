@@ -21,19 +21,22 @@
 #include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Interpreter/OptionArgParser.h"
 #include "lldb/Interpreter/OptionGroupBoolean.h"
+#include "lldb/Target/DynamicLoader.h"
 #include "lldb/Target/JITLoaderList.h"
 #include "lldb/Target/MemoryRegionInfo.h"
 #include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/UnixSignals.h"
+#include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/LLDBAssert.h"
 #include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/State.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/Threading.h"
 
+#include "Plugins/DynamicLoader/POSIX-DYLD/DynamicLoaderPOSIXDYLD.h"
+#include "Plugins/ObjectFile/Placeholder/ObjectFilePlaceholder.h"
 #include "Plugins/Process/Utility/StopInfoMachException.h"
 
 #include <memory>
@@ -46,84 +49,6 @@ using namespace minidump;
 LLDB_PLUGIN_DEFINE(ProcessMinidump)
 
 namespace {
-
-/// A minimal ObjectFile implementation providing a dummy object file for the
-/// cases when the real module binary is not available. This allows the module
-/// to show up in "image list" and symbols to be added to it.
-class PlaceholderObjectFile : public ObjectFile {
-public:
-  PlaceholderObjectFile(const lldb::ModuleSP &module_sp,
-                        const ModuleSpec &module_spec, lldb::addr_t base,
-                        lldb::addr_t size)
-      : ObjectFile(module_sp, &module_spec.GetFileSpec(), /*file_offset*/ 0,
-                   /*length*/ 0, /*data_sp*/ nullptr, /*data_offset*/ 0),
-        m_arch(module_spec.GetArchitecture()), m_uuid(module_spec.GetUUID()),
-        m_base(base), m_size(size) {
-    m_symtab_up = std::make_unique<Symtab>(this);
-  }
-
-  static ConstString GetStaticPluginName() {
-    return ConstString("placeholder");
-  }
-  llvm::StringRef GetPluginName() override {
-    return GetStaticPluginName().GetStringRef();
-  }
-  bool ParseHeader() override { return true; }
-  Type CalculateType() override { return eTypeUnknown; }
-  Strata CalculateStrata() override { return eStrataUnknown; }
-  uint32_t GetDependentModules(FileSpecList &file_list) override { return 0; }
-  bool IsExecutable() const override { return false; }
-  ArchSpec GetArchitecture() override { return m_arch; }
-  UUID GetUUID() override { return m_uuid; }
-  void ParseSymtab(lldb_private::Symtab &symtab) override {}
-  bool IsStripped() override { return true; }
-  ByteOrder GetByteOrder() const override { return m_arch.GetByteOrder(); }
-
-  uint32_t GetAddressByteSize() const override {
-    return m_arch.GetAddressByteSize();
-  }
-
-  Address GetBaseAddress() override {
-    return Address(m_sections_up->GetSectionAtIndex(0), 0);
-  }
-
-  void CreateSections(SectionList &unified_section_list) override {
-    m_sections_up = std::make_unique<SectionList>();
-    auto section_sp = std::make_shared<Section>(
-        GetModule(), this, /*sect_id*/ 0, ConstString(".module_image"),
-        eSectionTypeOther, m_base, m_size, /*file_offset*/ 0, /*file_size*/ 0,
-        /*log2align*/ 0, /*flags*/ 0);
-    section_sp->SetPermissions(ePermissionsReadable | ePermissionsExecutable);
-    m_sections_up->AddSection(section_sp);
-    unified_section_list.AddSection(std::move(section_sp));
-  }
-
-  bool SetLoadAddress(Target &target, addr_t value,
-                      bool value_is_offset) override {
-    assert(!value_is_offset);
-    assert(value == m_base);
-
-    // Create sections if they haven't been created already.
-    GetModule()->GetSectionList();
-    assert(m_sections_up->GetNumSections(0) == 1);
-
-    target.GetSectionLoadList().SetSectionLoadAddress(
-        m_sections_up->GetSectionAtIndex(0), m_base);
-    return true;
-  }
-
-  void Dump(Stream *s) override {
-    s->Format("Placeholder object file for {0} loaded at [{1:x}-{2:x})\n",
-              GetFileSpec(), m_base, m_base + m_size);
-  }
-
-  lldb::addr_t GetBaseImageAddress() const { return m_base; }
-private:
-  ArchSpec m_arch;
-  UUID m_uuid;
-  lldb::addr_t m_base;
-  lldb::addr_t m_size;
-};
 
 /// Duplicate the HashElfTextSection() from the breakpad sources.
 ///
@@ -152,7 +77,7 @@ void HashElfTextSection(ModuleSP module_sp, std::vector<uint8_t> &breakpad_uuid,
   SectionList *sect_list = module_sp->GetSectionList();
   if (sect_list == nullptr)
     return;
-  SectionSP sect_sp = sect_list->FindSectionByName(ConstString(".text"));
+  SectionSP sect_sp = sect_list->FindSectionByName(".text");
   if (!sect_sp)
     return;
   constexpr size_t kMDGUIDSize = 16;
@@ -160,11 +85,12 @@ void HashElfTextSection(ModuleSP module_sp, std::vector<uint8_t> &breakpad_uuid,
   // The breakpad code has a bug where it might access beyond the end of a
   // .text section by up to 15 bytes, so we must ensure we round up to the
   // next kMDGUIDSize byte boundary.
-  DataExtractor data;
+  DataExtractorSP extractor_sp;
   const size_t text_size = sect_sp->GetFileSize();
   const size_t read_size = std::min<size_t>(
       llvm::alignTo(text_size, kMDGUIDSize), kBreakpadPageSize);
-  sect_sp->GetObjectFile()->GetData(sect_sp->GetFileOffset(), read_size, data);
+  sect_sp->GetObjectFile()->GetData(sect_sp->GetFileOffset(), read_size,
+                                    extractor_sp);
 
   breakpad_uuid.assign(kMDGUIDSize, 0);
   facebook_uuid.assign(kMDGUIDSize, 0);
@@ -179,8 +105,8 @@ void HashElfTextSection(ModuleSP module_sp, std::vector<uint8_t> &breakpad_uuid,
   // sources, including the error where it might has an extra 15 bytes past the
   // end of the .text section if the .text section is less than a page size in
   // length.
-  const uint8_t *ptr = data.GetDataStart();
-  const uint8_t *ptr_end = data.GetDataEnd();
+  const uint8_t *ptr = extractor_sp->GetDataStart();
+  const uint8_t *ptr_end = extractor_sp->GetDataEnd();
   while (ptr < ptr_end) {
     for (unsigned i = 0; i < kMDGUIDSize; i++) {
       breakpad_uuid[i] ^= ptr[i];
@@ -233,9 +159,8 @@ ProcessMinidump::ProcessMinidump(lldb::TargetSP target_sp,
                                  lldb::ListenerSP listener_sp,
                                  const FileSpec &core_file,
                                  DataBufferSP core_data)
-    : PostMortemProcess(target_sp, listener_sp), m_core_file(core_file),
-      m_core_data(std::move(core_data)), m_active_exception(nullptr),
-      m_is_wow64(false) {}
+    : PostMortemProcess(target_sp, listener_sp, core_file),
+      m_core_data(std::move(core_data)), m_is_wow64(false) {}
 
 ProcessMinidump::~ProcessMinidump() {
   Clear();
@@ -243,17 +168,13 @@ ProcessMinidump::~ProcessMinidump() {
   // make sure all of the broadcaster cleanup goes as planned. If we destruct
   // this class, then Process::~Process() might have problems trying to fully
   // destroy the broadcaster.
-  Finalize();
+  Finalize(true /* destructing */);
 }
 
 void ProcessMinidump::Initialize() {
-  static llvm::once_flag g_once_flag;
-
-  llvm::call_once(g_once_flag, []() {
-    PluginManager::RegisterPlugin(GetPluginNameStatic(),
-                                  GetPluginDescriptionStatic(),
-                                  ProcessMinidump::CreateInstance);
-  });
+  PluginManager::RegisterPlugin(GetPluginNameStatic(),
+                                GetPluginDescriptionStatic(),
+                                ProcessMinidump::CreateInstance);
 }
 
 void ProcessMinidump::Terminate() {
@@ -263,7 +184,7 @@ void ProcessMinidump::Terminate() {
 Status ProcessMinidump::DoLoadCore() {
   auto expected_parser = MinidumpParser::Create(m_core_data);
   if (!expected_parser)
-    return Status(expected_parser.takeError());
+    return Status::FromError(expected_parser.takeError());
   m_minidump_parser = std::move(*expected_parser);
 
   Status error;
@@ -279,14 +200,33 @@ Status ProcessMinidump::DoLoadCore() {
     // ThreadMinidump::CreateRegisterContextForFrame().
     break;
   default:
-    error.SetErrorStringWithFormat("unsupported minidump architecture: %s",
-                                   arch.GetArchitectureName());
+    error = Status::FromErrorStringWithFormat(
+        "unsupported minidump architecture: %s", arch.GetArchitectureName());
     return error;
   }
   GetTarget().SetArchitecture(arch, true /*set_platform*/);
 
   m_thread_list = m_minidump_parser->GetThreads();
-  m_active_exception = m_minidump_parser->GetExceptionStream();
+  auto exception_stream_it = m_minidump_parser->GetExceptionStreams();
+  for (auto exception_stream_or_err : exception_stream_it) {
+    // If we can't read an exception stream skip it
+    // We should probably serve a warning
+    if (!exception_stream_or_err) {
+      LLDB_LOG_ERROR(GetLog(LLDBLog::Process),
+                     exception_stream_or_err.takeError(),
+                     "failed to read exception stream: {0}");
+      continue;
+    }
+    const llvm::minidump::ExceptionStream &exception_stream =
+        *exception_stream_or_err;
+
+    if (!m_exceptions_by_tid
+             .try_emplace(exception_stream.ThreadId, exception_stream)
+             .second) {
+      return Status::FromErrorStringWithFormatv(
+          "Duplicate exception stream for tid {0}", exception_stream.ThreadId);
+    }
+  }
 
   SetUnixSignals(UnixSignals::Create(GetArchitecture()));
 
@@ -309,81 +249,91 @@ Status ProcessMinidump::DoDestroy() { return Status(); }
 
 void ProcessMinidump::RefreshStateAfterStop() {
 
-  if (!m_active_exception)
-    return;
+  for (const auto &[_, exception_stream] : m_exceptions_by_tid) {
+    constexpr uint32_t BreakpadDumpRequested = 0xFFFFFFFF;
+    if (exception_stream.ExceptionRecord.ExceptionCode ==
+        BreakpadDumpRequested) {
+      // This "ExceptionCode" value is a sentinel that is sometimes used
+      // when generating a dump for a process that hasn't crashed.
 
-  constexpr uint32_t BreakpadDumpRequested = 0xFFFFFFFF;
-  if (m_active_exception->ExceptionRecord.ExceptionCode ==
-      BreakpadDumpRequested) {
-    // This "ExceptionCode" value is a sentinel that is sometimes used
-    // when generating a dump for a process that hasn't crashed.
-
-    // TODO: The definition and use of this "dump requested" constant
-    // in Breakpad are actually Linux-specific, and for similar use
-    // cases on Mac/Windows it defines different constants, referring
-    // to them as "simulated" exceptions; consider moving this check
-    // down to the OS-specific paths and checking each OS for its own
-    // constant.
-    return;
-  }
-
-  lldb::StopInfoSP stop_info;
-  lldb::ThreadSP stop_thread;
-
-  Process::m_thread_list.SetSelectedThreadByID(m_active_exception->ThreadId);
-  stop_thread = Process::m_thread_list.GetSelectedThread();
-  ArchSpec arch = GetArchitecture();
-
-  if (arch.GetTriple().getOS() == llvm::Triple::Linux) {
-    uint32_t signo = m_active_exception->ExceptionRecord.ExceptionCode;
-
-    if (signo == 0) {
-      // No stop.
+      // TODO: The definition and use of this "dump requested" constant
+      // in Breakpad are actually Linux-specific, and for similar use
+      // cases on Mac/Windows it defines different constants, referring
+      // to them as "simulated" exceptions; consider moving this check
+      // down to the OS-specific paths and checking each OS for its own
+      // constant.
       return;
     }
 
-    stop_info = StopInfo::CreateStopReasonWithSignal(
-        *stop_thread, signo);
-  } else if (arch.GetTriple().getVendor() == llvm::Triple::Apple) {
-    stop_info = StopInfoMachException::CreateStopReasonWithMachException(
-        *stop_thread, m_active_exception->ExceptionRecord.ExceptionCode, 2,
-        m_active_exception->ExceptionRecord.ExceptionFlags,
-        m_active_exception->ExceptionRecord.ExceptionAddress, 0);
-  } else {
-    std::string desc;
-    llvm::raw_string_ostream desc_stream(desc);
-    desc_stream << "Exception "
-                << llvm::format_hex(
-                       m_active_exception->ExceptionRecord.ExceptionCode, 8)
-                << " encountered at address "
-                << llvm::format_hex(
-                       m_active_exception->ExceptionRecord.ExceptionAddress, 8);
-    stop_info = StopInfo::CreateStopReasonWithException(
-        *stop_thread, desc_stream.str().c_str());
-  }
+    lldb::StopInfoSP stop_info;
+    lldb::ThreadSP stop_thread;
 
-  stop_thread->SetStopInfo(stop_info);
+    Process::m_thread_list.SetSelectedThreadByID(exception_stream.ThreadId);
+    stop_thread = Process::m_thread_list.GetSelectedThread();
+    ArchSpec arch = GetArchitecture();
+
+    if (arch.GetTriple().getOS() == llvm::Triple::Linux) {
+      uint32_t signo = exception_stream.ExceptionRecord.ExceptionCode;
+      if (signo == 0) {
+        // No stop.
+        return;
+      }
+      const char *description = nullptr;
+      if (exception_stream.ExceptionRecord.ExceptionFlags ==
+          llvm::minidump::Exception::LLDB_FLAG)
+        description = reinterpret_cast<const char *>(
+            exception_stream.ExceptionRecord.ExceptionInformation);
+
+      llvm::StringRef description_str(description,
+                                      Exception::MaxParameterBytes);
+      stop_info = StopInfo::CreateStopReasonWithSignal(
+          *stop_thread, signo, description_str.str().c_str());
+    } else if (arch.GetTriple().getVendor() == llvm::Triple::Apple) {
+      stop_info = StopInfoMachException::CreateStopReasonWithMachException(
+          *stop_thread, exception_stream.ExceptionRecord.ExceptionCode, 2,
+          exception_stream.ExceptionRecord.ExceptionFlags,
+          exception_stream.ExceptionRecord.ExceptionAddress, 0);
+    } else {
+      std::string desc;
+      llvm::raw_string_ostream desc_stream(desc);
+      desc_stream << "Exception "
+                  << llvm::format_hex(
+                         exception_stream.ExceptionRecord.ExceptionCode, 8)
+                  << " encountered at address "
+                  << llvm::format_hex(
+                         exception_stream.ExceptionRecord.ExceptionAddress, 8);
+      stop_info =
+          StopInfo::CreateStopReasonWithException(*stop_thread, desc.c_str());
+    }
+
+    stop_thread->SetStopInfo(stop_info);
+  }
 }
 
 bool ProcessMinidump::IsAlive() { return true; }
 
 bool ProcessMinidump::WarnBeforeDetach() const { return false; }
 
-size_t ProcessMinidump::ReadMemory(lldb::addr_t addr, void *buf, size_t size,
-                                   Status &error) {
+size_t ProcessMinidump::ReadMemory(const ProcessAddress &process_addr,
+                                   void *buf, size_t size, Status &error) {
+  lldb::addr_t addr = process_addr.GetValue();
   // Don't allow the caching that lldb_private::Process::ReadMemory does since
   // we have it all cached in our dump file anyway.
   return DoReadMemory(addr, buf, size, error);
 }
 
-size_t ProcessMinidump::DoReadMemory(lldb::addr_t addr, void *buf, size_t size,
-                                     Status &error) {
+size_t ProcessMinidump::DoReadMemory(const ProcessAddress &process_addr,
+                                     void *buf, size_t size, Status &error) {
+  lldb::addr_t addr = process_addr.GetValue();
 
-  llvm::ArrayRef<uint8_t> mem = m_minidump_parser->GetMemory(addr, size);
-  if (mem.empty()) {
-    error.SetErrorString("could not parse memory info");
+  llvm::Expected<llvm::ArrayRef<uint8_t>> mem_maybe =
+      m_minidump_parser->GetMemory(addr, size);
+  if (!mem_maybe) {
+    error = Status::FromError(mem_maybe.takeError());
     return 0;
   }
+
+  llvm::ArrayRef<uint8_t> mem = *mem_maybe;
 
   std::memcpy(buf, mem.data(), mem.size());
   return mem.size();
@@ -401,6 +351,32 @@ ArchSpec ProcessMinidump::GetArchitecture() {
   return ArchSpec(triple);
 }
 
+DataExtractor ProcessMinidump::GetAuxvData() {
+  std::optional<llvm::ArrayRef<uint8_t>> auxv =
+      m_minidump_parser->GetStream(StreamType::LinuxAuxv);
+  if (!auxv)
+    return DataExtractor();
+
+  return DataExtractor(auxv->data(), auxv->size(), GetByteOrder(),
+                       GetAddressByteSize());
+}
+
+bool ProcessMinidump::IsLLDBMinidump() {
+  std::optional<llvm::ArrayRef<uint8_t>> lldb_generated_section =
+      m_minidump_parser->GetRawStream(StreamType::LLDBGenerated);
+  return lldb_generated_section.has_value();
+}
+
+DynamicLoader *ProcessMinidump::GetDynamicLoader() {
+  // This is a workaround for the dynamic loader not playing nice in issue
+  // #119598. The specific reason we use the dynamic loader is to get the TLS
+  // info sections, which we can assume are not being written to the minidump
+  // unless it's an LLDB generate minidump.
+  if (IsLLDBMinidump())
+    return PostMortemProcess::GetDynamicLoader();
+  return nullptr;
+}
+
 void ProcessMinidump::BuildMemoryRegions() {
   if (m_memory_regions)
     return;
@@ -414,29 +390,29 @@ void ProcessMinidump::BuildMemoryRegions() {
 
   MemoryRegionInfos to_add;
   ModuleList &modules = GetTarget().GetImages();
-  SectionLoadList &load_list = GetTarget().GetSectionLoadList();
+  Target &target = GetTarget();
   modules.ForEach([&](const ModuleSP &module_sp) {
     SectionList *sections = module_sp->GetSectionList();
     for (size_t i = 0; i < sections->GetSize(); ++i) {
       SectionSP section_sp = sections->GetSectionAtIndex(i);
-      addr_t load_addr = load_list.GetSectionLoadAddress(section_sp);
+      addr_t load_addr = target.GetSectionLoadAddress(section_sp);
       if (load_addr == LLDB_INVALID_ADDRESS)
         continue;
       MemoryRegionInfo::RangeType section_range(load_addr,
                                                 section_sp->GetByteSize());
       MemoryRegionInfo region =
           MinidumpParser::GetMemoryRegionInfo(*m_memory_regions, load_addr);
-      if (region.GetMapped() != MemoryRegionInfo::eYes &&
+      if (region.GetMapped() != eLazyBoolYes &&
           region.GetRange().GetRangeBase() <= section_range.GetRangeBase() &&
           section_range.GetRangeEnd() <= region.GetRange().GetRangeEnd()) {
         to_add.emplace_back();
         to_add.back().GetRange() = section_range;
         to_add.back().SetLLDBPermissions(section_sp->GetPermissions());
-        to_add.back().SetMapped(MemoryRegionInfo::eYes);
+        to_add.back().SetMapped(eLazyBoolYes);
         to_add.back().SetName(module_sp->GetFileSpec().GetPath().c_str());
       }
     }
-    return true;
+    return IterationAction::Continue;
   });
   m_memory_regions->insert(m_memory_regions->end(), to_add.begin(),
                            to_add.end());
@@ -464,10 +440,9 @@ bool ProcessMinidump::DoUpdateThreadList(ThreadList &old_thread_list,
     LocationDescriptor context_location = thread.Context;
 
     // If the minidump contains an exception context, use it
-    if (m_active_exception != nullptr &&
-        m_active_exception->ThreadId == thread.ThreadId) {
-      context_location = m_active_exception->ThreadContext;
-    }
+    if (auto it = m_exceptions_by_tid.find(thread.ThreadId);
+        it != m_exceptions_by_tid.end())
+      context_location = it->second.ThreadContext;
 
     llvm::ArrayRef<uint8_t> context;
     if (!m_is_wow64)
@@ -544,7 +519,7 @@ void ProcessMinidump::ReadModuleList() {
 
     // check if the process is wow64 - a 32 bit windows process running on a
     // 64 bit windows
-    if (llvm::StringRef(name).endswith_insensitive("wow64.dll")) {
+    if (llvm::StringRef(name).ends_with_insensitive("wow64.dll")) {
       m_is_wow64 = true;
     }
 
@@ -578,12 +553,12 @@ void ProcessMinidump::ReadModuleList() {
       // Watch out for place holder modules that have different paths, but the
       // same UUID. If the base address is different, create a new module. If
       // we don't then we will end up setting the load address of a different
-      // PlaceholderObjectFile and an assertion will fire.
+      // ObjectFilePlaceholder and an assertion will fire.
       auto *objfile = module_sp->GetObjectFile();
       if (objfile &&
           objfile->GetPluginName() ==
-              PlaceholderObjectFile::GetStaticPluginName().GetStringRef()) {
-        if (((PlaceholderObjectFile *)objfile)->GetBaseImageAddress() !=
+              ObjectFilePlaceholder::GetPluginNameStatic()) {
+        if (((ObjectFilePlaceholder *)objfile)->GetBaseImageAddress() !=
             load_addr)
           module_sp.reset();
       }
@@ -601,10 +576,15 @@ void ProcessMinidump::ReadModuleList() {
                "placeholder module for: {0}",
                name);
 
-      module_sp = Module::CreateModuleFromObjectFile<PlaceholderObjectFile>(
+      module_sp = Module::CreateModuleFromObjectFile<ObjectFilePlaceholder>(
           module_spec, load_addr, load_size);
       GetTarget().GetImages().Append(module_sp, true /* notify */);
     }
+
+    // The first module a minidump lists is the main executable.
+    if (module == filtered_modules.front() &&
+        !GetTarget().GetExecutableModule())
+      GetTarget().MarkExecutableModule(module_sp);
 
     bool load_addr_changed = false;
     module_sp->SetLoadAddress(GetTarget(), load_addr, false,
@@ -872,12 +852,12 @@ public:
 
   Options *GetOptions() override { return &m_option_group; }
 
-  bool DoExecute(Args &command, CommandReturnObject &result) override {
+  void DoExecute(Args &command, CommandReturnObject &result) override {
     const size_t argc = command.GetArgumentCount();
     if (argc > 0) {
       result.AppendErrorWithFormat("'%s' take no arguments, only options",
                                    m_cmd_name.c_str());
-      return false;
+      return;
     }
     SetDefaultOptionsIfNoneAreSet();
 
@@ -981,9 +961,7 @@ public:
       DumpTextStream(StreamType::FacebookThreadName,
                      "Facebook Thread Name");
     if (DumpFacebookLogcat())
-      DumpTextStream(StreamType::FacebookLogcat,
-                     "Facebook Logcat");
-    return true;
+      DumpTextStream(StreamType::FacebookLogcat, "Facebook Logcat");
   }
 };
 

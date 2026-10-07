@@ -30,7 +30,7 @@ define float @constant_fold_minnum_f32_nan0() {
 ; CHECK-LABEL: @constant_fold_minnum_f32_nan0(
 ; CHECK-NEXT:    ret float 2.000000e+00
 ;
-  %x = call float @llvm.minnum.f32(float 0x7FF8000000000000, float 2.0)
+  %x = call float @llvm.minnum.f32(float +qnan, float 2.0)
   ret float %x
 }
 
@@ -38,15 +38,15 @@ define float @constant_fold_minnum_f32_nan1() {
 ; CHECK-LABEL: @constant_fold_minnum_f32_nan1(
 ; CHECK-NEXT:    ret float 2.000000e+00
 ;
-  %x = call float @llvm.minnum.f32(float 2.0, float 0x7FF8000000000000)
+  %x = call float @llvm.minnum.f32(float 2.0, float +qnan)
   ret float %x
 }
 
 define float @constant_fold_minnum_f32_nan_nan() {
 ; CHECK-LABEL: @constant_fold_minnum_f32_nan_nan(
-; CHECK-NEXT:    ret float 0x7FF8000000000000
+; CHECK-NEXT:    ret float +qnan
 ;
-  %x = call float @llvm.minnum.f32(float 0x7FF8000000000000, float 0x7FF8000000000000)
+  %x = call float @llvm.minnum.f32(float +qnan, float +qnan)
   ret float %x
 }
 
@@ -60,7 +60,7 @@ define float @constant_fold_minnum_f32_p0_p0() {
 
 define float @constant_fold_minnum_f32_p0_n0() {
 ; CHECK-LABEL: @constant_fold_minnum_f32_p0_n0(
-; CHECK-NEXT:    ret float 0.000000e+00
+; CHECK-NEXT:    ret float -0.000000e+00
 ;
   %x = call float @llvm.minnum.f32(float 0.0, float -0.0)
   ret float %x
@@ -102,7 +102,7 @@ define double @constant_fold_minnum_f64_nan0() {
 ; CHECK-LABEL: @constant_fold_minnum_f64_nan0(
 ; CHECK-NEXT:    ret double 2.000000e+00
 ;
-  %x = call double @llvm.minnum.f64(double 0x7FF8000000000000, double 2.0)
+  %x = call double @llvm.minnum.f64(double +qnan, double 2.0)
   ret double %x
 }
 
@@ -110,15 +110,15 @@ define double @constant_fold_minnum_f64_nan1() {
 ; CHECK-LABEL: @constant_fold_minnum_f64_nan1(
 ; CHECK-NEXT:    ret double 2.000000e+00
 ;
-  %x = call double @llvm.minnum.f64(double 2.0, double 0x7FF8000000000000)
+  %x = call double @llvm.minnum.f64(double 2.0, double +qnan)
   ret double %x
 }
 
 define double @constant_fold_minnum_f64_nan_nan() {
 ; CHECK-LABEL: @constant_fold_minnum_f64_nan_nan(
-; CHECK-NEXT:    ret double 0x7FF8000000000000
+; CHECK-NEXT:    ret double +qnan
 ;
-  %x = call double @llvm.minnum.f64(double 0x7FF8000000000000, double 0x7FF8000000000000)
+  %x = call double @llvm.minnum.f64(double +qnan, double +qnan)
   ret double %x
 }
 
@@ -135,7 +135,7 @@ define float @minnum_f32_nan_val(float %x) {
 ; CHECK-LABEL: @minnum_f32_nan_val(
 ; CHECK-NEXT:    ret float [[X:%.*]]
 ;
-  %y = call float @llvm.minnum.f32(float 0x7FF8000000000000, float %x)
+  %y = call float @llvm.minnum.f32(float +qnan, float %x)
   ret float %y
 }
 
@@ -143,14 +143,14 @@ define float @minnum_f32_val_nan(float %x) {
 ; CHECK-LABEL: @minnum_f32_val_nan(
 ; CHECK-NEXT:    ret float [[X:%.*]]
 ;
-  %y = call float @llvm.minnum.f32(float %x, float 0x7FF8000000000000)
+  %y = call float @llvm.minnum.f32(float %x, float +qnan)
   ret float %y
 }
 
 define float @minnum_f32_1_minnum_val_p0(float %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_val_p0(
-; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call float @llvm.minnum.f32(float %x, float 0.0)
   %z = call float @llvm.minnum.f32(float %y, float 1.0)
@@ -159,8 +159,8 @@ define float @minnum_f32_1_minnum_val_p0(float %x) {
 
 define float @minnum_f32_1_minnum_p0_val_fast(float %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_p0_val_fast(
-; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call float @llvm.minnum.f32(float 0.0, float %x)
   %z = call fast float @llvm.minnum.f32(float %y, float 1.0)
@@ -169,8 +169,8 @@ define float @minnum_f32_1_minnum_p0_val_fast(float %x) {
 
 define float @minnum_f32_1_minnum_p0_val_fmf1(float %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_p0_val_fmf1(
-; CHECK-NEXT:    [[TMP1:%.*]] = call nnan float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call nnan float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call nsz nnan float @llvm.minnum.f32(float 0.0, float %x)
   %z = call nnan ninf float @llvm.minnum.f32(float %y, float 1.0)
@@ -179,8 +179,8 @@ define float @minnum_f32_1_minnum_p0_val_fmf1(float %x) {
 
 define float @minnum_f32_1_minnum_p0_val_fmf2(float %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_p0_val_fmf2(
-; CHECK-NEXT:    [[TMP1:%.*]] = call ninf float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call ninf float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call nnan ninf float @llvm.minnum.f32(float 0.0, float %x)
   %z = call nsz ninf float @llvm.minnum.f32(float %y, float 1.0)
@@ -189,8 +189,8 @@ define float @minnum_f32_1_minnum_p0_val_fmf2(float %x) {
 
 define float @minnum_f32_1_minnum_p0_val_fmf3(float %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_p0_val_fmf3(
-; CHECK-NEXT:    [[TMP1:%.*]] = call nnan ninf nsz float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call nnan ninf nsz float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call nsz ninf nnan float @llvm.minnum.f32(float 0.0, float %x)
   %z = call nsz ninf nnan float @llvm.minnum.f32(float %y, float 1.0)
@@ -199,8 +199,8 @@ define float @minnum_f32_1_minnum_p0_val_fmf3(float %x) {
 
 define float @minnum_f32_p0_minnum_val_n0(float %x) {
 ; CHECK-LABEL: @minnum_f32_p0_minnum_val_n0(
-; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float -0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call float @llvm.minnum.f32(float %x, float -0.0)
   %z = call float @llvm.minnum.f32(float %y, float 0.0)
@@ -209,8 +209,8 @@ define float @minnum_f32_p0_minnum_val_n0(float %x) {
 
 define float @minnum_f32_1_minnum_p0_val(float %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_p0_val(
-; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
-; CHECK-NEXT:    ret float [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 0.000000e+00)
+; CHECK-NEXT:    ret float [[Z]]
 ;
   %y = call float @llvm.minnum.f32(float 0.0, float %x)
   %z = call float @llvm.minnum.f32(float %y, float 1.0)
@@ -219,8 +219,8 @@ define float @minnum_f32_1_minnum_p0_val(float %x) {
 
 define <2 x float> @minnum_f32_1_minnum_val_p0_val_v2f32(<2 x float> %x) {
 ; CHECK-LABEL: @minnum_f32_1_minnum_val_p0_val_v2f32(
-; CHECK-NEXT:    [[TMP1:%.*]] = call <2 x float> @llvm.minnum.v2f32(<2 x float> [[X:%.*]], <2 x float> zeroinitializer)
-; CHECK-NEXT:    ret <2 x float> [[TMP1]]
+; CHECK-NEXT:    [[Z:%.*]] = call <2 x float> @llvm.minnum.v2f32(<2 x float> [[X:%.*]], <2 x float> zeroinitializer)
+; CHECK-NEXT:    ret <2 x float> [[Z]]
 ;
   %y = call <2 x float> @llvm.minnum.v2f32(<2 x float> %x, <2 x float> zeroinitializer)
   %z = call <2 x float> @llvm.minnum.v2f32(<2 x float> %y, <2 x float><float 1.0, float 1.0>)
@@ -415,8 +415,8 @@ define double @unary_neg_neg_extra_use_x_and_y(double %x, double %y) {
 
 define float @reduce_precision(float %x, float %y) {
 ; CHECK-LABEL: @reduce_precision(
-; CHECK-NEXT:    [[MINNUM:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float [[Y:%.*]])
-; CHECK-NEXT:    ret float [[MINNUM]]
+; CHECK-NEXT:    [[MINNUM1:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float [[Y:%.*]])
+; CHECK-NEXT:    ret float [[MINNUM1]]
 ;
   %x.ext = fpext float %x to double
   %y.ext = fpext float %y to double
@@ -427,8 +427,8 @@ define float @reduce_precision(float %x, float %y) {
 
 define float @reduce_precision_fmf(float %x, float %y) {
 ; CHECK-LABEL: @reduce_precision_fmf(
-; CHECK-NEXT:    [[MINNUM:%.*]] = call nnan float @llvm.minnum.f32(float [[X:%.*]], float [[Y:%.*]])
-; CHECK-NEXT:    ret float [[MINNUM]]
+; CHECK-NEXT:    [[MINNUM1:%.*]] = call nnan float @llvm.minnum.f32(float [[X:%.*]], float [[Y:%.*]])
+; CHECK-NEXT:    ret float [[MINNUM1]]
 ;
   %x.ext = fpext float %x to double
   %y.ext = fpext float %y to double
@@ -437,36 +437,90 @@ define float @reduce_precision_fmf(float %x, float %y) {
   ret float %trunc
 }
 
-define float @reduce_precision_multi_use_0(float %x, float %y) {
+define float @reduce_precision_multi_use_0(float %x, float %y, ptr %p) {
 ; CHECK-LABEL: @reduce_precision_multi_use_0(
-; CHECK-NEXT:    [[X_EXT:%.*]] = fpext float [[X:%.*]] to double
 ; CHECK-NEXT:    [[Y_EXT:%.*]] = fpext float [[Y:%.*]] to double
-; CHECK-NEXT:    store double [[X_EXT]], ptr undef, align 8
-; CHECK-NEXT:    [[MINNUM:%.*]] = call double @llvm.minnum.f64(double [[X_EXT]], double [[Y_EXT]])
-; CHECK-NEXT:    [[TRUNC:%.*]] = fptrunc double [[MINNUM]] to float
+; CHECK-NEXT:    store double [[Y_EXT]], ptr [[P:%.*]], align 8
+; CHECK-NEXT:    [[TRUNC:%.*]] = call float @llvm.minnum.f32(float [[Y]], float [[Y1:%.*]])
 ; CHECK-NEXT:    ret float [[TRUNC]]
 ;
   %x.ext = fpext float %x to double
   %y.ext = fpext float %y to double
-  store double %x.ext, ptr undef
+  store double %x.ext, ptr %p
   %minnum = call double @llvm.minnum.f64(double %x.ext, double %y.ext)
   %trunc = fptrunc double %minnum to float
   ret float %trunc
 }
 
-define float @reduce_precision_multi_use_1(float %x, float %y) {
+define float @reduce_precision_multi_use_1(float %x, float %y, ptr %p) {
 ; CHECK-LABEL: @reduce_precision_multi_use_1(
-; CHECK-NEXT:    [[X_EXT:%.*]] = fpext float [[X:%.*]] to double
 ; CHECK-NEXT:    [[Y_EXT:%.*]] = fpext float [[Y:%.*]] to double
-; CHECK-NEXT:    store double [[Y_EXT]], ptr undef, align 8
-; CHECK-NEXT:    [[MINNUM:%.*]] = call double @llvm.minnum.f64(double [[X_EXT]], double [[Y_EXT]])
-; CHECK-NEXT:    [[TRUNC:%.*]] = fptrunc double [[MINNUM]] to float
+; CHECK-NEXT:    store double [[Y_EXT]], ptr [[P:%.*]], align 8
+; CHECK-NEXT:    [[TRUNC:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float [[Y]])
 ; CHECK-NEXT:    ret float [[TRUNC]]
 ;
   %x.ext = fpext float %x to double
   %y.ext = fpext float %y to double
-  store double %y.ext, ptr undef
+  store double %y.ext, ptr %p
   %minnum = call double @llvm.minnum.f64(double %x.ext, double %y.ext)
+  %trunc = fptrunc double %minnum to float
+  ret float %trunc
+}
+
+define float @reduce_precision_multi_use_2(float %x, float %y, ptr %p, ptr %p2) {
+; CHECK-LABEL: @reduce_precision_multi_use_2(
+; CHECK-NEXT:    [[X_EXT:%.*]] = fpext float [[X:%.*]] to double
+; CHECK-NEXT:    [[Y_EXT:%.*]] = fpext float [[Y:%.*]] to double
+; CHECK-NEXT:    store double [[X_EXT]], ptr [[P:%.*]], align 8
+; CHECK-NEXT:    store double [[Y_EXT]], ptr [[P2:%.*]], align 8
+; CHECK-NEXT:    [[MINNUM:%.*]] = call double @llvm.minnum.f64(double [[X_EXT]], double [[Y_EXT]])
+; CHECK-NEXT:    [[MINNUM1:%.*]] = fptrunc double [[MINNUM]] to float
+; CHECK-NEXT:    ret float [[MINNUM1]]
+;
+  %x.ext = fpext float %x to double
+  %y.ext = fpext float %y to double
+  store double %x.ext, ptr %p
+  store double %y.ext, ptr %p2
+  %minnum = call double @llvm.minnum.f64(double %x.ext, double %y.ext)
+  %trunc = fptrunc double %minnum to float
+  ret float %trunc
+}
+
+define float @reduce_precision_const(float %x) {
+; CHECK-LABEL: @reduce_precision_const(
+; CHECK-NEXT:    [[TRUNC:%.*]] = call float @llvm.minnum.f32(float [[X:%.*]], float 1.000000e+00)
+; CHECK-NEXT:    ret float [[TRUNC]]
+;
+  %x.ext = fpext float %x to double
+  %minnum = call double @llvm.minnum.f64(double %x.ext, double 1.0)
+  %trunc = fptrunc double %minnum to float
+  ret float %trunc
+}
+
+define float @reduce_precision_const_not_lossless(float %x) {
+; CHECK-LABEL: @reduce_precision_const_not_lossless(
+; CHECK-NEXT:    [[X_EXT:%.*]] = fpext float [[X:%.*]] to double
+; CHECK-NEXT:    [[MINNUM:%.*]] = call double @llvm.minnum.f64(double [[X_EXT]], double 1.000000e-01)
+; CHECK-NEXT:    [[TRUNC:%.*]] = fptrunc double [[MINNUM]] to float
+; CHECK-NEXT:    ret float [[TRUNC]]
+;
+  %x.ext = fpext float %x to double
+  %minnum = call double @llvm.minnum.f64(double %x.ext, double 0.1)
+  %trunc = fptrunc double %minnum to float
+  ret float %trunc
+}
+
+define float @reduce_precision_const_multi_use(float %x) {
+; CHECK-LABEL: @reduce_precision_const_multi_use(
+; CHECK-NEXT:    [[X_EXT:%.*]] = fpext float [[X:%.*]] to double
+; CHECK-NEXT:    call void @use(double [[X_EXT]])
+; CHECK-NEXT:    [[MINNUM:%.*]] = call double @llvm.minnum.f64(double [[X_EXT]], double 1.000000e+00)
+; CHECK-NEXT:    [[TRUNC:%.*]] = fptrunc double [[MINNUM]] to float
+; CHECK-NEXT:    ret float [[TRUNC]]
+;
+  %x.ext = fpext float %x to double
+  call void @use(double %x.ext)
+  %minnum = call double @llvm.minnum.f64(double %x.ext, double 1.0)
   %trunc = fptrunc double %minnum to float
   ret float %trunc
 }
@@ -474,8 +528,8 @@ define float @reduce_precision_multi_use_1(float %x, float %y) {
 define float @negated_op(float %x) {
 ; CHECK-LABEL: @negated_op(
 ; CHECK-NEXT:    [[TMP1:%.*]] = call float @llvm.fabs.f32(float [[X:%.*]])
-; CHECK-NEXT:    [[TMP2:%.*]] = fneg float [[TMP1]]
-; CHECK-NEXT:    ret float [[TMP2]]
+; CHECK-NEXT:    [[R:%.*]] = fneg float [[TMP1]]
+; CHECK-NEXT:    ret float [[R]]
 ;
   %negx = fneg float %x
   %r = call float @llvm.minnum.f32(float %x, float %negx)
@@ -485,8 +539,8 @@ define float @negated_op(float %x) {
 define <2 x double> @negated_op_fmf_commute_vec(<2 x double> %x) {
 ; CHECK-LABEL: @negated_op_fmf_commute_vec(
 ; CHECK-NEXT:    [[TMP1:%.*]] = call nnan ninf nsz <2 x double> @llvm.fabs.v2f64(<2 x double> [[X:%.*]])
-; CHECK-NEXT:    [[TMP2:%.*]] = fneg nnan ninf nsz <2 x double> [[TMP1]]
-; CHECK-NEXT:    ret <2 x double> [[TMP2]]
+; CHECK-NEXT:    [[R:%.*]] = fneg nnan ninf nsz <2 x double> [[TMP1]]
+; CHECK-NEXT:    ret <2 x double> [[R]]
 ;
   %negx = fneg <2 x double> %x
   %r = call nsz nnan ninf <2 x double> @llvm.minnum.v2f64(<2 x double> %negx, <2 x double> %x)

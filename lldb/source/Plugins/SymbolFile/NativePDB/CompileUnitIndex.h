@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/IntervalMap.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/DebugInfo/CodeView/DebugInlineeLinesSubsection.h"
 #include "llvm/DebugInfo/CodeView/StringsAndChecksums.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecord.h"
@@ -20,6 +21,7 @@
 #include "llvm/DebugInfo/PDB/Native/DbiModuleDescriptor.h"
 #include "llvm/DebugInfo/PDB/Native/ModuleDebugStream.h"
 #include "llvm/DebugInfo/PDB/PDBTypes.h"
+#include "llvm/Support/Error.h"
 
 #include "PdbSymUid.h"
 
@@ -99,7 +101,8 @@ public:
 
   CompilandIndexItem *GetCompiland(uint16_t modi);
 
-  llvm::SmallString<64> GetMainSourceFile(const CompilandIndexItem &item) const;
+  llvm::Expected<llvm::SmallString<64>>
+  GetMainSourceFile(const CompilandIndexItem &item) const;
 };
 } // namespace npdb
 } // namespace lldb_private

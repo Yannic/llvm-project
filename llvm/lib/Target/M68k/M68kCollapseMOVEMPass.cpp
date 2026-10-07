@@ -20,16 +20,17 @@
 #include "M68kMachineFunction.h"
 #include "M68kSubtarget.h"
 
-#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/Support/MathExtras.h"
 
 using namespace llvm;
 
-#define DEBUG_TYPE "M68k-collapse-movem"
+#define DEBUG_TYPE "m68k-collapse-movem"
+#define PASS_NAME "M68k MOVEM collapser pass"
 
 namespace {
 
@@ -103,6 +104,11 @@ public:
   }
 
   bool update(int O, int M) {
+    if (Mask & M)
+      // We've already seen this register and are planning on collapsing it
+      // into a MOVEM. This cannot be done twice for the same register in the
+      // same MOVEM, so bail out now.
+      return false;
     UpdateType Type = classifyUpdateByMask(M);
     if (Type == Intermixed)
       return false;
@@ -176,24 +182,29 @@ public:
       return;
     }
 
-    // Delete all the MOVEM instruction till the end
-    while (MI != End) {
-      auto Next = std::next(MI);
-      MBB.erase(MI);
-      MI = Next;
+    // Add a unified MOVEM
+    MachineInstrBuilder NewMIB;
+    if (State.isLoad()) {
+      NewMIB = BuildMI(MBB, End, DL, TII->get(M68k::MOVM32mp))
+                   .addImm(State.getMask())
+                   .addImm(State.getFinalOffset())
+                   .addReg(State.getBase());
+    } else {
+      NewMIB = BuildMI(MBB, End, DL, TII->get(M68k::MOVM32pm))
+                   .addImm(State.getFinalOffset())
+                   .addReg(State.getBase())
+                   .addImm(State.getMask());
     }
 
-    // Add a unified one
-    if (State.isLoad()) {
-      BuildMI(MBB, End, DL, TII->get(M68k::MOVM32mp))
-          .addImm(State.getMask())
-          .addImm(State.getFinalOffset())
-          .addReg(State.getBase());
-    } else {
-      BuildMI(MBB, End, DL, TII->get(M68k::MOVM32pm))
-          .addImm(State.getFinalOffset())
-          .addReg(State.getBase())
-          .addImm(State.getMask());
+    // Delete all the old MOVEM instructions, and copy their implicit defs/uses
+    // over to the new instruction.
+    MachineFunction *MF = MBB.getParent();
+    MachineInstr *NewMI = NewMIB.getInstr();
+    while (MI != NewMI) {
+      auto Next = std::next(MI);
+      NewMI->copyImplicitOps(*MF, *MI);
+      MBB.erase(MI);
+      MI = Next;
     }
 
     State = MOVEMState();
@@ -294,12 +305,12 @@ public:
 
     return Modified;
   }
-
-  StringRef getPassName() const override { return "M68k MOVEM collapser pass"; }
 };
 
 char M68kCollapseMOVEM::ID = 0;
 } // anonymous namespace.
+
+INITIALIZE_PASS(M68kCollapseMOVEM, DEBUG_TYPE, PASS_NAME, false, false)
 
 /// Returns an instance of the pseudo instruction expansion pass.
 FunctionPass *llvm::createM68kCollapseMOVEMPass() {

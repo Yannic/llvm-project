@@ -3,7 +3,7 @@
 
 define ptr @unwind_coro_end() presplitcoroutine personality i32 3 {
 entry:
-  %id = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)
+  %id = call token @llvm.coro.id(i32 0, ptr null, ptr @unwind_coro_end, ptr null)
   %hdl = call ptr @llvm.coro.begin(token %id, ptr null)
   call void @print(i32 0)
   br label %init
@@ -17,9 +17,10 @@ init_suspend:
   ret ptr %hdl
 
 init_resume:
-  br label %susp
+  invoke void @print(i32 1)
+          to label %final_suspend unwind label %lpad
 
-susp:
+final_suspend:
   %0 = call i8 @llvm.coro.suspend(token none, i1 true)
   switch i8 %0, label %suspend [i8 0, label %resume
                                 i8 1, label %suspend]
@@ -27,7 +28,7 @@ resume:
   invoke void @print(i32 1) to label %suspend unwind label %lpad
 
 suspend:
-  call i1 @llvm.coro.end(ptr %hdl, i1 false)
+  call void @llvm.coro.end(ptr %hdl, i1 false, token none)
   call void @print(i32 0)
   ret ptr %hdl
 
@@ -36,8 +37,9 @@ lpad:
      cleanup
 
   call void @print(i32 2)
-  %need.resume = call i1 @llvm.coro.end(ptr null, i1 true)
-  br i1 %need.resume, label %eh.resume, label %cleanup.cont
+  call void @llvm.coro.end(ptr null, i1 true, token none)
+  %in.ramp = call i1 @llvm.coro.is_in_ramp()
+  br i1 %in.ramp, label %cleanup.cont, label %eh.resume
 
 cleanup.cont:
   call void @print(i32 3)
@@ -49,6 +51,19 @@ eh.resume:
 
 ; Tests that we need to store the final index if we see unwind coro end.
 ; CHECK: define{{.*}}@unwind_coro_end.resume
+; CHECK: invoke{{.*}}print
+; CHECK-NEXT: to label %[[RESUME:.*]] unwind label %[[LPAD:.*]]
+
+; CHECK: [[RESUME]]:
+; CHECK-NOT: {{.*:}}
+; CHECK: store ptr null, ptr %hdl
+; CHECK-NOT: {{.*:}}
+; CHECK: store i1 true, ptr %index.addr
+
+; CHECK: [[LPAD]]:
+; CHECK-NOT: {{.*:}}
+; CHECK: store ptr null, ptr %hdl
+; CHECK-NOT: {{.*:}}
 ; CHECK: store i1 true, ptr %index.addr
 
 ; Tests the use of final index in the destroy function.
@@ -58,7 +73,7 @@ eh.resume:
 
 define ptr @nounwind_coro_end(i1 %val) presplitcoroutine personality i32 3 {
 entry:
-  %id = call token @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)
+  %id = call token @llvm.coro.id(i32 0, ptr null, ptr @nounwind_coro_end, ptr null)
   %hdl = call ptr @llvm.coro.begin(token %id, ptr null)
   call void @print(i32 0)
   br label %init
@@ -83,7 +98,7 @@ resume:
   br label %suspend
 
 suspend:
-  call i1 @llvm.coro.end(ptr %hdl, i1 false)
+  call void @llvm.coro.end(ptr %hdl, i1 false, token none)
   call void @print(i32 0)
   ret ptr %hdl
 }
@@ -106,9 +121,8 @@ declare void @llvm.coro.resume(ptr)
 declare void @llvm.coro.destroy(ptr)
 
 declare token @llvm.coro.id(i32, ptr, ptr, ptr)
-declare ptr @llvm.coro.alloc(token)
 declare ptr @llvm.coro.begin(token, ptr)
-declare i1 @llvm.coro.end(ptr, i1)
+declare void @llvm.coro.end(ptr, i1, token)
 
 declare noalias ptr @malloc(i32)
 declare void @print(i32)

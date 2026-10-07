@@ -26,8 +26,9 @@ public:
                                                      const FormatStyle &Style);
 
 private:
-  bool checkSeparator(const StringRef IntegerLiteral, int DigitsPerGroup) const;
-  std::string format(const StringRef IntegerLiteral, int DigitsPerGroup) const;
+  bool checkSeparator(StringRef IntegerLiteral, int DigitsPerGroup) const;
+  std::string format(StringRef IntegerLiteral, int DigitsPerGroup,
+                     int DigitCount, bool RemoveSeparator) const;
 
   char Separator;
 };

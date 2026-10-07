@@ -17,21 +17,20 @@ define void @basic(i32 %x) {
 ; CHECK-NEXT:  .LBB0_3: # %bb2
 ; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB0_4: # %return
-; CHECK-NEXT:    retq
 ; CHECK-NEXT:  .LBB0_2: # %bb0
 ; CHECK-NEXT:    xorl %edi, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB0_4: # %return
+; CHECK-NEXT:    retq
 ;
 ; NOOPT-LABEL: basic:
 ; NOOPT:       # %bb.0: # %entry
 ; NOOPT-NEXT:    pushq %rax
 ; NOOPT-NEXT:    .cfi_def_cfa_offset 16
+; NOOPT-NEXT:    decl %edi
 ; NOOPT-NEXT:    movl %edi, %eax
-; NOOPT-NEXT:    decl %eax
-; NOOPT-NEXT:    movl %eax, %ecx
-; NOOPT-NEXT:    movq %rcx, (%rsp) # 8-byte Spill
-; NOOPT-NEXT:    subl $4, %eax
+; NOOPT-NEXT:    movq %rax, (%rsp) # 8-byte Spill
+; NOOPT-NEXT:    subl $4, %edi
 ; NOOPT-NEXT:    ja .LBB0_4
 ; NOOPT-NEXT:  # %bb.5: # %entry
 ; NOOPT-NEXT:    movq (%rsp), %rax # 8-byte Reload
@@ -156,21 +155,20 @@ define void @basic_nojumptable_false(i32 %x) "no-jump-tables"="false" {
 ; CHECK-NEXT:  .LBB2_3: # %bb2
 ; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB2_4: # %return
-; CHECK-NEXT:    retq
 ; CHECK-NEXT:  .LBB2_2: # %bb0
 ; CHECK-NEXT:    xorl %edi, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB2_4: # %return
+; CHECK-NEXT:    retq
 ;
 ; NOOPT-LABEL: basic_nojumptable_false:
 ; NOOPT:       # %bb.0: # %entry
 ; NOOPT-NEXT:    pushq %rax
 ; NOOPT-NEXT:    .cfi_def_cfa_offset 16
+; NOOPT-NEXT:    decl %edi
 ; NOOPT-NEXT:    movl %edi, %eax
-; NOOPT-NEXT:    decl %eax
-; NOOPT-NEXT:    movl %eax, %ecx
-; NOOPT-NEXT:    movq %rcx, (%rsp) # 8-byte Spill
-; NOOPT-NEXT:    subl $4, %eax
+; NOOPT-NEXT:    movq %rax, (%rsp) # 8-byte Spill
+; NOOPT-NEXT:    subl $4, %edi
 ; NOOPT-NEXT:    ja .LBB2_4
 ; NOOPT-NEXT:  # %bb.5: # %entry
 ; NOOPT-NEXT:    movq (%rsp), %rax # 8-byte Reload
@@ -284,17 +282,17 @@ define void @jt_is_better(i32 %x) {
 ; CHECK-NEXT:  .LBB4_3: # %bb1
 ; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB4_7: # %return
-; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB4_4: # %bb2
-; CHECK-NEXT:    movl $2, %edi
-; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB4_5: # %bb3
 ; CHECK-NEXT:    movl $3, %edi
+; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB4_4: # %bb2
+; CHECK-NEXT:    movl $2, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB4_6: # %bb4
 ; CHECK-NEXT:    movl $4, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB4_7: # %return
+; CHECK-NEXT:    retq
 ;
 ; NOOPT-LABEL: jt_is_better:
 ; NOOPT:       # %bb.0: # %entry
@@ -811,14 +809,14 @@ define void @optimal_pivot2(i32 %x) {
 ; CHECK-NEXT:  .LBB9_7: # %bb0
 ; CHECK-NEXT:    xorl %edi, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB9_8: # %bb1
-; CHECK-NEXT:    movl $1, %edi
-; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB9_9: # %bb2
 ; CHECK-NEXT:    movl $2, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB9_10: # %bb3
 ; CHECK-NEXT:    movl $3, %edi
+; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB9_8: # %bb1
+; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB9_11: # %return
 ; CHECK-NEXT:    retq
@@ -964,17 +962,17 @@ define void @optimal_jump_table1(i32 %x) {
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB10_8: # %return
 ; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB10_4: # %bb2
-; CHECK-NEXT:    movl $2, %edi
+; CHECK-NEXT:  .LBB10_7: # %bb5
+; CHECK-NEXT:    movl $5, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB10_5: # %bb3
 ; CHECK-NEXT:    movl $3, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB10_4: # %bb2
+; CHECK-NEXT:    movl $2, %edi
+; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB10_6: # %bb4
 ; CHECK-NEXT:    movl $4, %edi
-; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB10_7: # %bb5
-; CHECK-NEXT:    movl $5, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ;
 ; NOOPT-LABEL: optimal_jump_table1:
@@ -1081,14 +1079,14 @@ define void @optimal_jump_table2(i32 %x) {
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB11_9: # %return
 ; CHECK-NEXT:    retq
+; CHECK-NEXT:  .LBB11_7: # %bb3
+; CHECK-NEXT:    movl $3, %edi
+; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB11_5: # %bb1
 ; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB11_6: # %bb2
 ; CHECK-NEXT:    movl $2, %edi
-; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB11_7: # %bb3
-; CHECK-NEXT:    movl $3, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB11_8: # %bb4
 ; CHECK-NEXT:    movl $4, %edi
@@ -1188,11 +1186,11 @@ define void @optimal_jump_table3(i32 %x) {
 ; CHECK-NEXT:  .LBB12_4: # %bb0
 ; CHECK-NEXT:    xorl %edi, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB12_5: # %bb1
-; CHECK-NEXT:    movl $1, %edi
-; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB12_6: # %bb2
 ; CHECK-NEXT:    movl $2, %edi
+; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB12_5: # %bb1
+; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB12_7: # %bb3
 ; CHECK-NEXT:    movl $3, %edi
@@ -1304,7 +1302,7 @@ return: ret void
 define void @phi_node_trouble(ptr %s) {
 ; CHECK-LABEL: phi_node_trouble:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    .p2align 4, 0x90
+; CHECK-NEXT:    .p2align 4
 ; CHECK-NEXT:  .LBB13_1: # %header
 ; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
 ; CHECK-NEXT:    testq %rdi, %rdi
@@ -1416,7 +1414,6 @@ sw:
 define void @int_max_table_cluster(i8 %x) {
 ; CHECK-LABEL: int_max_table_cluster:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    # kill: def $edi killed $edi def $rdi
 ; CHECK-NEXT:    cmpb $-9, %dil
 ; CHECK-NEXT:    ja .LBB15_4
 ; CHECK-NEXT:  # %bb.1: # %entry
@@ -1903,11 +1900,11 @@ define void @left_leaning_weight_balanced_tree(i32 %x) {
 ; CHECK-NEXT:  .LBB19_16: # %bb3
 ; CHECK-NEXT:    movl $3, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
+; CHECK-NEXT:  .LBB19_18: # %return
+; CHECK-NEXT:    retq
 ; CHECK-NEXT:  .LBB19_17: # %bb5
 ; CHECK-NEXT:    movl $5, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB19_18: # %return
-; CHECK-NEXT:    retq
 ;
 ; NOOPT-LABEL: left_leaning_weight_balanced_tree:
 ; NOOPT:       # %bb.0: # %entry
@@ -2564,7 +2561,7 @@ define i32 @pr27135(i32 %i) {
 ; NOOPT-NEXT:    movl {{[-0-9]+}}(%r{{[sb]}}p), %eax # 4-byte Reload
 ; NOOPT-NEXT:    retq
 entry:
-  br i1 undef, label %sw, label %end
+  br i1 poison, label %sw, label %end
 sw:
   switch i32 %i, label %end [
     i32 99,  label %sw.bb
@@ -2603,9 +2600,8 @@ define void @range_with_unreachable_fallthrough(i32 %i) {
 ; NOOPT:       # %bb.0: # %entry
 ; NOOPT-NEXT:    pushq %rax
 ; NOOPT-NEXT:    .cfi_def_cfa_offset 16
-; NOOPT-NEXT:    movl %edi, %eax
-; NOOPT-NEXT:    decl %eax
-; NOOPT-NEXT:    subl $3, %eax
+; NOOPT-NEXT:    decl %edi
+; NOOPT-NEXT:    subl $3, %edi
 ; NOOPT-NEXT:    jb .LBB25_1
 ; NOOPT-NEXT:    jmp .LBB25_5
 ; NOOPT-NEXT:  .LBB25_5: # %entry
@@ -2669,14 +2665,14 @@ define void @switch_i8(i32 %a) {
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB26_9: # %return
 ; CHECK-NEXT:    retq
+; CHECK-NEXT:  .LBB26_7: # %bb3
+; CHECK-NEXT:    movl $3, %edi
+; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB26_5: # %bb1
 ; CHECK-NEXT:    movl $1, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB26_6: # %bb2
 ; CHECK-NEXT:    movl $2, %edi
-; CHECK-NEXT:    jmp g@PLT # TAILCALL
-; CHECK-NEXT:  .LBB26_7: # %bb3
-; CHECK-NEXT:    movl $3, %edi
 ; CHECK-NEXT:    jmp g@PLT # TAILCALL
 ; CHECK-NEXT:  .LBB26_8: # %bb4
 ; CHECK-NEXT:    movl $4, %edi

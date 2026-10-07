@@ -8,8 +8,8 @@
 
 #include "RemoteJITUtils.h"
 
-#include "llvm/ExecutionEngine/Orc/DebugObjectManagerPlugin.h"
-#include "llvm/ExecutionEngine/Orc/EPCDebugObjectRegistrar.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ExecutionEngine/Orc/Debugging/ELFDebugObjectPlugin.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
@@ -26,26 +26,11 @@
 using namespace llvm;
 using namespace llvm::orc;
 
-Error addDebugSupport(ObjectLayer &ObjLayer) {
-  ExecutionSession &ES = ObjLayer.getExecutionSession();
-  auto Registrar = createJITLoaderGDBRegistrar(ES);
-  if (!Registrar)
-    return Registrar.takeError();
-
-  auto *ObjLinkingLayer = cast<ObjectLinkingLayer>(&ObjLayer);
-  if (!ObjLinkingLayer)
-    return createStringError(inconvertibleErrorCode(),
-                             "No debug support for given object layer type");
-
-  ObjLinkingLayer->addPlugin(
-      std::make_unique<DebugObjectManagerPlugin>(ES, std::move(*Registrar)));
-  return Error::success();
-}
-
 Expected<std::unique_ptr<DefinitionGenerator>>
-loadDylib(ExecutionSession &ES, StringRef RemotePath) {
-  if (auto Handle = ES.getExecutorProcessControl().loadDylib(RemotePath.data()))
-    return std::make_unique<EPCDynamicLibrarySearchGenerator>(ES, *Handle);
+loadDylib(ExecutionSession &ES, DylibManager &DylibMgr, StringRef RemotePath) {
+  if (auto Handle = DylibMgr.loadDylib(RemotePath.data()))
+    return std::make_unique<EPCDynamicLibrarySearchGenerator>(ES, DylibMgr,
+                                                              *Handle);
   else
     return Handle.takeError();
 }
@@ -84,47 +69,31 @@ connectTCPSocket(StringRef NetworkAddress) {
 
 Expected<std::pair<std::unique_ptr<SimpleRemoteEPC>, uint64_t>>
 launchLocalExecutor(StringRef ExecutablePath) {
-  constexpr int ReadEnd = 0;
-  constexpr int WriteEnd = 1;
-
   if (!sys::fs::can_execute(ExecutablePath))
     return make_error<StringError>(
         formatv("Specified executor invalid: {0}", ExecutablePath),
         inconvertibleErrorCode());
 
-  // Pipe FDs.
-  int ToExecutor[2];
-  int FromExecutor[2];
-
-  // Create pipes to/from the executor..
-  if (pipe(ToExecutor) != 0 || pipe(FromExecutor) != 0)
-    return make_error<StringError>("Unable to create pipe for executor",
-                                   inconvertibleErrorCode());
+  // Unix domain socket FDs.
+  constexpr int ParentSocket = 0, ChildSocket = 1;
+  int Sockets[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, Sockets) == -1)
+    return make_error<StringError>(
+        Twine("Unable to create socket for executor: ") + strerror(errno),
+        inconvertibleErrorCode());
 
   pid_t ProcessID = fork();
   if (ProcessID == 0) {
     // In the child...
+    close(Sockets[ParentSocket]);
 
-    // Close the parent ends of the pipes
-    close(ToExecutor[WriteEnd]);
-    close(FromExecutor[ReadEnd]);
-
-    // Execute the child process.
-    std::unique_ptr<char[]> ExecPath, FDSpecifier;
-    {
-      ExecPath = std::make_unique<char[]>(ExecutablePath.size() + 1);
-      strcpy(ExecPath.get(), ExecutablePath.data());
-
-      std::string FDSpecifierStr("filedescs=");
-      FDSpecifierStr += utostr(ToExecutor[ReadEnd]);
-      FDSpecifierStr += ',';
-      FDSpecifierStr += utostr(FromExecutor[WriteEnd]);
-      FDSpecifier = std::make_unique<char[]>(FDSpecifierStr.size() + 1);
-      strcpy(FDSpecifier.get(), FDSpecifierStr.c_str());
-    }
-
-    char *const Args[] = {ExecPath.get(), FDSpecifier.get(), nullptr};
-    int RC = execvp(ExecPath.get(), Args);
+    std::string ExecPath = ExecutablePath.str();
+    std::string TestOutputFlag = "test-jitloadergdb";
+    std::string ConnSpec =
+        "socket:adopt=" + std::to_string(Sockets[ChildSocket]);
+    char *const Args[] = {ExecPath.data(), TestOutputFlag.data(),
+                          ConnSpec.data(), nullptr};
+    int RC = execvp(ExecutablePath.data(), Args);
     if (RC != 0)
       return make_error<StringError>(
           "Unable to launch out-of-process executor '" + ExecutablePath + "'\n",
@@ -135,13 +104,11 @@ launchLocalExecutor(StringRef ExecutablePath) {
   // else we're the parent...
 
   // Close the child ends of the pipes
-  close(ToExecutor[ReadEnd]);
-  close(FromExecutor[WriteEnd]);
+  close(Sockets[ChildSocket]);
 
   auto EPC = SimpleRemoteEPC::Create<FDSimpleRemoteEPCTransport>(
-      std::make_unique<DynamicThreadPoolTaskDispatcher>(),
-      SimpleRemoteEPC::Setup(),
-      FromExecutor[ReadEnd], ToExecutor[WriteEnd]);
+      std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt),
+      Sockets[ParentSocket], Sockets[ParentSocket]);
   if (!EPC)
     return EPC.takeError();
 
@@ -211,8 +178,7 @@ connectTCPSocket(StringRef NetworkAddress) {
     return CreateErr(toString(SockFD.takeError()));
 
   return SimpleRemoteEPC::Create<FDSimpleRemoteEPCTransport>(
-      std::make_unique<DynamicThreadPoolTaskDispatcher>(),
-      SimpleRemoteEPC::Setup(), *SockFD);
+      std::make_unique<DynamicThreadPoolTaskDispatcher>(std::nullopt), *SockFD);
 }
 
 #endif

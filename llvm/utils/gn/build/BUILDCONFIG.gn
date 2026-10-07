@@ -12,8 +12,10 @@ shared_binary_target_configs = [
 ]
 
 # Apply that default list to the binary target types.
+executable_target_configs = shared_binary_target_configs +
+                            [ "//llvm/utils/gn/build:no_exported_symbols" ]
 set_defaults("executable") {
-  configs = shared_binary_target_configs
+  configs = executable_target_configs
 }
 set_defaults("loadable_module") {
   configs = shared_binary_target_configs
@@ -49,3 +51,22 @@ if (host_os == "win") {
 }
 
 set_default_toolchain(host_toolchain)
+
+if (current_os == "android") {
+  foreach(target_type,
+          [
+            "executable",
+            "loadable_module",
+            "shared_library",
+          ]) {
+    template(target_type) {
+      target(target_type, target_name) {
+        forward_variables_from(invoker, "*")
+        if (!defined(deps)) {
+          deps = []
+        }
+        deps += [ "//llvm/utils/gn/build/libs/implicit" ]
+      }
+    }
+  }
+}

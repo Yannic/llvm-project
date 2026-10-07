@@ -30,7 +30,7 @@ static bool canComputePointerDiff(ScalarEvolution &SE,
       SE.getEffectiveSCEVType(B->getType()))
     return false;
 
-  return SE.instructionCouldExistWitthOperands(A, B);
+  return SE.instructionCouldExistWithOperands(A, B);
 }
 
 AliasResult SCEVAAResult::alias(const MemoryLocation &LocA,
@@ -53,12 +53,25 @@ AliasResult SCEVAAResult::alias(const MemoryLocation &LocA,
   // If something is known about the difference between the two addresses,
   // see if it's enough to prove a NoAlias.
   if (canComputePointerDiff(SE, AS, BS)) {
+    // Firstly, try to convert the two pointers into address expressions to
+    // handle two pointers with different pointer bases.
+    // Either both pointers are used with ptrtoaddr or neither, so we can't end
+    // up with a ptr + int mix.
+    const SCEV *AInt = SE.getPtrToAddrExpr(AS);
+    const SCEV *BInt = SE.getPtrToAddrExpr(BS);
+    if (!isa<SCEVCouldNotCompute>(AInt) && !isa<SCEVCouldNotCompute>(BInt)) {
+      AS = AInt;
+      BS = BInt;
+    }
+
+    // Compute the bit width after the conversion above, as ptrtoaddr may
+    // produce a narrower (address-sized) type than the pointer representation.
     unsigned BitWidth = SE.getTypeSizeInBits(AS->getType());
     APInt ASizeInt(BitWidth, LocA.Size.hasValue()
-                                 ? LocA.Size.getValue()
+                                 ? static_cast<uint64_t>(LocA.Size.getValue())
                                  : MemoryLocation::UnknownSize);
     APInt BSizeInt(BitWidth, LocB.Size.hasValue()
-                                 ? LocB.Size.getValue()
+                                 ? static_cast<uint64_t>(LocB.Size.getValue())
                                  : MemoryLocation::UnknownSize);
 
     // Compute the difference between the two pointers.
@@ -105,8 +118,7 @@ AliasResult SCEVAAResult::alias(const MemoryLocation &LocA,
               AAQI, nullptr) == AliasResult::NoAlias)
       return AliasResult::NoAlias;
 
-  // Forward the query to the next analysis.
-  return AAResultBase::alias(LocA, LocB, AAQI, nullptr);
+  return AliasResult::MayAlias;
 }
 
 /// Given an expression, try to find a base value.
@@ -154,9 +166,7 @@ FunctionPass *llvm::createSCEVAAWrapperPass() {
   return new SCEVAAWrapperPass();
 }
 
-SCEVAAWrapperPass::SCEVAAWrapperPass() : FunctionPass(ID) {
-  initializeSCEVAAWrapperPassPass(*PassRegistry::getPassRegistry());
-}
+SCEVAAWrapperPass::SCEVAAWrapperPass() : FunctionPass(ID) {}
 
 bool SCEVAAWrapperPass::runOnFunction(Function &F) {
   Result.reset(

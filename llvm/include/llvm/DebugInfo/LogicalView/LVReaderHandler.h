@@ -13,23 +13,27 @@
 #ifndef LLVM_DEBUGINFO_LOGICALVIEW_READERS_LVREADERHANDLER_H
 #define LLVM_DEBUGINFO_LOGICALVIEW_READERS_LVREADERHANDLER_H
 
-#include "llvm/ADT/PointerUnion.h"
 #include "llvm/DebugInfo/LogicalView/Core/LVReader.h"
 #include "llvm/DebugInfo/PDB/Native/PDBFile.h"
 #include "llvm/Object/Archive.h"
+#include "llvm/Object/IRObjectFile.h"
 #include "llvm/Object/MachOUniversal.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace llvm {
 namespace logicalview {
 
-using LVReaders = std::vector<LVReader *>;
+using LVReaders = std::vector<std::unique_ptr<LVReader>>;
 using ArgVector = std::vector<std::string>;
-using PdbOrObj = PointerUnion<object::ObjectFile *, pdb::PDBFile *>;
+using InputHandle =
+    std::variant<StringRef *, MemoryBufferRef *, object::ObjectFile *,
+                 object::IRObjectFile *, pdb::PDBFile *>;
 
 // This class performs the following tasks:
 // - Creates a logical reader for every binary file in the command line,
@@ -45,7 +49,6 @@ class LVReaderHandler {
   LVReaders TheReaders;
 
   Error createReaders();
-  void destroyReaders();
   Error printReaders();
   Error compareReaders();
 
@@ -53,14 +56,18 @@ class LVReaderHandler {
                       object::Archive &Arch);
   Error handleBuffer(LVReaders &Readers, StringRef Filename,
                      MemoryBufferRef Buffer, StringRef ExePath = {});
-  Error handleFile(LVReaders &Readers, StringRef Filename,
-                   StringRef ExePath = {});
+  LLVM_ABI Error handleFile(LVReaders &Readers, StringRef Filename,
+                            StringRef ExePath = {});
   Error handleMach(LVReaders &Readers, StringRef Filename,
                    object::MachOUniversalBinary &Mach);
   Error handleObject(LVReaders &Readers, StringRef Filename,
                      object::Binary &Binary);
+  Error handleObject(LVReaders &Readers, StringRef Filename, StringRef Buffer,
+                     StringRef ExePath);
+  Error handleObject(LVReaders &Readers, StringRef Filename,
+                     MemoryBufferRef Buffer);
 
-  Error createReader(StringRef Filename, LVReaders &Readers, PdbOrObj &Input,
+  Error createReader(StringRef Filename, LVReaders &Readers, InputHandle &Input,
                      StringRef FileFormatName, StringRef ExePath = {});
 
 public:
@@ -72,22 +79,20 @@ public:
   }
   LVReaderHandler(const LVReaderHandler &) = delete;
   LVReaderHandler &operator=(const LVReaderHandler &) = delete;
-  ~LVReaderHandler() { destroyReaders(); }
 
   Error createReader(StringRef Filename, LVReaders &Readers) {
     return handleFile(Readers, Filename);
   }
-  Error process();
+  LLVM_ABI Error process();
 
-  Expected<LVReader *> createReader(StringRef Pathname) {
+  Expected<std::unique_ptr<LVReader>> createReader(StringRef Pathname) {
     LVReaders Readers;
     if (Error Err = createReader(Pathname, Readers))
       return std::move(Err);
-    return Readers[0];
+    return std::move(Readers[0]);
   }
-  void deleteReader(LVReader *Reader) { delete Reader; }
 
-  void print(raw_ostream &OS) const;
+  LLVM_ABI void print(raw_ostream &OS) const;
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   void dump() const { print(dbgs()); }

@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-stmt-granularity=bb -polly-print-scops -disable-output < %s | FileCheck %s
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-stmt-granularity=bb '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s
 
 ; CHECK: MustWriteAccess :=  [Reduction Type: NONE] [Scalar: 1]
 ; CHECK-NEXT: [p_0] -> { Stmt_bb3[] -> MemRef_tmp5[] };

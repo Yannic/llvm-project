@@ -31,7 +31,8 @@ class Builtin_Op<string mnemonic, list<Trait> traits = []> :
 //===----------------------------------------------------------------------===//
 
 def ModuleOp : Builtin_Op<"module", [
-    AffineScope, IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol,
+    AffineScope, IsolatedFromAbove, NoRegionArguments, SymbolTable, SymbolName,
+    SymbolVisibility, Symbol,
     OpAsmOpInterface
   ] # GraphRegionNoTerminator.traits> {
   let summary = "A top level container operation";
@@ -40,7 +41,7 @@ def ModuleOp : Builtin_Op<"module", [
     [graph region](../LangRef.md#control-flow-and-ssacfg-regions) containing a single block
     which can contain any operations and does not have a terminator. Operations
     within this region cannot implicitly capture values defined outside the module,
-    i.e. Modules are [IsolatedFromAbove](../Traits.md#isolatedfromabove). Modules have
+    i.e. Modules are [IsolatedFromAbove](../Traits#isolatedfromabove). Modules have
     an optional [symbol name](../SymbolsAndSymbolTables.md) which can be used to refer
     to them in operations.
 
@@ -57,7 +58,7 @@ def ModuleOp : Builtin_Op<"module", [
                        OptionalAttr<StrAttr>:$sym_visibility);
   let regions = (region SizedRegion<1>:$bodyRegion);
 
-  let assemblyFormat = "($sym_name^)? attr-dict-with-keyword $bodyRegion";
+  let assemblyFormat = "($sym_name^)? prop-dict attr-dict-with-keyword $bodyRegion";
   let builders = [OpBuilder<(ins CArg<"std::optional<StringRef>", "{}">:$name)>];
   let extraClassDeclaration = [{
     /// Construct a module from the given location with an optional name.
@@ -78,6 +79,7 @@ def ModuleOp : Builtin_Op<"module", [
     //===------------------------------------------------------------------===//
 
     DataLayoutSpecInterface getDataLayoutSpec();
+    TargetSystemSpecInterface getTargetSystemSpec();
 
     //===------------------------------------------------------------------===//
     // OpAsmOpInterface Methods
@@ -99,7 +101,7 @@ def ModuleOp : Builtin_Op<"module", [
 //===----------------------------------------------------------------------===//
 
 def UnrealizedConversionCastOp : Builtin_Op<"unrealized_conversion_cast", [
-    DeclareOpInterfaceMethods<CastOpInterface>, Pure
+    Pure
   ]> {
   let summary = "An unrealized conversion from one set of types to another";
   let description = [{
@@ -141,6 +143,7 @@ def UnrealizedConversionCastOp : Builtin_Op<"unrealized_conversion_cast", [
     ($inputs^ `:` type($inputs))? `to` type($outputs) attr-dict
   }];
   let hasFolder = 1;
+  let hasVerifier = 1;
 }
 
 #endif // BUILTIN_OPS

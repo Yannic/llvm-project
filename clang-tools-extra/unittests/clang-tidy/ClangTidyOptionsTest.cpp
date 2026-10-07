@@ -1,6 +1,7 @@
 #include "ClangTidyOptions.h"
 #include "ClangTidyCheck.h"
 #include "ClangTidyDiagnosticConsumer.h"
+#include "utils/CheckUtils.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Testing/Annotations/Annotations.h"
@@ -74,15 +75,31 @@ TEST(ParseLineFilter, ValidFilter) {
   EXPECT_EQ(1000u, Options.LineFilter[2].LineRanges[0].second);
 }
 
+#ifdef _WIN32
+TEST(ParseLineFilter, NormalizesWindowsPathSeparators) {
+  ClangTidyGlobalOptions Options;
+  EXPECT_FALSE(
+      parseLineFilter(R"([{"name":"project\\src\\input.cc"}])", Options));
+  ASSERT_EQ(1u, Options.LineFilter.size());
+  EXPECT_EQ("project/src/input.cc", Options.LineFilter[0].Name);
+}
+#endif // _WIN32
+
 TEST(ParseConfiguration, ValidConfiguration) {
   llvm::ErrorOr<ClangTidyOptions> Options =
-      parseConfiguration(llvm::MemoryBufferRef("Checks: \"-*,misc-*\"\n"
-                                               "HeaderFilterRegex: \".*\"\n"
-                                               "AnalyzeTemporaryDtors: true\n"
-                                               "User: some.user",
-                                               "Options"));
+      parseConfiguration(llvm::MemoryBufferRef(
+          "Checks: \"-*,misc-*\"\n"
+          "HeaderFileExtensions: [\"\",\"h\",\"hh\",\"hpp\",\"hxx\"]\n"
+          "ImplementationFileExtensions: [\"c\",\"cc\",\"cpp\",\"cxx\"]\n"
+          "HeaderFilterRegex: \".*\"\n"
+          "User: some.user",
+          "Options"));
   EXPECT_TRUE(!!Options);
   EXPECT_EQ("-*,misc-*", *Options->Checks);
+  EXPECT_EQ(std::vector<std::string>({"", "h", "hh", "hpp", "hxx"}),
+            *Options->HeaderFileExtensions);
+  EXPECT_EQ(std::vector<std::string>({"c", "cc", "cpp", "cxx"}),
+            *Options->ImplementationFileExtensions);
   EXPECT_EQ(".*", *Options->HeaderFilterRegex);
   EXPECT_EQ("some.user", *Options->User);
 }
@@ -101,33 +118,72 @@ TEST(ParseConfiguration, ChecksSeparatedByNewlines) {
   EXPECT_EQ("-*,misc-*\nllvm-*\n-clang-*,\ngoogle-*\n", *Options->Checks);
 }
 
+TEST(ParseConfiguration, WarningsAsErrorsSeparatedByNewlines) {
+  const auto MemoryBuffer = llvm::MemoryBufferRef("WarningsAsErrors: |\n"
+                                                  "  -*,misc-*\n"
+                                                  "  llvm-*\n"
+                                                  "  -clang-*,\n"
+                                                  "  google-*",
+                                                  "Options");
+
+  const auto Options = parseConfiguration(MemoryBuffer);
+
+  EXPECT_TRUE(!!Options);
+  EXPECT_EQ("-*,misc-*\nllvm-*\n-clang-*,\ngoogle-*\n",
+            *Options->WarningsAsErrors);
+}
+
+TEST(ParseConfiguration, WarningsAsErrorsAsList) {
+  const auto MemoryBuffer = llvm::MemoryBufferRef("WarningsAsErrors: [\n"
+                                                  "  '-*',\n"
+                                                  "  'misc-*',\n"
+                                                  "  'llvm-*',\n"
+                                                  "  '-clang-*',\n"
+                                                  "  'google-*'\n"
+                                                  "]",
+                                                  "Options");
+
+  const auto Options = parseConfiguration(MemoryBuffer);
+
+  EXPECT_TRUE(!!Options);
+  EXPECT_EQ("-*,misc-*,llvm-*,-clang-*,google-*", *Options->WarningsAsErrors);
+}
+
 TEST(ParseConfiguration, MergeConfigurations) {
   llvm::ErrorOr<ClangTidyOptions> Options1 =
       parseConfiguration(llvm::MemoryBufferRef(R"(
       Checks: "check1,check2"
+      HeaderFileExtensions: ["h","hh"]
+      ImplementationFileExtensions: ["c","cc"]
       HeaderFilterRegex: "filter1"
-      AnalyzeTemporaryDtors: true
       User: user1
       ExtraArgs: ['arg1', 'arg2']
       ExtraArgsBefore: ['arg-before1', 'arg-before2']
       UseColor: false
+      SystemHeaders: false
   )",
                                                "Options1"));
   ASSERT_TRUE(!!Options1);
   llvm::ErrorOr<ClangTidyOptions> Options2 =
       parseConfiguration(llvm::MemoryBufferRef(R"(
       Checks: "check3,check4"
+      HeaderFileExtensions: ["hpp","hxx"]
+      ImplementationFileExtensions: ["cpp","cxx"]
       HeaderFilterRegex: "filter2"
-      AnalyzeTemporaryDtors: false
       User: user2
       ExtraArgs: ['arg3', 'arg4']
       ExtraArgsBefore: ['arg-before3', 'arg-before4']
       UseColor: true
+      SystemHeaders: true
   )",
                                                "Options2"));
   ASSERT_TRUE(!!Options2);
   ClangTidyOptions Options = Options1->merge(*Options2, 0);
   EXPECT_EQ("check1,check2,check3,check4", *Options.Checks);
+  EXPECT_EQ(std::vector<std::string>({"hpp", "hxx"}),
+            *Options.HeaderFileExtensions);
+  EXPECT_EQ(std::vector<std::string>({"cpp", "cxx"}),
+            *Options.ImplementationFileExtensions);
   EXPECT_EQ("filter2", *Options.HeaderFilterRegex);
   EXPECT_EQ("user2", *Options.User);
   ASSERT_TRUE(Options.ExtraArgs.has_value());
@@ -139,6 +195,9 @@ TEST(ParseConfiguration, MergeConfigurations) {
                        Options.ExtraArgsBefore->end(), ","));
   ASSERT_TRUE(Options.UseColor.has_value());
   EXPECT_TRUE(*Options.UseColor);
+
+  ASSERT_TRUE(Options.SystemHeaders.has_value());
+  EXPECT_TRUE(*Options.SystemHeaders);
 }
 
 namespace {
@@ -234,6 +293,17 @@ TEST(ParseConfiguration, CollectDiags) {
                                          DiagKind(llvm::SourceMgr::DK_Error),
                                          DiagPos(Options.range().Begin),
                                          DiagRange(Options.range()))));
+
+  Options = llvm::Annotations(R"(
+    SystemHeaders: [[NotABool]]
+  )");
+  ParsedOpt = ParseWithDiags(Options.code());
+  EXPECT_TRUE(!ParsedOpt);
+  EXPECT_THAT(Collector.getDiags(),
+              testing::ElementsAre(AllOf(DiagMessage("invalid boolean"),
+                                         DiagKind(llvm::SourceMgr::DK_Error),
+                                         DiagPos(Options.range().Begin),
+                                         DiagRange(Options.range()))));
 }
 
 namespace {
@@ -243,10 +313,6 @@ public:
 
   template <typename... Args> auto getLocal(Args &&... Arguments) {
     return Options.get(std::forward<Args>(Arguments)...);
-  }
-
-  template <typename... Args> auto getGlobal(Args &&... Arguments) {
-    return Options.getLocalOrGlobal(std::forward<Args>(Arguments)...);
   }
 
   template <typename IntType = int, typename... Args>
@@ -289,13 +355,131 @@ TEST(CheckOptionsValidation, MissingOptions) {
   ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
       ClangTidyGlobalOptions(), Options));
   ClangTidyDiagnosticConsumer DiagConsumer(Context);
-  DiagnosticsEngine DE(new DiagnosticIDs(), new DiagnosticOptions,
-                       &DiagConsumer, false);
-  Context.setDiagnosticsEngine(&DE);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
   TestCheck TestCheck(&Context);
   EXPECT_FALSE(TestCheck.getLocal("Opt"));
   EXPECT_EQ(TestCheck.getLocal("Opt", "Unknown"), "Unknown");
   // Missing options aren't errors.
+  EXPECT_TRUE(DiagConsumer.take().empty());
+}
+
+TEST(CheckOptionsValidation, DeprecatedAliasUtils) {
+  ClangTidyOptions Options;
+  Options.Checks = "performance-faster-string-find";
+
+  ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
+      ClangTidyGlobalOptions(), Options));
+  ClangTidyDiagnosticConsumer DiagConsumer(Context);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
+
+  TestCheck TestCheck(&Context);
+  utils::diagDeprecatedCheckAlias(TestCheck, Context,
+                                  "performance-faster-string-find",
+                                  "performance-prefer-single-char-overloads");
+
+  EXPECT_THAT(
+      DiagConsumer.take(),
+      ElementsAre(
+          AllOf(ToolDiagMessage(
+                    "'performance-faster-string-find' check is deprecated and "
+                    "will be removed in a future release; consider using "
+                    "'performance-prefer-single-char-overloads' instead"),
+                ToolDiagLevel(Warning))));
+}
+
+TEST(CheckOptionsValidation, DeprecatedAliasUtilsDisabledByCanonicalCheck) {
+  ClangTidyOptions Options;
+  Options.Checks =
+      "performance-faster-string-find,performance-prefer-single-char-overloads";
+
+  ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
+      ClangTidyGlobalOptions(), Options));
+  ClangTidyDiagnosticConsumer DiagConsumer(Context);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
+
+  TestCheck TestCheck(&Context);
+  utils::diagDeprecatedCheckAlias(TestCheck, Context,
+                                  "performance-faster-string-find",
+                                  "performance-prefer-single-char-overloads");
+
+  EXPECT_TRUE(DiagConsumer.take().empty());
+}
+
+TEST(CheckOptionsValidation, DeprecatedAliasUtilsEnabledByWildcardAlias) {
+  ClangTidyOptions Options;
+  Options.Checks = "performance-faster*";
+
+  ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
+      ClangTidyGlobalOptions(), Options));
+  ClangTidyDiagnosticConsumer DiagConsumer(Context);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
+
+  TestCheck TestCheck(&Context);
+  utils::diagDeprecatedCheckAlias(TestCheck, Context,
+                                  "performance-faster-string-find",
+                                  "performance-prefer-single-char-overloads");
+
+  EXPECT_THAT(
+      DiagConsumer.take(),
+      ElementsAre(
+          AllOf(ToolDiagMessage(
+                    "'performance-faster-string-find' check is deprecated and "
+                    "will be removed in a future release; consider using "
+                    "'performance-prefer-single-char-overloads' instead"),
+                ToolDiagLevel(Warning))));
+}
+
+TEST(CheckOptionsValidation,
+     DeprecatedAliasUtilsDisabledByWildcardAliasAndCanonicalCheck) {
+  ClangTidyOptions Options;
+  Options.Checks =
+      "performance-faster*,performance-prefer-single-char-overloads";
+
+  ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
+      ClangTidyGlobalOptions(), Options));
+  ClangTidyDiagnosticConsumer DiagConsumer(Context);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
+
+  TestCheck TestCheck(&Context);
+  utils::diagDeprecatedCheckAlias(TestCheck, Context,
+                                  "performance-faster-string-find",
+                                  "performance-prefer-single-char-overloads");
+
+  EXPECT_TRUE(DiagConsumer.take().empty());
+}
+
+TEST(CheckOptionsValidation, DeprecatedAliasUtilsDisabledByWildcard) {
+  ClangTidyOptions Options;
+  Options.Checks = "performance-*";
+
+  ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
+      ClangTidyGlobalOptions(), Options));
+  ClangTidyDiagnosticConsumer DiagConsumer(Context);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
+
+  TestCheck TestCheck(&Context);
+  utils::diagDeprecatedCheckAlias(TestCheck, Context,
+                                  "performance-faster-string-find",
+                                  "performance-prefer-single-char-overloads");
+
   EXPECT_TRUE(DiagConsumer.take().empty());
 }
 
@@ -319,9 +503,10 @@ TEST(CheckOptionsValidation, ValidIntOptions) {
   ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
       ClangTidyGlobalOptions(), Options));
   ClangTidyDiagnosticConsumer DiagConsumer(Context);
-  DiagnosticsEngine DE(new DiagnosticIDs(), new DiagnosticOptions,
-                       &DiagConsumer, false);
-  Context.setDiagnosticsEngine(&DE);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
   TestCheck TestCheck(&Context);
 
   CHECK_VAL(TestCheck.getIntLocal("IntExpected"), 1);
@@ -381,20 +566,14 @@ TEST(ValidConfiguration, ValidEnumOptions) {
   ClangTidyContext Context(std::make_unique<DefaultOptionsProvider>(
       ClangTidyGlobalOptions(), Options));
   ClangTidyDiagnosticConsumer DiagConsumer(Context);
-  DiagnosticsEngine DE(new DiagnosticIDs(), new DiagnosticOptions,
-                       &DiagConsumer, false);
-  Context.setDiagnosticsEngine(&DE);
+  auto DiagOpts = std::make_unique<DiagnosticOptions>();
+  DiagnosticsEngine DE(DiagnosticIDs::create(), *DiagOpts, &DiagConsumer,
+                       false);
+  Context.setDiagnosticsEngine(std::move(DiagOpts), &DE);
   TestCheck TestCheck(&Context);
 
   CHECK_VAL(TestCheck.getIntLocal<Colours>("Valid"), Colours::Red);
   CHECK_VAL(TestCheck.getIntGlobal<Colours>("GlobalValid"), Colours::Violet);
-
-  CHECK_VAL(
-      TestCheck.getIntLocal<Colours>("ValidWrongCase", /*IgnoreCase*/ true),
-      Colours::Red);
-  CHECK_VAL(TestCheck.getIntGlobal<Colours>("GlobalValidWrongCase",
-                                            /*IgnoreCase*/ true),
-            Colours::Violet);
 
   EXPECT_FALSE(TestCheck.getIntLocal<Colours>("ValidWrongCase").has_value());
   EXPECT_FALSE(TestCheck.getIntLocal<Colours>("NearMiss").has_value());

@@ -18,7 +18,21 @@ namespace clang {
 namespace driver {
 namespace tools {
 namespace fuchsia {
-class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
+class LLVM_LIBRARY_VISIBILITY StaticLibTool : public Tool {
+public:
+  StaticLibTool(const ToolChain &TC)
+      : Tool("fuchsia::StaticLibTool", "llvm-ar", TC) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
+class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
 public:
   Linker(const ToolChain &TC) : Tool("fuchsia::Linker", "ld.lld", TC) {}
 
@@ -41,9 +55,7 @@ public:
           const llvm::opt::ArgList &Args);
 
   bool HasNativeLLVMSupport() const override { return true; }
-  bool IsIntegratedAssemblerDefault() const override { return true; }
   bool IsMathErrnoDefault() const override { return false; }
-  bool useRelaxRelocations() const override { return true; };
   RuntimeLibType GetDefaultRuntimeLibType() const override {
     return ToolChain::RLT_CompilerRT;
   }
@@ -69,9 +81,12 @@ public:
   }
 
   std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
+                                          BoundArch BA,
                                           types::ID InputType) const override;
 
-  SanitizerMask getSupportedSanitizers() const override;
+  SanitizerMask
+  getSupportedSanitizers(BoundArch BA,
+                         Action::OffloadKind DeviceOffloadKind) const override;
   SanitizerMask getDefaultSanitizers() const override;
 
   RuntimeLibType
@@ -85,7 +100,7 @@ public:
 
   void
   addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                        llvm::opt::ArgStringList &CC1Args,
+                        llvm::opt::ArgStringList &CC1Args, BoundArch BA,
                         Action::OffloadKind DeviceOffloadKind) const override;
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
@@ -100,6 +115,7 @@ public:
 
 protected:
   Tool *buildLinker() const override;
+  Tool *buildStaticLibTool() const override;
 };
 
 } // end namespace toolchains

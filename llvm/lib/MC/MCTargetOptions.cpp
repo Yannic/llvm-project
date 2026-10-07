@@ -8,6 +8,7 @@
 
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/ADT/StringRef.h"
+#include <climits>
 
 using namespace llvm;
 
@@ -15,10 +16,21 @@ MCTargetOptions::MCTargetOptions()
     : MCRelaxAll(false), MCNoExecStack(false), MCFatalWarnings(false),
       MCNoWarn(false), MCNoDeprecatedWarn(false), MCNoTypeCheck(false),
       MCSaveTempLabels(false), MCIncrementalLinkerCompatible(false),
-      ShowMCEncoding(false), ShowMCInst(false), AsmVerbose(false),
+      FDPIC(false), ShowMCEncoding(false), ShowMCInst(false), AsmVerbose(false),
       PreserveAsmComments(true), Dwarf64(false),
       EmitDwarfUnwind(EmitDwarfUnwindType::Default),
-      MCUseDwarfDirectory(DefaultDwarfDirectory) {}
+      MCUseDwarfDirectory(DefaultDwarfDirectory),
+      EmitCompactUnwindNonCanonical(false), EmitSFrameUnwind(false),
+      PPCUseFullRegisterNames(false), LargeEHEncoding(false) {}
+
+std::pair<int, int> MCTargetOptions::parseBinutilsVersion(StringRef Version) {
+  if (Version == "none")
+    return {INT_MAX, INT_MAX}; // Make binutilsIsAtLeast() return true.
+  std::pair<int, int> Ret;
+  if (!Version.consumeInteger(10, Ret.first) && Version.consume_front("."))
+    Version.consumeInteger(10, Ret.second);
+  return Ret;
+}
 
 StringRef MCTargetOptions::getABIName() const {
   return ABIName;

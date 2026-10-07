@@ -1,6 +1,6 @@
 // This addresses https://github.com/llvm/llvm-project/issues/57339
 // RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 -fcxx-exceptions \
-// RUN:     -fexceptions -S -emit-llvm -o - %s -O1 | FileCheck %s
+// RUN:     -fexceptions -emit-llvm -o - %s -O1 | FileCheck %s
 
 #include "Inputs/coroutine.h"
 
@@ -60,11 +60,9 @@ gen maybe_throwing(bool x) {
 }
 
 // CHECK: define{{.*}}@_Z14maybe_throwingb.destroy
-// CHECK: %[[INDEX:.+]] = load i1, ptr %index.addr, align 1
-// CHECK: br i1 %[[INDEX]], label %[[AFTERSUSPEND:.+]], label %[[CORO_FREE:.+]]
-// CHECK: [[AFTERSUSPEND]]:
+// CHECK: %[[INDEX:.+]] = load i{{8|32}}, ptr %index.addr, align {{1|4}}
+// CHECK: br i1 {{%.*}}, label %{{.+}}, label %{{.+}}, !prof
 // CHECK: call{{.*}}_ZN3gen12promise_type13final_awaiterD1Ev(
-// CHECK: [[CORO_FREE]]:
 // CHECK: call{{.*}}_ZdlPv
 
 void noexcept_call() noexcept;

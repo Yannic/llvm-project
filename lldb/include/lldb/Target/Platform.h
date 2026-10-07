@@ -21,14 +21,20 @@
 #include "lldb/Core/UserSettingsController.h"
 #include "lldb/Host/File.h"
 #include "lldb/Interpreter/Options.h"
+#include "lldb/Interpreter/ScriptInterpreter.h"
+#include "lldb/Target/StopInfo.h"
 #include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/StructuredData.h"
 #include "lldb/Utility/Timeout.h"
 #include "lldb/Utility/UserIDResolver.h"
+#include "lldb/Utility/XcodeSDK.h"
 #include "lldb/lldb-private-forward.h"
 #include "lldb/lldb-public.h"
+
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/VersionTuple.h"
 
 namespace lldb_private {
@@ -44,13 +50,17 @@ class PlatformProperties : public Properties {
 public:
   PlatformProperties();
 
-  static ConstString GetSettingName();
+  static llvm::StringRef GetSettingName();
 
   bool GetUseModuleCache() const;
   bool SetUseModuleCache(bool use_module_cache);
 
   FileSpec GetModuleCacheDirectory() const;
   bool SetModuleCacheDirectory(const FileSpec &dir_spec);
+
+  /// The timeout to use when expanding launch arguments via the shell.
+  /// A value of std::nullopt means no timeout should be enforced.
+  Timeout<std::micro> GetShellExpandTimeout() const;
 
 private:
   void SetDefaultModuleCacheDirectory(const FileSpec &dir_spec);
@@ -106,21 +116,6 @@ public:
   static ArchSpec GetAugmentedArchSpec(Platform *platform,
                                        llvm::StringRef triple);
 
-  /// Find a platform plugin for a given process.
-  ///
-  /// Scans the installed Platform plug-ins and tries to find an instance that
-  /// can be used for \a process
-  ///
-  /// \param[in] process
-  ///     The process for which to try and locate a platform
-  ///     plug-in instance.
-  ///
-  /// \param[in] plugin_name
-  ///     An optional name of a specific platform plug-in that
-  ///     should be used. If nullptr, pick the best plug-in.
-  //        static lldb::PlatformSP
-  //        FindPlugin (Process *process, ConstString plugin_name);
-
   /// Set the target's executable based off of the existing architecture
   /// information in \a target given a path to an executable \a exe_file.
   ///
@@ -137,8 +132,7 @@ public:
   ///     Returns \b true if this Platform plug-in was able to find
   ///     a suitable executable, \b false otherwise.
   virtual Status ResolveExecutable(const ModuleSpec &module_spec,
-                                   lldb::ModuleSP &module_sp,
-                                   const FileSpecList *module_search_paths_ptr);
+                                   lldb::ModuleSP &exe_module_sp);
 
   /// Find a symbol file given a symbol file module specification.
   ///
@@ -213,7 +207,7 @@ public:
 
   virtual const char *GetHostname();
 
-  virtual ConstString GetFullNameForDylib(ConstString basename);
+  virtual std::string GetFullNameForDylib(llvm::StringRef basename);
 
   virtual llvm::StringRef GetDescription() = 0;
 
@@ -280,18 +274,86 @@ public:
   virtual Status GetFileWithUUID(const FileSpec &platform_file,
                                  const UUID *uuid_ptr, FileSpec &local_file);
 
-  // Locate the scripting resource given a module specification.
-  //
-  // Locating the file should happen only on the local computer or using the
-  // current computers global settings.
-  virtual FileSpecList
+  /// Locate the scripting resource given a module specification.
+  ///
+  /// Returns a map from a located script's \c FileSpec to the
+  /// \c LoadScriptFromSymFile with which LLDB should load it.
+  llvm::SmallDenseMap<FileSpec, LoadScriptFromSymFile>
   LocateExecutableScriptingResources(Target *target, Module &module,
-                                     Stream *feedback_stream);
+                                     Stream &feedback_stream);
 
+  /// Locate the platform-specific scripting resource given a module
+  /// specification.
+  virtual llvm::SmallDenseMap<FileSpec, LoadScriptFromSymFile>
+  LocateExecutableScriptingResourcesForPlatform(Target *target, Module &module,
+                                                Stream &feedback_stream);
+
+  /// Helper function for \c LocateExecutableScriptingResources
+  /// which gathers FileSpecs for executable scripts from
+  /// pre-configured "safe" auto-load paths.
+  ///
+  /// E.g., for Python it will look for a script at:
+  ///   \c <safe-path>/<module-name>/<module-name>.py
+  static llvm::SmallDenseMap<FileSpec, LoadScriptFromSymFile>
+  LocateExecutableScriptingResourcesFromSafePaths(Stream &feedback_stream,
+                                                  FileSpec module_spec,
+                                                  const Target &target);
+
+  /// Returns true if the module's symbol file (e.g. a dSYM bundle) is
+  /// code-signed with a trusted signature. Used to decide whether to
+  /// auto-loaded scripts.
+  virtual bool IsSymbolFileTrusted(Module &module);
+
+  /// \param[in] module_spec
+  ///     The ModuleSpec of a binary to find.
+  ///
+  /// \param[in] target
+  ///     The Target the binary is being located for. Its settings guide the
+  ///     search, and it may not have a Process yet.
+  ///
+  /// \param[out] module_sp
+  ///     A Module that matches the ModuleSpec, if one is found.
+  ///
+  /// \param[out] old_modules
+  ///     Existing Modules in the Target's image list which match
+  ///     the FileSpec.
+  ///
+  /// \param[out] did_create_ptr
+  ///     Optional boolean, nullptr may be passed for this argument.
+  ///     If this method is returning a *new* ModuleSP, this
+  ///     will be set to true.
+  ///     If this method is returning a ModuleSP that is already in the
+  ///     Target's image list, it will be false.
+  ///
+  /// \return
+  ///     The Status object for any errors found while searching for
+  ///     the binary.
   virtual Status GetSharedModule(
-      const ModuleSpec &module_spec, Process *process,
-      lldb::ModuleSP &module_sp, const FileSpecList *module_search_paths_ptr,
+      const ModuleSpec &module_spec, Target &target, lldb::ModuleSP &module_sp,
       llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules, bool *did_create_ptr);
+
+  /// Find a module's files on this host.
+  ///
+  /// The symbol locator plugins have no Platform to consult, so a platform
+  /// that knows where its binaries live answers here instead.
+  ///
+  /// An answer ends the search, so an override owns what the plugins would
+  /// otherwise have been asked for: the files it names have to exist, and have
+  /// to be the ones \a module_spec describes.
+  ///
+  /// \return
+  ///     Where the files are, or std::nullopt if this platform has nothing to
+  ///     say about this module.
+  virtual std::optional<ModuleSpec>
+  FindModuleFiles(const ModuleSpec &module_spec,
+                  const FileSpecList &search_paths, StatisticsMap &statistics) {
+    return std::nullopt;
+  }
+
+  void CallLocateModuleCallbackIfSet(const ModuleSpec &module_spec,
+                                     lldb::ModuleSP &module_sp,
+                                     FileSpec &symbol_file_spec,
+                                     bool *did_create_ptr);
 
   virtual bool GetModuleSpec(const FileSpec &module_file_spec,
                              const ArchSpec &arch, ModuleSpec &module_spec);
@@ -308,6 +370,35 @@ public:
   ///     represents that the process host architecture is unknown.
   virtual std::vector<ArchSpec>
   GetSupportedArchitectures(const ArchSpec &process_host_arch) = 0;
+
+  /// Get the bytes of the platform's software interrupt instruction. If there
+  /// are multiple possible encodings, for example where there are immediate
+  /// values encoded in the instruction, this will return the instruction with
+  /// those bits set as 0.
+  ///
+  /// \param[in] arch
+  ///     The architecture of the inferior.
+  /// \param size_hint
+  ///     A hint to disambiguate which instruction is used on platforms where
+  ///     there are multiple interrupts with different sizes in the ISA (e.g
+  ///     ARM Thumb, RISC-V).
+  ///
+  /// \return
+  ///     The bytes of the interrupt instruction, with any immediate value
+  ///     bits set to 0.
+  llvm::ArrayRef<uint8_t> SoftwareTrapOpcodeBytes(const ArchSpec &arch,
+                                                  size_t size_hint = 0);
+
+  /// Get the suggested size hint for a trap instruction on the given target.
+  /// Some platforms have a compressed instruction set which can be used
+  /// instead of the "normal" encoding. This function attempts to determine
+  /// a size hint for the size of the instruction at address \a addr, and
+  /// return 0, 2 or 4, with 2 and 4 corresponding to the estimated size
+  /// and zero meaning no applicable hint. Returns the estimated size in bytes
+  /// of the instruction for this target at the given address, or 0 if no
+  /// estimate is available.
+  size_t GetTrapOpcodeSizeHint(Target &target, Address addr,
+                               llvm::ArrayRef<uint8_t> bytes);
 
   virtual size_t GetSoftwareBreakpointTrapOpcode(Target &target,
                                                  BreakpointSite *bp_site);
@@ -402,6 +493,8 @@ public:
   virtual uint32_t FindProcesses(const ProcessInstanceInfoMatch &match_info,
                                  ProcessInstanceInfoList &proc_infos);
 
+  ProcessInstanceInfoList GetAllProcesses();
+
   virtual bool GetProcessInfo(lldb::pid_t pid, ProcessInstanceInfo &proc_info);
 
   // Set a breakpoint on all functions that can end up creating a thread for
@@ -409,14 +502,57 @@ public:
   // process control.
   virtual lldb::BreakpointSP SetThreadCreationBreakpoint(Target &target);
 
-  // Given a target, find the local SDK directory if one exists on the current
-  // host.
-  virtual lldb_private::ConstString
-  GetSDKDirectory(lldb_private::Target &target) {
-    return lldb_private::ConstString();
-  }
+  /// Search each CU associated with the specified 'module' for
+  /// the SDK paths the CUs were compiled against. In the presence
+  /// of different SDKs, we try to pick the most appropriate one
+  /// using \ref XcodeSDKAndSysroot::Merge.
+  ///
+  /// Note that a Module's CompileUnits may have been built against
+  /// different SDKs, so this merged result is inherently lossy; use the
+  /// \ref GetSDKPathFromDebugInfo(CompileUnit&) overload for accuracy.
+  ///
+  /// \param[in] module Module whose debug-info CUs to parse for
+  ///                   which SDK they were compiled against.
+  ///
+  /// \returns If successful, returns a pair of a parsed XcodeSDKAndSysroot
+  ///          object and a boolean that is 'true' if we encountered
+  ///          a conflicting combination of SDKs when parsing the CUs
+  ///          (e.g., a public and internal SDK). Only Darwin SDKs come in
+  ///          public and internal flavors, so the generic implementation
+  ///          never reports a conflict.
+  virtual llvm::Expected<std::pair<XcodeSDKAndSysroot, bool>>
+  GetSDKPathFromDebugInfo(Module &module);
 
-  const std::string &GetRemoteURL() const { return m_remote_url; }
+  /// Returns the full path of the most appropriate SDK for the
+  /// specified 'module'. This function gets this path by parsing
+  /// debug-info (see \ref `GetSDKPathFromDebugInfo`).
+  ///
+  /// \param[in] module Module whose debug-info to parse for
+  ///                   which SDK it was compiled against.
+  ///
+  /// \returns If successful, returns the full path to an
+  ///          Xcode SDK.
+  virtual llvm::Expected<std::string>
+  ResolveSDKPathFromDebugInfo(Module &module);
+
+  /// Search CU for the SDK path the CUs was compiled against.
+  ///
+  /// \param[in] unit The CU
+  ///
+  /// \returns A parsed XcodeSDK object if successful, an Error otherwise.
+  virtual llvm::Expected<XcodeSDKAndSysroot>
+  GetSDKPathFromDebugInfo(CompileUnit &unit);
+
+  /// Returns the full path of the most appropriate SDK for the
+  /// specified compile unit. This function gets this path by parsing
+  /// debug-info (see \ref `GetSDKPathFromDebugInfo`).
+  ///
+  /// \param[in] unit The CU to scan.
+  ///
+  /// \returns If successful, returns the full path to an
+  ///          Xcode SDK.
+  virtual llvm::Expected<std::string>
+  ResolveSDKPathFromDebugInfo(CompileUnit &unit);
 
   bool IsHost() const {
     return m_is_host; // Is this the default host platform?
@@ -448,13 +584,15 @@ public:
   // Used for column widths
   size_t GetMaxGroupIDNameLength() const { return m_max_gid_name_len; }
 
-  ConstString GetSDKRootDirectory() const { return m_sdk_sysroot; }
+  const std::string &GetSDKRootDirectory() const { return m_sdk_sysroot; }
 
-  void SetSDKRootDirectory(ConstString dir) { m_sdk_sysroot = dir; }
+  void SetSDKRootDirectory(std::string dir) { m_sdk_sysroot = std::move(dir); }
 
-  ConstString GetSDKBuild() const { return m_sdk_build; }
+  const std::string &GetSDKBuild() const { return m_sdk_build; }
 
-  void SetSDKBuild(ConstString sdk_build) { m_sdk_build = sdk_build; }
+  void SetSDKBuild(std::string sdk_build) {
+    m_sdk_build = std::move(sdk_build);
+  }
 
   // Override this to return true if your platform supports Clang modules. You
   // may also need to override AddClangModuleCompilationOptions to pass the
@@ -593,6 +731,9 @@ public:
                        // the process to exit
       std::string
           *command_output, // Pass nullptr if you don't want the command output
+      std::string
+          *separated_error_output, // Pass nullptr to have error and command
+                                   // output combined in command_output.
       const Timeout<std::micro> &timeout);
 
   virtual lldb_private::Status RunShellCommand(
@@ -604,6 +745,9 @@ public:
                        // the process to exit
       std::string
           *command_output, // Pass nullptr if you don't want the command output
+      std::string
+          *separated_error_output, // Pass nullptr to have error and command
+                                   // output combined in command_output.
       const Timeout<std::micro> &timeout);
 
   virtual void SetLocalCacheDirectory(const char *local);
@@ -612,8 +756,8 @@ public:
 
   virtual std::string GetPlatformSpecificConnectionInformation() { return ""; }
 
-  virtual bool CalculateMD5(const FileSpec &file_spec, uint64_t &low,
-                            uint64_t &high);
+  virtual llvm::ErrorOr<llvm::MD5::MD5Result>
+  CalculateMD5(const FileSpec &file_spec);
 
   virtual uint32_t GetResumeCountForLaunchInfo(ProcessLaunchInfo &launch_info) {
     return 1;
@@ -694,8 +838,8 @@ public:
   /// Try to get a specific unwind plan for a named trap handler.
   /// The default is not to have specific unwind plans for trap handlers.
   ///
-  /// \param[in] triple
-  ///     Triple of the current target.
+  /// \param[in] arch
+  ///     Architecture of the current target.
   ///
   /// \param[in] name
   ///     Name of the trap handler function.
@@ -704,8 +848,8 @@ public:
   ///     A specific unwind plan for that trap handler, or an empty
   ///     shared pointer. The latter means there is no specific plan,
   ///     unwind as normal.
-  virtual lldb::UnwindPlanSP
-  GetTrapHandlerUnwindPlan(const llvm::Triple &triple, ConstString name) {
+  virtual lldb::UnwindPlanSP GetTrapHandlerUnwindPlan(const ArchSpec &arch,
+                                                      ConstString name) {
     return {};
   }
 
@@ -841,7 +985,7 @@ public:
   ///     A structured data dictionary containing at each entry, the crash
   ///     information type as the entry key and the matching  an array as the
   ///     entry value. \b nullptr if not implemented or  if the process has no
-  ///     crash information entry. \b error if an error occured.
+  ///     crash information entry. \b error if an error occurred.
   virtual llvm::Expected<StructuredData::DictionarySP>
   FetchExtendedCrashInformation(lldb_private::Process &process) {
     return nullptr;
@@ -876,8 +1020,30 @@ public:
   }
 
   virtual CompilerType GetSiginfoType(const llvm::Triple &triple);
-  
+
+  virtual lldb::StopInfoSP GetStopInfoFromSiginfo(Thread &thread) { return {}; }
+
   virtual Args GetExtraStartupCommands();
+
+  typedef std::function<Status(const ModuleSpec &module_spec,
+                               FileSpec &module_file_spec,
+                               FileSpec &symbol_file_spec)>
+      LocateModuleCallback;
+
+  /// Set locate module callback. This allows users to implement their own
+  /// module cache system. For example, to leverage artifacts of build system,
+  /// to bypass pulling files from remote platform, or to search symbol files
+  /// from symbol servers.
+  void SetLocateModuleCallback(LocateModuleCallback callback);
+
+  LocateModuleCallback GetLocateModuleCallback() const;
+
+  /// Returns a \c FileSpecList of safe paths to auto-load scripting resources
+  /// from for a particular platform.
+  virtual llvm::Expected<FileSpecList>
+  GetSafeAutoLoadPaths(const Target &target) const {
+    return FileSpecList();
+  }
 
 protected:
   /// Create a list of ArchSpecs with the given OS and a architectures. The
@@ -900,12 +1066,11 @@ protected:
   // the once we call HostInfo::GetOSVersion().
   bool m_os_version_set_while_connected;
   bool m_system_arch_set_while_connected;
-  ConstString
+  std::string
       m_sdk_sysroot; // the root location of where the SDK files are all located
-  ConstString m_sdk_build;
+  std::string m_sdk_build;
   FileSpec m_working_dir; // The working directory which is used when installing
                           // modules that have no install path set
-  std::string m_remote_url;
   std::string m_hostname;
   llvm::VersionTuple m_os_version;
   ArchSpec
@@ -926,6 +1091,7 @@ protected:
   std::vector<ConstString> m_trap_handlers;
   bool m_calculated_trap_handlers;
   const std::unique_ptr<ModuleCache> m_module_cache;
+  LocateModuleCallback m_locate_module_callback;
 
   /// Ask the Platform subclass to fill in the list of trap handler names
   ///
@@ -940,8 +1106,8 @@ protected:
   /// predefined trap handlers, this method may be a no-op.
   virtual void CalculateTrapHandlerSymbolNames() = 0;
 
-  Status GetCachedExecutable(ModuleSpec &module_spec, lldb::ModuleSP &module_sp,
-                             const FileSpecList *module_search_paths_ptr);
+  Status GetCachedExecutable(ModuleSpec &module_spec,
+                             lldb::ModuleSP &module_sp);
 
   virtual Status DownloadModuleSlice(const FileSpec &src_file_spec,
                                      const uint64_t src_offset,
@@ -953,15 +1119,28 @@ protected:
 
   virtual const char *GetCacheHostname();
 
-  virtual Status
-  ResolveRemoteExecutable(const ModuleSpec &module_spec,
-                          lldb::ModuleSP &exe_module_sp,
-                          const FileSpecList *module_search_paths_ptr);
+  /// If we did some replacements of reserved characters, and a
+  /// file with the untampered name exists, then warn the user
+  /// that the file as-is shall not be loaded.
+  static void WarnIfInvalidUnsanitizedScriptExists(
+      Stream &os,
+      const ScriptInterpreter::SanitizedScriptingModuleName &sanitized_name,
+      const FileSpec &original_fspec, const FileSpec &fspec);
+
+  /// Returns the \c LoadScriptFromSymFile of scripting resource associated
+  /// with the specified module \c FileSpec. If the load style wasn't explicitly
+  /// set for a module, returns the target-wide default.
+  static LoadScriptFromSymFile
+  GetScriptLoadStyleForModule(const FileSpec &module_fspec,
+                              const Target &target);
 
 private:
   typedef std::function<Status(const ModuleSpec &)> ModuleResolver;
 
-  Status GetRemoteSharedModule(const ModuleSpec &module_spec, Process *process,
+  /// \param[in] target
+  ///     The Target the binary is being located for, or nullptr when the
+  ///     lookup is not on behalf of one.
+  Status GetRemoteSharedModule(const ModuleSpec &module_spec, Target *target,
                                lldb::ModuleSP &module_sp,
                                const ModuleResolver &module_resolver,
                                bool *did_create_ptr);

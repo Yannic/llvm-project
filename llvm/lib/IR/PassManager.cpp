@@ -7,23 +7,47 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/ADT/DenseMapInfo.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/OptBisect.h"
 #include "llvm/IR/PassManagerImpl.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <optional>
 
 using namespace llvm;
 
 namespace llvm {
+
+bool detail::shouldSkipOptimizationForOptBisect(IRUnitRef IR,
+                                                StringRef PassName) {
+  LLVMContext *Ctx = nullptr;
+  std::string IRName = "";
+  if (const auto *M = dyn_cast<Module>(IR)) {
+    Ctx = &M->getContext();
+    IRName = "[module]";
+  } else if (const auto *F = dyn_cast<Function>(IR)) {
+    Ctx = &F->getContext();
+    IRName = F->getName().str();
+  } else {
+    llvm_unreachable("Tried to check skipping for an invalid IR type");
+  }
+  const OptPassGate &Gate = Ctx->getOptPassGate();
+  return Gate.isEnabled() && !Gate.shouldRunPass(PassName, IRName);
+}
+
 // Explicit template instantiations and specialization defininitions for core
 // template typedefs.
-template class AllAnalysesOn<Module>;
-template class AllAnalysesOn<Function>;
-template class PassManager<Module>;
-template class PassManager<Function>;
-template class AnalysisManager<Module>;
-template class AnalysisManager<Function>;
-template class InnerAnalysisManagerProxy<FunctionAnalysisManager, Module>;
-template class OuterAnalysisManagerProxy<ModuleAnalysisManager, Function>;
+template class LLVM_EXPORT_TEMPLATE AllAnalysesOn<Module>;
+template class LLVM_EXPORT_TEMPLATE AllAnalysesOn<Function>;
+template class LLVM_EXPORT_TEMPLATE PassManager<Module>;
+template class LLVM_EXPORT_TEMPLATE PassManager<Function>;
+template class LLVM_EXPORT_TEMPLATE AnalysisManager<Module>;
+template class LLVM_EXPORT_TEMPLATE AnalysisManager<Function>;
+template class LLVM_EXPORT_TEMPLATE
+    InnerAnalysisManagerProxy<FunctionAnalysisManager, Module>;
+template class LLVM_EXPORT_TEMPLATE
+    OuterAnalysisManagerProxy<ModuleAnalysisManager, Function>;
 
 template <>
 bool FunctionAnalysisManagerModuleProxy::Result::invalidate(
@@ -96,9 +120,9 @@ void ModuleToFunctionPassAdaptor::printPipeline(
   OS << "function";
   if (EagerlyInvalidate)
     OS << "<eager-inv>";
-  OS << "(";
+  OS << '(';
   Pass->printPipeline(OS, MapClassName2PassName);
-  OS << ")";
+  OS << ')';
 }
 
 PreservedAnalyses ModuleToFunctionPassAdaptor::run(Module &M,
@@ -122,12 +146,13 @@ PreservedAnalyses ModuleToFunctionPassAdaptor::run(Module &M,
       continue;
 
     PreservedAnalyses PassPA = Pass->run(F, FAM);
-    PI.runAfterPass(*Pass, F, PassPA);
 
     // We know that the function pass couldn't have invalidated any other
     // function's analyses (that's the contract of a function pass), so
     // directly handle the function analysis manager's invalidation here.
     FAM.invalidate(F, EagerlyInvalidate ? PreservedAnalyses::none() : PassPA);
+
+    PI.runAfterPass(*Pass, F, PassPA);
 
     // Then intersect the preserved set so that invalidation of module
     // analyses will eventually occur when the module pass completes.
@@ -142,6 +167,18 @@ PreservedAnalyses ModuleToFunctionPassAdaptor::run(Module &M,
   PA.preserveSet<AllAnalysesOn<Function>>();
   PA.preserve<FunctionAnalysisManagerModuleProxy>();
   return PA;
+}
+
+template <>
+void llvm::printIRUnitNameForStackTrace<Module>(raw_ostream &OS,
+                                                const Module &IR) {
+  OS << "module \"" << IR.getName() << "\"";
+}
+
+template <>
+void llvm::printIRUnitNameForStackTrace<Function>(raw_ostream &OS,
+                                                  const Function &IR) {
+  OS << "function \"" << IR.getName() << "\"";
 }
 
 AnalysisSetKey CFGAnalyses::SetKey;

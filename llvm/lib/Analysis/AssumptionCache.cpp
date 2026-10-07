@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file contains a pass that keeps track of @llvm.assume and
-// @llvm.experimental.guard intrinsics in the functions of a module.
+// This file contains a pass that keeps track of @llvm.assume intrinsics in
+// the functions of a module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,8 +15,10 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AssumeBundleQueries.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
@@ -31,7 +33,6 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
-#include <utility>
 
 using namespace llvm;
 using namespace llvm::PatternMatch;
@@ -41,6 +42,10 @@ static cl::opt<bool>
                           cl::desc("Enable verification of assumption cache"),
                           cl::init(false));
 
+static cl::opt<unsigned> MaxAssumesPerValue(
+    "max-assumes-per-value", cl::Hidden, cl::init(1024),
+    cl::desc("Maximum number of assumptions to cache for a single value"));
+
 SmallVector<AssumptionCache::ResultElem, 1> &
 AssumptionCache::getOrInsertAffectedValues(Value *V) {
   // Try using find_as first to avoid creating extra value handles just for the
@@ -49,9 +54,23 @@ AssumptionCache::getOrInsertAffectedValues(Value *V) {
   if (AVI != AffectedValues.end())
     return AVI->second;
 
-  auto AVIP = AffectedValues.insert(
-      {AffectedValueCallbackVH(V, this), SmallVector<ResultElem, 1>()});
-  return AVIP.first->second;
+  return AffectedValues[AffectedValueCallbackVH(V, this)];
+}
+
+void AssumptionCache::findValuesAffectedByOperandBundle(
+    OperandBundleUse Bundle, function_ref<void(Value *)> InsertAffected) {
+  auto AddAffectedVal = [&](Value *V) {
+    if (isa<Argument, GlobalValue, Instruction>(V))
+      InsertAffected(V);
+  };
+
+  if (Bundle.getTagName() == "separate_storage") {
+    assert(Bundle.Inputs.size() == 2 && "separate_storage must have two args");
+    AddAffectedVal(getUnderlyingObject(Bundle.Inputs[0]));
+    AddAffectedVal(getUnderlyingObject(Bundle.Inputs[1]));
+  } else if (Bundle.Inputs.size() > ABA_WasOn &&
+             Bundle.getTagName() != IgnoreBundleTag)
+    AddAffectedVal(Bundle.Inputs[ABA_WasOn]);
 }
 
 static void
@@ -60,92 +79,47 @@ findAffectedValues(CallBase *CI, TargetTransformInfo *TTI,
   // Note: This code must be kept in-sync with the code in
   // computeKnownBitsFromAssume in ValueTracking.
 
-  auto AddAffected = [&Affected](Value *V, unsigned Idx =
-                                               AssumptionCache::ExprResultIdx) {
-    if (isa<Argument>(V)) {
-      Affected.push_back({V, Idx});
-    } else if (auto *I = dyn_cast<Instruction>(V)) {
-      Affected.push_back({I, Idx});
+  auto InsertAffected = [&Affected](Value *V) {
+    Affected.push_back({V, AssumptionCache::ExprResultIdx});
+  };
 
-      // Peek through unary operators to find the source of the condition.
-      Value *Op;
-      if (match(I, m_BitCast(m_Value(Op))) ||
-          match(I, m_PtrToInt(m_Value(Op))) || match(I, m_Not(m_Value(Op)))) {
-        if (isa<Instruction>(Op) || isa<Argument>(Op))
-          Affected.push_back({Op, Idx});
-      }
+  auto AddAffectedVal = [&Affected](Value *V, unsigned Idx) {
+    if (isa<Argument>(V) || isa<GlobalValue>(V) || isa<Instruction>(V)) {
+      Affected.push_back({V, Idx});
     }
   };
 
-  for (unsigned Idx = 0; Idx != CI->getNumOperandBundles(); Idx++) {
-    if (CI->getOperandBundleAt(Idx).Inputs.size() > ABA_WasOn &&
-        CI->getOperandBundleAt(Idx).getTagName() != IgnoreBundleTag)
-      AddAffected(CI->getOperandBundleAt(Idx).Inputs[ABA_WasOn], Idx);
-  }
+  for (unsigned Idx = 0; Idx != CI->getNumOperandBundles(); Idx++)
+    AssumptionCache::findValuesAffectedByOperandBundle(
+        CI->getOperandBundleAt(Idx),
+        [&](Value *V) { Affected.push_back({V, Idx}); });
 
-  Value *Cond = CI->getArgOperand(0), *A, *B;
-  AddAffected(Cond);
-
-  CmpInst::Predicate Pred;
-  if (match(Cond, m_ICmp(Pred, m_Value(A), m_Value(B)))) {
-    AddAffected(A);
-    AddAffected(B);
-
-    if (Pred == ICmpInst::ICMP_EQ) {
-      // For equality comparisons, we handle the case of bit inversion.
-      auto AddAffectedFromEq = [&AddAffected](Value *V) {
-        Value *A;
-        if (match(V, m_Not(m_Value(A)))) {
-          AddAffected(A);
-          V = A;
-        }
-
-        Value *B;
-        // (A & B) or (A | B) or (A ^ B).
-        if (match(V, m_BitwiseLogic(m_Value(A), m_Value(B)))) {
-          AddAffected(A);
-          AddAffected(B);
-          // (A << C) or (A >>_s C) or (A >>_u C) where C is some constant.
-        } else if (match(V, m_Shift(m_Value(A), m_ConstantInt()))) {
-          AddAffected(A);
-        }
-      };
-
-      AddAffectedFromEq(A);
-      AddAffectedFromEq(B);
-    } else if (Pred == ICmpInst::ICMP_NE) {
-      Value *X, *Y;
-      // Handle (a & b != 0). If a/b is a power of 2 we can use this
-      // information.
-      if (match(A, m_And(m_Value(X), m_Value(Y))) && match(B, m_Zero())) {
-        AddAffected(X);
-        AddAffected(Y);
-      }
-    } else if (Pred == ICmpInst::ICMP_ULT) {
-      Value *X;
-      // Handle (A + C1) u< C2, which is the canonical form of A > C3 && A < C4,
-      // and recognized by LVI at least.
-      if (match(A, m_Add(m_Value(X), m_ConstantInt())) &&
-          match(B, m_ConstantInt()))
-        AddAffected(X);
-    }
-  }
+  Value *Cond = CI->getArgOperand(0);
+  findValuesAffectedByCondition(Cond, /*IsAssume=*/true, InsertAffected);
 
   if (TTI) {
     const Value *Ptr;
     unsigned AS;
     std::tie(Ptr, AS) = TTI->getPredicatedAddrSpace(Cond);
     if (Ptr)
-      AddAffected(const_cast<Value *>(Ptr->stripInBoundsOffsets()));
+      AddAffectedVal(const_cast<Value *>(Ptr->stripInBoundsOffsets()),
+                     AssumptionCache::ExprResultIdx);
   }
 }
 
-void AssumptionCache::updateAffectedValues(CondGuardInst *CI) {
+void AssumptionCache::updateAffectedValues(AssumeInst *CI) {
   SmallVector<AssumptionCache::ResultElem, 16> Affected;
   findAffectedValues(CI, TTI, Affected);
 
   for (auto &AV : Affected) {
     auto &AVV = getOrInsertAffectedValues(AV.Assume);
+
+    // Callers walk every entry cached for a value, including the ones left
+    // behind by erased assumptions, so cache no more of them than an analysis
+    // should walk.
+    if (AVV.size() >= MaxAssumesPerValue)
+      continue;
+
     if (llvm::none_of(AVV, [&](ResultElem &Elem) {
           return Elem.Assume == CI && Elem.Index == AV.Index;
         }))
@@ -153,7 +127,7 @@ void AssumptionCache::updateAffectedValues(CondGuardInst *CI) {
   }
 }
 
-void AssumptionCache::unregisterAssumption(CondGuardInst *CI) {
+void AssumptionCache::removeAffectedValues(AssumeInst *CI) {
   SmallVector<AssumptionCache::ResultElem, 16> Affected;
   findAffectedValues(CI, TTI, Affected);
 
@@ -168,16 +142,33 @@ void AssumptionCache::unregisterAssumption(CondGuardInst *CI) {
         Found = true;
         Elem.Assume = nullptr;
       }
+
+      // We need to iterate through this loop to determine the value of
+      // HasNonnull, to avoid prematurely calling AffectedValues.erase(AVI).
       HasNonnull |= !!Elem.Assume;
       if (HasNonnull && Found)
         break;
     }
-    assert(Found && "already unregistered or incorrect cache state");
-    if (!HasNonnull)
+
+    if (!Found) {
+      // It may well be the case that we fail to find an affected value in the
+      // cache. In particular, if an assume call is updated via `Use::set()`, we
+      // won't be notified that the affected value has changed and the cache
+      // will silently go stale.
+    } else if (!HasNonnull)
       AffectedValues.erase(AVI);
   }
+}
 
-  erase_value(AssumeHandles, CI);
+void AssumptionCache::unregisterAssumption(AssumeInst *CI) {
+  removeAffectedValues(CI);
+  llvm::erase(AssumeHandles, CI);
+}
+
+void AssumptionCache::replaceAssumption(WeakVH &Handle, AssumeInst *New) {
+  removeAffectedValues(cast<AssumeInst>(Handle));
+  Handle = New;
+  updateAffectedValues(New);
 }
 
 void AssumptionCache::AffectedValueCallbackVH::deleted() {
@@ -191,9 +182,12 @@ void AssumptionCache::transferAffectedValuesInCache(Value *OV, Value *NV) {
   if (AVI == AffectedValues.end())
     return;
 
-  for (auto &A : AVI->second)
+  for (auto &A : AVI->second) {
+    if (NAVV.size() >= MaxAssumesPerValue)
+      break;
     if (!llvm::is_contained(NAVV, A))
       NAVV.push_back(A);
+  }
   AffectedValues.erase(OV);
 }
 
@@ -217,45 +211,67 @@ void AssumptionCache::scanFunction() {
   // to this cache.
   for (BasicBlock &B : F)
     for (Instruction &I : B)
-      if (isa<CondGuardInst>(&I))
-        AssumeHandles.push_back({&I, ExprResultIdx});
+      if (isa<AssumeInst>(&I))
+        AssumeHandles.push_back(&I);
 
   // Mark the scan as complete.
   Scanned = true;
 
   // Update affected values.
   for (auto &A : AssumeHandles)
-    updateAffectedValues(cast<CondGuardInst>(A));
+    updateAffectedValues(cast<AssumeInst>(A));
 }
 
-void AssumptionCache::registerAssumption(CondGuardInst *CI) {
+/// Check the assumptions cached for \p F, collecting them in \p Cached. Returns
+/// a description of the first invariant violated, or nullptr if there is none.
+static const char *
+findCacheViolation(const Function &F, ArrayRef<WeakVH> Assumptions,
+                   SmallPtrSetImpl<const CallInst *> &Cached) {
+  for (const WeakVH &VH : Assumptions) {
+    if (!VH)
+      continue;
+
+    const auto *CI = cast<CallInst>(VH);
+    if (CI->getFunction() != &F)
+      return "Cached assumption not inside this function";
+    if (!match(CI, m_Intrinsic<Intrinsic::assume>()))
+      return "Cached something other than a call to @llvm.assume";
+    if (!Cached.insert(CI).second)
+      return "Cache contains multiple copies of a call";
+  }
+
+  return nullptr;
+}
+
+void AssumptionCache::registerAssumption(AssumeInst *CI) {
   // If we haven't scanned the function yet, just drop this assumption. It will
   // be found when we scan later.
   if (!Scanned)
     return;
 
-  AssumeHandles.push_back({CI, ExprResultIdx});
+  AssumeHandles.push_back(CI);
 
 #ifndef NDEBUG
   assert(CI->getParent() &&
-         "Cannot a register CondGuardInst not in a basic block");
+         "Cannot register @llvm.assume call not in a basic block");
   assert(&F == CI->getParent()->getParent() &&
-         "Cannot a register CondGuardInst not in this function");
+         "Cannot register @llvm.assume call not in this function");
 
   // We expect the number of assumptions to be small, so in an asserts build
   // check that we don't accumulate duplicates and that all assumptions point
-  // to the same function.
-  SmallPtrSet<Value *, 16> AssumptionSet;
-  for (auto &VH : AssumeHandles) {
-    if (!VH)
-      continue;
-
-    assert(&F == cast<Instruction>(VH)->getParent()->getParent() &&
-           "Cached assumption not inside this function!");
-    assert(isa<CondGuardInst>(VH) &&
-           "Cached something other than CondGuardInst!");
-    assert(AssumptionSet.insert(VH).second &&
-           "Cache contains multiple copies of a call!");
+  // to the same function. Scanning the whole cache on every registration is
+  // quadratic, so stop once it outgrows that expectation unless expensive
+  // checks are enabled. Larger caches are checked by
+  // AssumptionCacheTracker::verifyAnalysis() instead.
+#ifdef EXPENSIVE_CHECKS
+  constexpr unsigned MaxAssumesToVerify = std::numeric_limits<unsigned>::max();
+#else
+  constexpr unsigned MaxAssumesToVerify = 64;
+#endif
+  if (AssumeHandles.size() <= MaxAssumesToVerify) {
+    SmallPtrSet<const CallInst *, 16> Cached;
+    if (const char *Violation = findCacheViolation(F, AssumeHandles, Cached))
+      llvm_unreachable(Violation);
   }
 #endif
 
@@ -275,9 +291,28 @@ PreservedAnalyses AssumptionPrinterPass::run(Function &F,
   AssumptionCache &AC = AM.getResult<AssumptionAnalysis>(F);
 
   OS << "Cached assumptions for function: " << F.getName() << "\n";
-  for (auto &VH : AC.assumptions())
-    if (VH)
-      OS << "  " << *cast<CallInst>(VH)->getArgOperand(0) << "\n";
+  for (auto &VH : AC.assumptions()) {
+    if (!VH)
+      continue;
+
+    auto *Assume = cast<CallInst>(VH);
+    if (!Assume->hasOperandBundles()) {
+      OS << "  " << *Assume->getArgOperand(0) << "\n";
+      continue;
+    }
+
+    assert(match(Assume->getArgOperand(0), m_One()) &&
+           "assume must have trivial cond");
+    OS << "  [ ";
+    ListSeparator LS;
+    for (const OperandBundleUse &BU : Assume->operand_bundles()) {
+      OS << LS << '"' << BU.getTagName() << "\"(";
+      interleaveComma(BU.Inputs, OS,
+                      [&](const Use &Input) { Input->printAsOperand(OS); });
+      OS << ')';
+    }
+    OS << " ]\n";
+  }
 
   return PreservedAnalyses::all();
 }
@@ -309,13 +344,6 @@ AssumptionCache &AssumptionCacheTracker::getAssumptionCache(Function &F) {
   return *IP.first->second;
 }
 
-AssumptionCache *AssumptionCacheTracker::lookupAssumptionCache(Function &F) {
-  auto I = AssumptionCaches.find_as(&F);
-  if (I != AssumptionCaches.end())
-    return I->second.get();
-  return nullptr;
-}
-
 void AssumptionCacheTracker::verifyAnalysis() const {
   // FIXME: In the long term the verifier should not be controllable with a
   // flag. We should either fix all passes to correctly update the assumption
@@ -324,23 +352,23 @@ void AssumptionCacheTracker::verifyAnalysis() const {
   if (!VerifyAssumptionCache)
     return;
 
-  SmallPtrSet<const CallInst *, 4> AssumptionSet;
   for (const auto &I : AssumptionCaches) {
-    for (auto &VH : I.second->assumptions())
-      if (VH)
-        AssumptionSet.insert(cast<CallInst>(VH));
+    const Function &F = cast<Function>(*I.first);
 
-    for (const BasicBlock &B : cast<Function>(*I.first))
+    SmallPtrSet<const CallInst *, 4> Cached;
+    if (const char *Violation =
+            findCacheViolation(F, I.second->assumptions(), Cached))
+      report_fatal_error(Violation);
+
+    for (const BasicBlock &B : F)
       for (const Instruction &II : B)
         if (match(&II, m_Intrinsic<Intrinsic::assume>()) &&
-            !AssumptionSet.count(cast<CallInst>(&II)))
+            !Cached.count(cast<CallInst>(&II)))
           report_fatal_error("Assumption in scanned function not in cache");
   }
 }
 
-AssumptionCacheTracker::AssumptionCacheTracker() : ImmutablePass(ID) {
-  initializeAssumptionCacheTrackerPass(*PassRegistry::getPassRegistry());
-}
+AssumptionCacheTracker::AssumptionCacheTracker() : ImmutablePass(ID) {}
 
 AssumptionCacheTracker::~AssumptionCacheTracker() = default;
 

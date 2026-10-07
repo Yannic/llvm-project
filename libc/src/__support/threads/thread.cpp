@@ -6,17 +6,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "thread.h"
-#include "mutex.h"
-
+#include "src/__support/threads/thread.h"
+#include "hdr/limits_macros.h"
+#include "hdr/types/struct___pthread_cleanup_frame.h"
 #include "src/__support/CPP/array.h"
+#include "src/__support/CPP/mutex.h" // lock_guard
 #include "src/__support/CPP/optional.h"
 #include "src/__support/fixedvector.h"
+#include "src/__support/macros/attributes.h"
+#include "src/__support/macros/config.h"
+#include "src/__support/threads/cleanup_stack.h"
+#include "src/__support/threads/mutex.h"
 
-namespace __llvm_libc {
-
-thread_local Thread self;
-
+namespace LIBC_NAMESPACE_DECL {
 namespace {
 
 using AtExitCallback = void(void *);
@@ -52,11 +54,13 @@ class TSSKeyMgr {
   cpp::array<TSSKeyUnit, TSS_KEY_COUNT> units;
 
 public:
-  constexpr TSSKeyMgr() : mtx(false, false, false) {}
+  constexpr TSSKeyMgr()
+      : mtx(/*is_priority_inherit=*/false, /*is_recursive=*/false,
+            /*is_robust=*/false, /*is_pshared=*/false) {}
 
   cpp::optional<unsigned int> new_key(TSSDtor *dtor) {
-    MutexLock lock(&mtx);
-    for (size_t i = 0; i < TSS_KEY_COUNT; ++i) {
+    cpp::lock_guard lock(mtx);
+    for (unsigned int i = 0; i < TSS_KEY_COUNT; ++i) {
       TSSKeyUnit &u = units[i];
       if (!u.active) {
         u = {dtor};
@@ -69,20 +73,20 @@ public:
   TSSDtor *get_dtor(unsigned int key) {
     if (key >= TSS_KEY_COUNT)
       return nullptr;
-    MutexLock lock(&mtx);
+    cpp::lock_guard lock(mtx);
     return units[key].dtor;
   }
 
   bool remove_key(unsigned int key) {
     if (key >= TSS_KEY_COUNT)
       return false;
-    MutexLock lock(&mtx);
+    cpp::lock_guard lock(mtx);
     units[key].reset();
     return true;
   }
 
   bool is_valid_key(unsigned int key) {
-    MutexLock lock(&mtx);
+    cpp::lock_guard lock(mtx);
     return units[key].active;
   }
 };
@@ -99,7 +103,7 @@ struct TSSValueUnit {
       : active(true), payload(p), dtor(d) {}
 };
 
-static thread_local cpp::array<TSSValueUnit, TSS_KEY_COUNT> tss_values;
+static LIBC_THREAD_LOCAL cpp::array<TSSValueUnit, TSS_KEY_COUNT> tss_values;
 
 } // anonymous namespace
 
@@ -109,11 +113,15 @@ class ThreadAtExitCallbackMgr {
   FixedVector<AtExitUnit, 1024> callback_list;
 
 public:
-  constexpr ThreadAtExitCallbackMgr() : mtx(false, false, false) {}
+  constexpr ThreadAtExitCallbackMgr()
+      : mtx(/*is_priority_inherit=*/false, /*is_recursive=*/false,
+            /*is_robust=*/false, /*is_pshared=*/false) {}
 
   int add_callback(AtExitCallback *callback, void *obj) {
-    MutexLock lock(&mtx);
-    return callback_list.push_back({callback, obj});
+    cpp::lock_guard lock(mtx);
+    if (callback_list.push_back({callback, obj}))
+      return 0;
+    return -1;
   }
 
   void call() {
@@ -125,10 +133,11 @@ public:
       atexit_unit.callback(atexit_unit.obj);
       mtx.lock();
     }
+    mtx.unlock();
   }
 };
 
-static thread_local ThreadAtExitCallbackMgr atexit_callback_mgr;
+static LIBC_THREAD_LOCAL ThreadAtExitCallbackMgr atexit_callback_mgr;
 
 // The function __cxa_thread_atexit is provided by C++ runtimes like libcxxabi.
 // It is used by thread local object runtime to register destructor calls. To
@@ -143,16 +152,30 @@ extern "C" int __cxa_thread_atexit_impl(AtExitCallback *callback, void *obj,
 
 namespace internal {
 
-ThreadAtExitCallbackMgr *get_thread_atexit_callback_mgr() {
-  return &atexit_callback_mgr;
-}
+void call_atexit_callbacks() {
+  // Cancellation cleanup handlers (pthread_cleanup_push).
+  __pthread_cleanup_frame *frame;
+  while ((frame = current_thread().attrib->cleanup_stack.pop()) != nullptr)
+    frame->__routine(frame->__arg);
 
-void call_atexit_callbacks(ThreadAttributes *attrib) {
-  attrib->atexit_callback_mgr->call();
-  for (size_t i = 0; i < TSS_KEY_COUNT; ++i) {
-    TSSValueUnit &unit = tss_values[i];
-    if (unit.dtor != nullptr)
-      unit.dtor(unit.payload);
+  // thread exit callbacks (__cxa_thread_atexit).
+  atexit_callback_mgr.call();
+
+  // Thread-specific keys (pthread_key_create).
+  for (size_t iter = 0; iter < PTHREAD_DESTRUCTOR_ITERATIONS; ++iter) {
+    bool called_dtor = false;
+    for (TSSValueUnit &unit : tss_values) {
+      // Both dtor and value need to be nonnull to call dtor
+      if (unit.dtor == nullptr || unit.payload == nullptr)
+        continue;
+
+      void *val = unit.payload;
+      unit.payload = nullptr;
+      unit.dtor(val);
+      called_dtor = true;
+    }
+    if (!called_dtor)
+      break;
   }
 }
 
@@ -181,4 +204,4 @@ void *get_tss_value(unsigned int key) {
   return u.payload;
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

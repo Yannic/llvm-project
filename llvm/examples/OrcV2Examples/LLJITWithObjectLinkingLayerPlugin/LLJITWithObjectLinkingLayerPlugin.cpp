@@ -70,10 +70,6 @@ public:
     Config.PostPrunePasses.push_back(printGraph);
   }
 
-  void notifyLoaded(MaterializationResponsibility &MR) override {
-    outs() << "Loading object defining " << MR.getSymbols() << "\n";
-  }
-
   Error notifyEmitted(MaterializationResponsibility &MR) override {
     outs() << "Emitted object defining " << MR.getSymbols() << "\n";
     return Error::success();
@@ -207,10 +203,10 @@ int main(int argc, char *argv[]) {
       LLJITBuilder()
           .setJITTargetMachineBuilder(std::move(JTMB))
           .setObjectLinkingLayerCreator(
-              [&](ExecutionSession &ES, const Triple &TT) {
+              [&](ExecutionSession &ES, jitlink::JITLinkMemoryManager &MemMgr) {
                 // Create ObjectLinkingLayer.
-                auto ObjLinkingLayer = std::make_unique<ObjectLinkingLayer>(
-                    ES, ExitOnErr(jitlink::InProcessMemoryManager::Create()));
+                auto ObjLinkingLayer =
+                    std::make_unique<ObjectLinkingLayer>(ES, MemMgr);
                 // Add an instance of our plugin.
                 ObjLinkingLayer->addPlugin(std::make_unique<MyPlugin>());
                 return ObjLinkingLayer;
@@ -218,13 +214,6 @@ int main(int argc, char *argv[]) {
           .create());
 
   if (!InputObjects.empty()) {
-
-    // If we have input objects then reflect process symbols so the input
-    // objects can do interesting things, like call printf.
-    J->getMainJITDylib().addGenerator(
-        ExitOnErr(DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            J->getDataLayout().getGlobalPrefix())));
-
     // Load the input objects.
     for (auto InputObject : InputObjects) {
       auto ObjBuffer =

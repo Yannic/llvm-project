@@ -11,13 +11,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/AffineDialect.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace {
 struct TestLoopMappingPass
@@ -33,7 +34,7 @@ struct TestLoopMappingPass
   explicit TestLoopMappingPass() = default;
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<AffineDialect, scf::SCFDialect>();
+    registry.insert<affine::AffineDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {

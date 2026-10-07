@@ -7,27 +7,26 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/unistd/execve.h"
-#include "src/unistd/environ.h"
+#include "src/__support/macros/config.h"
 
-#include "src/__support/OSUtil/syscall.h" // For internal syscall function.
+#include "src/__support/OSUtil/linux/syscall_wrappers/execve.h"
 #include "src/__support/common.h"
 
-#include <errno.h>
-#include <sys/syscall.h> // For syscall numbers.
+#include "src/__support/libc_errno.h"
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(int, execve,
                    (const char *path, char *const argv[], char *const envp[])) {
-  long ret = __llvm_libc::syscall_impl(SYS_execve, path, argv, envp);
-  if (ret < 0) {
-    errno = -ret;
+  auto ret = linux_syscalls::execve(path, argv, envp);
+  if (!ret) {
+    libc_errno = ret.error();
     return -1;
   }
 
   // Control will not reach here on success but have a return statement will
   // keep the compilers happy.
-  return ret;
+  return *ret;
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

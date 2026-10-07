@@ -24,7 +24,7 @@
 #include "test_macros.h"
 
 template <typename Duration>
-constexpr int64_t check_subseconds(Duration d)
+constexpr std::int64_t check_subseconds(Duration d)
 {
     using HMS = std::chrono::hh_mm_ss<Duration>;
     ASSERT_SAME_TYPE(typename HMS::precision, decltype(std::declval<HMS>().subseconds()));
@@ -38,6 +38,8 @@ int main(int, char**)
 
     static_assert( check_subseconds(std::chrono::seconds( 1)) == 0, "");
     static_assert( check_subseconds(std::chrono::seconds(-1)) == 0, "");
+
+    static_assert(check_subseconds(std::chrono::duration<unsigned, std::milli>(123456789)) == 789, "");
 
     assert( check_subseconds(std::chrono::seconds( 5000)) == 0);
     assert( check_subseconds(std::chrono::seconds(-5000)) == 0);

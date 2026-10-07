@@ -319,8 +319,8 @@ define void @extsetcc(<4 x float> %x) {
 define <3 x double> @extvselectsetcc_crash(<2 x double> %x) {
 ; X64-LABEL: extvselectsetcc_crash:
 ; X64:       # %bb.0:
-; X64-NEXT:    vcmpeqpd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm1
-; X64-NEXT:    vmovsd {{.*#+}} xmm2 = mem[0],zero
+; X64-NEXT:    vcmpeqsd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm1
+; X64-NEXT:    vmovsd {{.*#+}} xmm2 = [1.0E+0,0.0E+0]
 ; X64-NEXT:    vandpd %xmm2, %xmm1, %xmm1
 ; X64-NEXT:    vinsertf128 $1, %xmm0, %ymm1, %ymm0
 ; X64-NEXT:    vpermpd {{.*#+}} ymm0 = ymm0[0,2,3,3]
@@ -328,8 +328,8 @@ define <3 x double> @extvselectsetcc_crash(<2 x double> %x) {
 ;
 ; X86-LABEL: extvselectsetcc_crash:
 ; X86:       # %bb.0:
-; X86-NEXT:    vcmpeqpd {{\.?LCPI[0-9]+_[0-9]+}}, %xmm0, %xmm1
-; X86-NEXT:    vmovsd {{.*#+}} xmm2 = mem[0],zero
+; X86-NEXT:    vcmpeqsd {{\.?LCPI[0-9]+_[0-9]+}}, %xmm0, %xmm1
+; X86-NEXT:    vmovsd {{.*#+}} xmm2 = [1.0E+0,0.0E+0]
 ; X86-NEXT:    vandpd %xmm2, %xmm1, %xmm1
 ; X86-NEXT:    vinsertf128 $1, %xmm0, %ymm1, %ymm0
 ; X86-NEXT:    vpermpd {{.*#+}} ymm0 = ymm0[0,2,3,3]
@@ -672,29 +672,129 @@ define double @fminnum_v4f64(<4 x double> %x, <4 x double> %y) nounwind {
   ret double %r
 }
 
-;define float @fmaximum_v4f32(<4 x float> %x, <4 x float> %y) nounwind {
-;  %v = call <4 x float> @llvm.maximum.v4f32(<4 x float> %x, <4 x float> %y)
-;  %r = extractelement <4 x float> %v, i32 0
-;  ret float %r
-;}
+define float @fmaximum_v4f32(<4 x float> %x, <4 x float> %y) nounwind {
+; X64-LABEL: fmaximum_v4f32:
+; X64:       # %bb.0:
+; X64-NEXT:    vbroadcastss {{.*#+}} xmm2 = [NaN,NaN,NaN,NaN]
+; X64-NEXT:    vorps %xmm2, %xmm0, %xmm2
+; X64-NEXT:    vmaxss %xmm1, %xmm0, %xmm1
+; X64-NEXT:    vandps %xmm1, %xmm2, %xmm1
+; X64-NEXT:    vcmpunordss %xmm0, %xmm0, %xmm2
+; X64-NEXT:    vblendvps %xmm2, %xmm0, %xmm1, %xmm0
+; X64-NEXT:    retq
+;
+; X86-LABEL: fmaximum_v4f32:
+; X86:       # %bb.0:
+; X86-NEXT:    pushl %eax
+; X86-NEXT:    vbroadcastss {{.*#+}} xmm2 = [NaN,NaN,NaN,NaN]
+; X86-NEXT:    vorps %xmm2, %xmm0, %xmm2
+; X86-NEXT:    vmaxss %xmm1, %xmm0, %xmm1
+; X86-NEXT:    vandps %xmm1, %xmm2, %xmm1
+; X86-NEXT:    vcmpunordss %xmm0, %xmm0, %xmm2
+; X86-NEXT:    vblendvps %xmm2, %xmm0, %xmm1, %xmm0
+; X86-NEXT:    vmovss %xmm0, (%esp)
+; X86-NEXT:    flds (%esp)
+; X86-NEXT:    popl %eax
+; X86-NEXT:    retl
+  %v = call <4 x float> @llvm.maximum.v4f32(<4 x float> %x, <4 x float> %y)
+  %r = extractelement <4 x float> %v, i32 0
+  ret float %r
+}
 
-;define double @fmaximum_v4f64(<4 x double> %x, <4 x double> %y) nounwind {
-;  %v = call <4 x double> @llvm.maximum.v4f64(<4 x double> %x, <4 x double> %y)
-;  %r = extractelement <4 x double> %v, i32 0
-;  ret double %r
-;}
+define double @fmaximum_v4f64(<4 x double> %x, <4 x double> %y) nounwind {
+; X64-LABEL: fmaximum_v4f64:
+; X64:       # %bb.0:
+; X64-NEXT:    vmaxsd %xmm1, %xmm0, %xmm1
+; X64-NEXT:    vorpd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm2
+; X64-NEXT:    vandpd %xmm1, %xmm2, %xmm1
+; X64-NEXT:    vcmpunordsd %xmm0, %xmm0, %xmm2
+; X64-NEXT:    vblendvpd %xmm2, %xmm0, %xmm1, %xmm0
+; X64-NEXT:    vzeroupper
+; X64-NEXT:    retq
+;
+; X86-LABEL: fmaximum_v4f64:
+; X86:       # %bb.0:
+; X86-NEXT:    pushl %ebp
+; X86-NEXT:    movl %esp, %ebp
+; X86-NEXT:    andl $-8, %esp
+; X86-NEXT:    subl $8, %esp
+; X86-NEXT:    vmaxsd %xmm1, %xmm0, %xmm1
+; X86-NEXT:    vorpd {{\.?LCPI[0-9]+_[0-9]+}}, %xmm0, %xmm2
+; X86-NEXT:    vandpd %xmm1, %xmm2, %xmm1
+; X86-NEXT:    vcmpunordsd %xmm0, %xmm0, %xmm2
+; X86-NEXT:    vblendvpd %xmm2, %xmm0, %xmm1, %xmm0
+; X86-NEXT:    vmovlpd %xmm0, (%esp)
+; X86-NEXT:    fldl (%esp)
+; X86-NEXT:    movl %ebp, %esp
+; X86-NEXT:    popl %ebp
+; X86-NEXT:    vzeroupper
+; X86-NEXT:    retl
+  %v = call <4 x double> @llvm.maximum.v4f64(<4 x double> %x, <4 x double> %y)
+  %r = extractelement <4 x double> %v, i32 0
+  ret double %r
+}
 
-;define float @fminimum_v4f32(<4 x float> %x, <4 x float> %y) nounwind {
-;  %v = call <4 x float> @llvm.minimum.v4f32(<4 x float> %x, <4 x float> %y)
-;  %r = extractelement <4 x float> %v, i32 0
-;  ret float %r
-;}
+define float @fminimum_v4f32(<4 x float> %x, <4 x float> %y) nounwind {
+; X64-LABEL: fminimum_v4f32:
+; X64:       # %bb.0:
+; X64-NEXT:    vbroadcastss {{.*#+}} xmm2 = [-0.0E+0,-0.0E+0,-0.0E+0,-0.0E+0]
+; X64-NEXT:    vandps %xmm2, %xmm0, %xmm2
+; X64-NEXT:    vminss %xmm1, %xmm0, %xmm1
+; X64-NEXT:    vorps %xmm1, %xmm2, %xmm1
+; X64-NEXT:    vcmpunordss %xmm0, %xmm0, %xmm2
+; X64-NEXT:    vblendvps %xmm2, %xmm0, %xmm1, %xmm0
+; X64-NEXT:    retq
+;
+; X86-LABEL: fminimum_v4f32:
+; X86:       # %bb.0:
+; X86-NEXT:    pushl %eax
+; X86-NEXT:    vbroadcastss {{.*#+}} xmm2 = [-0.0E+0,-0.0E+0,-0.0E+0,-0.0E+0]
+; X86-NEXT:    vandps %xmm2, %xmm0, %xmm2
+; X86-NEXT:    vminss %xmm1, %xmm0, %xmm1
+; X86-NEXT:    vorps %xmm1, %xmm2, %xmm1
+; X86-NEXT:    vcmpunordss %xmm0, %xmm0, %xmm2
+; X86-NEXT:    vblendvps %xmm2, %xmm0, %xmm1, %xmm0
+; X86-NEXT:    vmovss %xmm0, (%esp)
+; X86-NEXT:    flds (%esp)
+; X86-NEXT:    popl %eax
+; X86-NEXT:    retl
+  %v = call <4 x float> @llvm.minimum.v4f32(<4 x float> %x, <4 x float> %y)
+  %r = extractelement <4 x float> %v, i32 0
+  ret float %r
+}
 
-;define double @fminimum_v4f64(<4 x double> %x, <4 x double> %y) nounwind {
-;  %v = call <4 x double> @llvm.minimum.v4f64(<4 x double> %x, <4 x double> %y)
-;  %r = extractelement <4 x double> %v, i32 0
-;  ret double %r
-;}
+define double @fminimum_v4f64(<4 x double> %x, <4 x double> %y) nounwind {
+; X64-LABEL: fminimum_v4f64:
+; X64:       # %bb.0:
+; X64-NEXT:    vminsd %xmm1, %xmm0, %xmm1
+; X64-NEXT:    vandpd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm2
+; X64-NEXT:    vorpd %xmm1, %xmm2, %xmm1
+; X64-NEXT:    vcmpunordsd %xmm0, %xmm0, %xmm2
+; X64-NEXT:    vblendvpd %xmm2, %xmm0, %xmm1, %xmm0
+; X64-NEXT:    vzeroupper
+; X64-NEXT:    retq
+;
+; X86-LABEL: fminimum_v4f64:
+; X86:       # %bb.0:
+; X86-NEXT:    pushl %ebp
+; X86-NEXT:    movl %esp, %ebp
+; X86-NEXT:    andl $-8, %esp
+; X86-NEXT:    subl $8, %esp
+; X86-NEXT:    vminsd %xmm1, %xmm0, %xmm1
+; X86-NEXT:    vandpd {{\.?LCPI[0-9]+_[0-9]+}}, %xmm0, %xmm2
+; X86-NEXT:    vorpd %xmm1, %xmm2, %xmm1
+; X86-NEXT:    vcmpunordsd %xmm0, %xmm0, %xmm2
+; X86-NEXT:    vblendvpd %xmm2, %xmm0, %xmm1, %xmm0
+; X86-NEXT:    vmovlpd %xmm0, (%esp)
+; X86-NEXT:    fldl (%esp)
+; X86-NEXT:    movl %ebp, %esp
+; X86-NEXT:    popl %ebp
+; X86-NEXT:    vzeroupper
+; X86-NEXT:    retl
+  %v = call <4 x double> @llvm.minimum.v4f64(<4 x double> %x, <4 x double> %y)
+  %r = extractelement <4 x double> %v, i32 0
+  ret double %r
+}
 
 define float @maxps_v4f32(<4 x float> %x, <4 x float> %y) nounwind {
 ; X64-LABEL: maxps_v4f32:
@@ -1150,15 +1250,14 @@ define float @rcp_v4f32(<4 x float> %x) nounwind {
 define float @rcp_v8f32(<8 x float> %x) nounwind {
 ; X64-LABEL: rcp_v8f32:
 ; X64:       # %bb.0:
-; X64-NEXT:    vrcpps %ymm0, %ymm0
-; X64-NEXT:    # kill: def $xmm0 killed $xmm0 killed $ymm0
+; X64-NEXT:    vrcpss %xmm0, %xmm0, %xmm0
 ; X64-NEXT:    vzeroupper
 ; X64-NEXT:    retq
 ;
 ; X86-LABEL: rcp_v8f32:
 ; X86:       # %bb.0:
 ; X86-NEXT:    pushl %eax
-; X86-NEXT:    vrcpps %ymm0, %ymm0
+; X86-NEXT:    vrcpss %xmm0, %xmm0, %xmm0
 ; X86-NEXT:    vmovss %xmm0, (%esp)
 ; X86-NEXT:    flds (%esp)
 ; X86-NEXT:    popl %eax
@@ -1191,15 +1290,14 @@ define float @rsqrt_v4f32(<4 x float> %x) nounwind {
 define float @rsqrt_v8f32(<8 x float> %x) nounwind {
 ; X64-LABEL: rsqrt_v8f32:
 ; X64:       # %bb.0:
-; X64-NEXT:    vrsqrtps %ymm0, %ymm0
-; X64-NEXT:    # kill: def $xmm0 killed $xmm0 killed $ymm0
+; X64-NEXT:    vrsqrtss %xmm0, %xmm0, %xmm0
 ; X64-NEXT:    vzeroupper
 ; X64-NEXT:    retq
 ;
 ; X86-LABEL: rsqrt_v8f32:
 ; X86:       # %bb.0:
 ; X86-NEXT:    pushl %eax
-; X86-NEXT:    vrsqrtps %ymm0, %ymm0
+; X86-NEXT:    vrsqrtss %xmm0, %xmm0, %xmm0
 ; X86-NEXT:    vmovss %xmm0, (%esp)
 ; X86-NEXT:    flds (%esp)
 ; X86-NEXT:    popl %eax

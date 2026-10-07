@@ -1,10 +1,10 @@
-# RUN: llvm-mc %s -triple=riscv32 -riscv-no-aliases -show-encoding \
+# RUN: llvm-mc %s -triple=riscv32 -M no-aliases -show-encoding \
 # RUN:     | FileCheck -check-prefixes=CHECK-INST,CHECK-ENC %s
 # RUN: llvm-mc -filetype=obj -triple riscv32 < %s \
 # RUN:     | llvm-objdump -d - \
 # RUN:     | FileCheck -check-prefix=CHECK-INST-ALIAS %s
 #
-# RUN: llvm-mc %s -triple=riscv64 -riscv-no-aliases -show-encoding \
+# RUN: llvm-mc %s -triple=riscv64 -M no-aliases -show-encoding \
 # RUN:     | FileCheck -check-prefixes=CHECK-INST,CHECK-ENC %s
 # RUN: llvm-mc -filetype=obj -triple riscv64 < %s \
 # RUN:     | llvm-objdump -d - \
@@ -27,34 +27,6 @@
 csrrs t1, sstatus, zero
 # uimm12
 csrrs t2, 0x100, zero
-
-# sedeleg
-# name
-# CHECK-INST: csrrs t1, sedeleg, zero
-# CHECK-ENC: encoding: [0x73,0x23,0x20,0x10]
-# CHECK-INST-ALIAS: csrr t1, sedeleg
-# uimm12
-# CHECK-INST: csrrs t2, sedeleg, zero
-# CHECK-ENC: encoding: [0xf3,0x23,0x20,0x10]
-# CHECK-INST-ALIAS: csrr t2, sedeleg
-# name
-csrrs t1, sedeleg, zero
-# uimm12
-csrrs t2, 0x102, zero
-
-# sideleg
-# name
-# CHECK-INST: csrrs t1, sideleg, zero
-# CHECK-ENC: encoding: [0x73,0x23,0x30,0x10]
-# CHECK-INST-ALIAS: csrr t1, sideleg
-# uimm12
-# CHECK-INST: csrrs t2, sideleg, zero
-# CHECK-ENC: encoding: [0xf3,0x23,0x30,0x10]
-# CHECK-INST-ALIAS: csrr t2, sideleg
-# name
-csrrs t1, sideleg, zero
-# uimm12
-csrrs t2, 0x103, zero
 
 # sie
 # name
@@ -97,6 +69,20 @@ csrrs t2, 0x105, zero
 csrrs t1, scounteren, zero
 # uimm12
 csrrs t2, 0x106, zero
+
+# sijt
+# name
+# CHECK-INST: csrrs t1, sijt, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x70,0x10]
+# CHECK-INST-ALIAS: csrr t1, sijt
+# uimm12
+# CHECK-INST: csrrs t2, sijt, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x70,0x10]
+# CHECK-INST-ALIAS: csrr t2, sijt
+# name
+csrrs t1, sijt, zero
+# uimm12
+csrrs t2, 0x107, zero
 
 # stimecmp
 # name
@@ -205,6 +191,62 @@ csrrs t1, sip, zero
 # uimm12
 csrrs t2, 0x144, zero
 
+# sistatus
+# name
+# CHECK-INST: csrrs t1, sistatus, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x60,0x14]
+# CHECK-INST-ALIAS: csrr t1, sistatus
+# uimm12
+# CHECK-INST: csrrs t2, sistatus, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x60,0x14]
+# CHECK-INST-ALIAS: csrr t2, sistatus
+# name
+csrrs t1, sistatus, zero
+# uimm12
+csrrs t2, 0x146, zero
+
+# sithreshold
+# name
+# CHECK-INST: csrrs t1, sithreshold, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x70,0x14]
+# CHECK-INST-ALIAS: csrr t1, sithreshold
+# uimm12
+# CHECK-INST: csrrs t2, sithreshold, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x70,0x14]
+# CHECK-INST-ALIAS: csrr t2, sithreshold
+# name
+csrrs t1, sithreshold, zero
+# uimm12
+csrrs t2, 0x147, zero
+
+# stopsi
+# name
+# CHECK-INST: csrrs t1, stopsi, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x80,0x14]
+# CHECK-INST-ALIAS: csrr t1, stopsi
+# uimm12
+# CHECK-INST: csrrs t2, stopsi, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x80,0x14]
+# CHECK-INST-ALIAS: csrr t2, stopsi
+# name
+csrrs t1, stopsi, zero
+# uimm12
+csrrs t2, 0x148, zero
+
+# sspcs
+# name
+# CHECK-INST: csrrs t1, sspcs, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x90,0x14]
+# CHECK-INST-ALIAS: csrr t1, sspcs
+# uimm12
+# CHECK-INST: csrrs t2, sspcs, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x90,0x14]
+# CHECK-INST-ALIAS: csrr t2, sspcs
+# name
+csrrs t1, sspcs, zero
+# uimm12
+csrrs t2, 0x149, zero
+
 
 #########################################
 # Supervisor Protection and Translation
@@ -223,6 +265,24 @@ csrrs t2, 0x144, zero
 csrrs t1, satp, zero
 # uimm12
 csrrs t2, 0x180, zero
+
+#########################################
+# Quality-of-Service(QoS) Identifiers
+#########################################
+
+# srmcfg
+# name
+# CHECK-INST: csrrs t1, srmcfg, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x10,0x18]
+# CHECK-INST-ALIAS: csrr t1, srmcfg
+# uimm12
+# CHECK-INST: csrrs t2, srmcfg, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x10,0x18]
+# CHECK-INST-ALIAS: csrr t2, srmcfg
+# name
+csrrs t1, srmcfg, zero
+# uimm12
+csrrs t2, 0x181, zero
 
 #########################################
 # Debug/Trace Registers
@@ -319,3 +379,194 @@ csrrs t2, 0x10E, zero
 csrrs t1, sstateen3, zero
 # uimm12
 csrrs t2, 0x10F, zero
+
+#########################################
+# Advanced Interrupt Architecture (Smaia and Ssaia)
+#########################################
+
+# siselect
+# name
+# CHECK-INST: csrrs t1, siselect, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x00,0x15]
+# CHECK-INST-ALIAS: csrr t1, siselect
+# uimm12
+# CHECK-INST: csrrs t2, siselect, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x00,0x15]
+# CHECK-INST-ALIAS: csrr t2, siselect
+# name
+csrrs t1, siselect, zero
+# uimm12
+csrrs t2, 0x150, zero
+
+# sireg
+# name
+# CHECK-INST: csrrs t1, sireg, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x10,0x15]
+# CHECK-INST-ALIAS: csrr t1, sireg
+# uimm12
+# CHECK-INST: csrrs t2, sireg, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x10,0x15]
+# CHECK-INST-ALIAS: csrr t2, sireg
+# name
+csrrs t1, sireg, zero
+# uimm12
+csrrs t2, 0x151, zero
+
+# sireg2
+# name
+# CHECK-INST: csrrs t1, sireg2, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x20,0x15]
+# CHECK-INST-ALIAS: csrr t1, sireg2
+# uimm12
+# CHECK-INST: csrrs t2, sireg2, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x20,0x15]
+# CHECK-INST-ALIAS: csrr t2, sireg2
+# name
+csrrs t1, sireg2, zero
+# uimm12
+csrrs t2, 0x152, zero
+
+# sireg3
+# name
+# CHECK-INST: csrrs t1, sireg3, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x30,0x15]
+# CHECK-INST-ALIAS: csrr t1, sireg3
+# uimm12
+# CHECK-INST: csrrs t2, sireg3, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x30,0x15]
+# CHECK-INST-ALIAS: csrr t2, sireg3
+# name
+csrrs t1, sireg3, zero
+# uimm12
+csrrs t2, 0x153, zero
+
+# sireg4
+# name
+# CHECK-INST: csrrs t1, sireg4, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x50,0x15]
+# CHECK-INST-ALIAS: csrr t1, sireg4
+# uimm12
+# CHECK-INST: csrrs t2, sireg4, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x50,0x15]
+# CHECK-INST-ALIAS: csrr t2, sireg4
+# name
+csrrs t1, sireg4, zero
+# uimm12
+csrrs t2, 0x155, zero
+
+# sireg5
+# name
+# CHECK-INST: csrrs t1, sireg5, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x60,0x15]
+# CHECK-INST-ALIAS: csrr t1, sireg5
+# uimm12
+# CHECK-INST: csrrs t2, sireg5, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x60,0x15]
+# CHECK-INST-ALIAS: csrr t2, sireg5
+# name
+csrrs t1, sireg5, zero
+# uimm12
+csrrs t2, 0x156, zero
+
+# sireg6
+# name
+# CHECK-INST: csrrs t1, sireg6, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x70,0x15]
+# CHECK-INST-ALIAS: csrr t1, sireg6
+# uimm12
+# CHECK-INST: csrrs t2, sireg6, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x70,0x15]
+# CHECK-INST-ALIAS: csrr t2, sireg6
+# name
+csrrs t1, sireg6, zero
+# uimm12
+csrrs t2, 0x157, zero
+
+# stopei
+# name
+# CHECK-INST: csrrs t1, stopei, zero
+# CHECK-ENC: encoding: [0x73,0x23,0xc0,0x15]
+# CHECK-INST-ALIAS: csrr t1, stopei
+# uimm12
+# CHECK-INST: csrrs t2, stopei, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0xc0,0x15]
+# CHECK-INST-ALIAS: csrr t2, stopei
+# name
+csrrs t1, stopei, zero
+# uimm12
+csrrs t2, 0x15C, zero
+
+# stopi
+# name
+# CHECK-INST: csrrs t1, stopi, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x00,0xdb]
+# CHECK-INST-ALIAS: csrr t1, stopi
+# uimm12
+# CHECK-INST: csrrs t2, stopi, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x00,0xdb]
+# CHECK-INST-ALIAS: csrr t2, stopi
+# name
+csrrs t1, stopi, zero
+# uimm12
+csrrs t2, 0xDB0, zero
+
+#########################################
+# Counter Configuration (Ssccfg)
+#########################################
+
+# scountinhibit
+# name
+# CHECK-INST: csrrs t1, scountinhibit, zero
+# CHECK-ENC: encoding: [0x73,0x23,0x00,0x12]
+# CHECK-INST-ALIAS: csrr t1, scountinhibit
+# uimm12
+# CHECK-INST: csrrs t2, scountinhibit, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0x00,0x12]
+# CHECK-INST-ALIAS: csrr t2, scountinhibit
+# name
+csrrs t1, scountinhibit, zero
+# uimm12
+csrrs t2, 0x120, zero
+
+##################################
+# Control Transfer Records
+##################################
+
+# sctrctl
+# name
+# CHECK-INST: csrrs t1, sctrctl, zero
+# CHECK-ENC: encoding: [0x73,0x23,0xe0,0x14]
+# CHECK-INST-ALIAS: csrr t1, sctrctl
+# uimm12
+# CHECK-INST: csrrs t2, sctrctl, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0xe0,0x14]
+# CHECK-INST-ALIAS: csrr t2, sctrctl
+csrrs t1, sctrctl, zero
+# uimm12
+csrrs t2, 0x14E, zero
+
+# sctrstatus
+# name
+# CHECK-INST: csrrs t1, sctrstatus, zero
+# CHECK-ENC: encoding: [0x73,0x23,0xf0,0x14]
+# CHECK-INST-ALIAS: csrr t1, sctrstatus
+# uimm12
+# CHECK-INST: csrrs t2, sctrstatus, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0xf0,0x14]
+# CHECK-INST-ALIAS: csrr t2, sctrstatus
+csrrs t1, sctrstatus, zero
+# uimm12
+csrrs t2, 0x14F, zero
+
+# sctrdepth
+# name
+# CHECK-INST: csrrs t1, sctrdepth, zero
+# CHECK-ENC: encoding: [0x73,0x23,0xf0,0x15]
+# CHECK-INST-ALIAS: csrr t1, sctrdepth
+# uimm12
+# CHECK-INST: csrrs t2, sctrdepth, zero
+# CHECK-ENC: encoding: [0xf3,0x23,0xf0,0x15]
+# CHECK-INST-ALIAS: csrr t2, sctrdepth
+csrrs t1, sctrdepth, zero
+# uimm12
+csrrs t2, 0x15F, zero

@@ -1,4 +1,4 @@
-# RUN: llc -O1 -filetype=asm -mtriple x86_64-unknown-linux-gnu -mcpu=x86-64 -o - %s  -start-before=simple-register-coalescing -stop-after=simple-register-coalescing | FileCheck %s
+# RUN: llc -O1 -filetype=asm -mtriple x86_64-unknown-linux-gnu -mcpu=x86-64 -o - %s  -start-before=register-coalescer -stop-after=register-coalescer | FileCheck %s
 
 --- |
   target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
@@ -6,7 +6,7 @@
 
   define i32 @main() local_unnamed_addr !dbg !14 {
   entry:
-    %shl = shl i32 undef, undef, !dbg !19
+    %shl = shl i32 undef, undef, !dbg !20
     tail call void @llvm.dbg.value(metadata i32 %shl, metadata !18, metadata !DIExpression()), !dbg !20
     ret i32 %shl, !dbg !21
   }

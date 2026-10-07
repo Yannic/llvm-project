@@ -8,29 +8,27 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
-// constexpr lazy_split_view(View base, Pattern pattern);
-
-#include <ranges>
+// constexpr explicit lazy_split_view(View base, Pattern pattern); // explicit since C++23
 
 #include <cassert>
+#include <ranges>
 #include <string_view>
 #include <utility>
+
+#include "test_convertible.h"
 #include "types.h"
 
 struct ViewWithCounting : std::ranges::view_base {
   int* times_copied = nullptr;
-  int* times_moved = nullptr;
+  int* times_moved  = nullptr;
 
   constexpr ViewWithCounting(int& copies_ctr, int& moves_ctr) : times_copied(&copies_ctr), times_moved(&moves_ctr) {}
 
   constexpr ViewWithCounting(const ViewWithCounting& rhs)
-    : times_copied(rhs.times_copied)
-    , times_moved(rhs.times_moved) {
+      : times_copied(rhs.times_copied), times_moved(rhs.times_moved) {
     ++(*times_copied);
   }
-  constexpr ViewWithCounting(ViewWithCounting&& rhs)
-    : times_copied(rhs.times_copied)
-    , times_moved(rhs.times_moved) {
+  constexpr ViewWithCounting(ViewWithCounting&& rhs) : times_copied(rhs.times_copied), times_moved(rhs.times_moved) {
     ++(*times_moved);
   }
 
@@ -38,11 +36,20 @@ struct ViewWithCounting : std::ranges::view_base {
   constexpr const char* end() const { return nullptr; }
 
   constexpr ViewWithCounting& operator=(const ViewWithCounting&) = default;
-  constexpr ViewWithCounting& operator=(ViewWithCounting&&) = default;
+  constexpr ViewWithCounting& operator=(ViewWithCounting&&)      = default;
   constexpr bool operator==(const ViewWithCounting&) const { return true; }
 };
+
 static_assert(std::ranges::forward_range<ViewWithCounting>);
 static_assert(std::ranges::view<ViewWithCounting>);
+
+using View    = ViewWithCounting;
+using Pattern = ViewWithCounting;
+
+// SFINAE tests.
+
+static_assert(!test_convertible<std::ranges::lazy_split_view<View, Pattern>, View, Pattern>(),
+              "This constructor must be explicit");
 
 constexpr bool test() {
   // Calling the constructor with `(ForwardView, ForwardView)`.
@@ -62,9 +69,6 @@ constexpr bool test() {
 
   // Make sure the arguments are moved, not copied.
   {
-    using View = ViewWithCounting;
-    using Pattern = ViewWithCounting;
-
     // Arguments are lvalues.
     {
       int view_copied = 0, view_moved = 0, pattern_copied = 0, pattern_moved = 0;

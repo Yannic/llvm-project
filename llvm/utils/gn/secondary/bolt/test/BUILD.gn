@@ -1,5 +1,7 @@
 import("//llvm/lib/Target/targets_string.gni")
 import("//llvm/triples.gni")
+import("//llvm/utils/gn/build/libs/zlib/enable.gni")
+import("//llvm/utils/gn/build/libs/zstd/enable.gni")
 import("//llvm/utils/gn/build/write_cmake_config.gni")
 import("bolt_lit_site_cfg_files.gni")
 
@@ -24,6 +26,17 @@ template("write_lit_config") {
 }
 
 write_lit_config("lit_site_cfg") {
+  bolt_targets_to_build_string = ""
+  if (llvm_build_AArch64) {
+    bolt_targets_to_build_string += "AArch64"
+  }
+  if (llvm_build_X86) {
+    if (bolt_targets_to_build_string != "") {
+      bolt_targets_to_build_string += " "
+    }
+    bolt_targets_to_build_string += "X86"
+  }
+
   # Fully-qualified instead of relative for LIT_SITE_CFG_IN_HEADER.
   input = "//bolt/test/lit.site.cfg.py.in"
   output = bolt_lit_site_cfg_file
@@ -32,11 +45,13 @@ write_lit_config("lit_site_cfg") {
     "BOLT_CLANG_EXE=" + rebase_path("$root_build_dir/bin/clang"),
     "BOLT_LLD_EXE=" + rebase_path("$root_build_dir/bin/ld.lld"),
     "BOLT_ENABLE_RUNTIME=0",  # FIXME: enable runtime
+    "BOLT_TARGETS_TO_BUILD=$bolt_targets_to_build_string",
     "GNU_LD_EXECUTABLE=",  # FIXME: set sometimes?
+    "LIBBOLT_RT_HUGIFY=",
+    "LIBBOLT_RT_INSTR=",
     "LLVM_HOST_TRIPLE=$llvm_current_triple",
     "LLVM_USE_SANITIZER=",
     "Python3_EXECUTABLE=$python_path",
-    "TARGETS_TO_BUILD=$llvm_targets_to_build_string",
   ]
 
   if (host_os == "win") {
@@ -54,6 +69,18 @@ write_lit_config("lit_site_cfg") {
     extra_values += [ "HOST_ARCH=powerpc64le" ]
   } else {
     assert(false, "unimplemented host_cpu " + host_cpu)
+  }
+
+  if (llvm_enable_zlib) {
+    extra_values += [ "LLVM_ENABLE_ZLIB=1" ]
+  } else {
+    extra_values += [ "LLVM_ENABLE_ZLIB=0" ]  # Must be 0.
+  }
+
+  if (llvm_enable_zstd) {
+    extra_values += [ "LLVM_ENABLE_ZSTD=1" ]
+  } else {
+    extra_values += [ "LLVM_ENABLE_ZSTD=0" ]  # Must be 0.
   }
 }
 

@@ -1,49 +1,90 @@
-if(NOT LIBC_TARGET_ARCHITECTURE_IS_GPU)
+if(NOT LIBC_TARGET_OS_IS_GPU)
   message(FATAL_ERROR
-          "libc build: Invalid attempt to set up GPU architectures.")
-endif()
-
-# Set up the target architectures to build the GPU libc for.
-set(all_gpu_architectures "sm_35;sm_37;sm_50;sm_52;sm_53;sm_60;sm_61;sm_62;"
-                          "sm_70;sm_72;sm_75;sm_80;sm_86;gfx700;gfx701;gfx801;"
-                          "gfx803;gfx900;gfx902;gfx906;gfx908;gfx90a;gfx90c;"
-                          "gfx940;gfx1010;gfx1030;gfx1031;gfx1032;gfx1033;"
-                          "gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;"
-                          "gfx1103")
-set(LIBC_GPU_ARCHITECTURES ${all_gpu_architectures} CACHE STRING
-    "List of GPU architectures to build the libc for.")
-if(LIBC_GPU_ARCHITECTURES STREQUAL "all")
-  set(LIBC_GPU_ARCHITECTURES ${all_gpu_architectures} FORCE)
+    "libc build: Invalid attempt to set up GPU architectures.")
 endif()
 
 # Ensure the compiler is a valid clang when building the GPU target.
 set(req_ver "${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}.${LLVM_VERSION_PATCH}")
-if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "[Cc]lang" AND
-        ${CMAKE_CXX_COMPILER_VERSION} VERSION_EQUAL "${req_ver}"))
-  message(FATAL_ERROR "Cannot build libc for GPU. CMake compiler "
-                      "'${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}' "
-                      " is not `Clang ${req_ver}.")
+if(LLVM_VERSION_MAJOR AND NOT (CMAKE_CXX_COMPILER_ID MATCHES "[Cc]lang" AND
+  ${CMAKE_CXX_COMPILER_VERSION} VERSION_EQUAL "${req_ver}"))
+  message(WARNING "libc for GPU requires an up-to-date clang. CMake compiler "
+    "'${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}' "
+    " is not 'Clang ${req_ver}'.")
 endif()
 if(NOT LLVM_LIBC_FULL_BUILD)
   message(FATAL_ERROR "LLVM_LIBC_FULL_BUILD must be enabled to build libc for "
-                      "GPU.")
+    "GPU.")
 endif()
 
-# Identify any locally installed GPUs to use for testing.
-find_program(LIBC_AMDGPU_ARCH
-             NAMES amdgpu-arch
-             PATHS ${LLVM_BINARY_DIR}/bin /opt/rocm/llvm/bin/)
-if(LIBC_AMDGPU_ARCH)
-  execute_process(COMMAND ${LIBC_AMDGPU_ARCH}
-                  OUTPUT_VARIABLE LIBC_AMDGPU_ARCH_OUTPUT
-                  OUTPUT_STRIP_TRAILING_WHITESPACE)
-  string(FIND "${LIBC_AMDGPU_ARCH_OUTPUT}" "\n" first_arch_string)
-  string(SUBSTRING "${LIBC_AMDGPU_ARCH_OUTPUT}" 0 ${first_arch_string}
-         arch_string)
-  if(arch_string)
-    set(LIBC_GPU_TARGET_ARCHITECTURE_IS_AMDGPU TRUE)
-    set(LIBC_GPU_TARGET_TRIPLE "amdgcn-amd-amdhsa")
-    set(LIBC_GPU_TARGET_ARCHITECTURE "${arch_string}")
+# Set the required flags globally so standard CMake utilities can compile.
+if(NOT CMAKE_CXX_COMPILER_TARGET)
+  set(CMAKE_REQUIRED_FLAGS "${LIBC_COMPILE_OPTIONS_DEFAULT}")
+endif()
+
+# Optionally set up a job pool to limit the number of GPU tests run in parallel.
+# This is sometimes necessary as running too many tests in parallel can cause
+# the GPU or driver to run out of resources.
+set(LIBC_GPU_TEST_JOBS "" CACHE STRING "Number of jobs to use for GPU tests")
+if(LIBC_GPU_TEST_JOBS)
+  set_property(GLOBAL PROPERTY JOB_POOLS LIBC_GPU_TEST_POOL=${LIBC_GPU_TEST_JOBS})
+  set(LIBC_HERMETIC_TEST_JOB_POOL JOB_POOL LIBC_GPU_TEST_POOL)
+else()
+  set(LIBC_GPU_TEST_JOBS 1)
+  set_property(GLOBAL PROPERTY JOB_POOLS LIBC_GPU_TEST_POOL=1)
+  set(LIBC_HERMETIC_TEST_JOB_POOL JOB_POOL LIBC_GPU_TEST_POOL)
+endif()
+
+set(LIBC_GPU_TEST_ARCHITECTURE "" CACHE STRING "Architecture for the GPU tests")
+if(LIBC_TARGET_ARCHITECTURE_IS_AMDGPU)
+  check_cxx_compiler_flag(-mcpu=native PLATFORM_HAS_GPU)
+elseif(LIBC_TARGET_ARCHITECTURE_IS_NVPTX)
+  check_cxx_compiler_flag(-march=native PLATFORM_HAS_GPU)
+endif()
+
+set(gpu_test_architecture "")
+if(DEFINED LLVM_TARGETS_TO_BUILD AND LIBC_TARGET_ARCHITECTURE_IS_AMDGPU
+  AND NOT "AMDGPU" IN_LIST LLVM_TARGETS_TO_BUILD)
+  set(LIBC_GPU_TESTS_DISABLED TRUE)
+  message(STATUS "AMDGPU backend is not available, tests will not be built")
+elseif(DEFINED LLVM_TARGETS_TO_BUILD AND LIBC_TARGET_ARCHITECTURE_IS_NVPTX
+    AND NOT "NVPTX" IN_LIST LLVM_TARGETS_TO_BUILD)
+  set(LIBC_GPU_TESTS_DISABLED TRUE)
+  message(STATUS "NVPTX backend is not available, tests will not be built")
+elseif(LIBC_GPU_TEST_ARCHITECTURE)
+  set(LIBC_GPU_TESTS_DISABLED FALSE)
+  set(gpu_test_architecture ${LIBC_GPU_TEST_ARCHITECTURE})
+  message(STATUS "Using user-specified GPU architecture for testing: "
+    "'${gpu_test_architecture}'")
+elseif(PLATFORM_HAS_GPU)
+  set(LIBC_GPU_TESTS_DISABLED FALSE)
+  set(gpu_test_architecture "native")
+  message(STATUS "Using GPU architecture detected on the system for testing: "
+    "'native'")
+else()
+  set(LIBC_GPU_TESTS_DISABLED TRUE)
+  message(STATUS "No GPU architecture detected or provided, tests will not be "
+    "built")
+endif()
+set(LIBC_GPU_TARGET_ARCHITECTURE "${gpu_test_architecture}")
+
+# The AMDGPU environment uses different code objects to encode the ABI for
+# kernel calls and intrinsic functions. We want to expose this to conform to
+# whatever the test suite was built to handle.
+set(LIBC_GPU_CODE_OBJECT_VERSION "6" CACHE STRING "AMDGPU Code object ABI to use")
+
+if(LIBC_TARGET_ARCHITECTURE_IS_NVPTX)
+  # Respect the standard CUDAToolkit_ROOT override if the user provided one,
+  # otherwise ask the compiler which CUDA installation it detected.
+  if(CUDAToolkit_ROOT)
+    set(LIBC_CUDA_ROOT "${CUDAToolkit_ROOT}")
+  else()
+    execute_process(
+      COMMAND ${CMAKE_CXX_COMPILER} -v --print-resource-dir
+      OUTPUT_QUIET ERROR_VARIABLE cuda_search_output)
+    string(REGEX MATCH "Found CUDA installation: ([^,]+), version"
+      cuda_search_match "${cuda_search_output}")
+    if(CMAKE_MATCH_1)
+      set(LIBC_CUDA_ROOT "${CMAKE_MATCH_1}")
+    endif()
   endif()
 endif()
-# TODO: Check for Nvidia GPUs.

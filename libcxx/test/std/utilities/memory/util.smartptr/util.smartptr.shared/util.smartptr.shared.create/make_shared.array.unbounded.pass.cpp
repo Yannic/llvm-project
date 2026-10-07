@@ -8,10 +8,6 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
-// Aligned deallocation isn't provided before macOS 10.14, and some tests for overaligned types
-// below require that feature.
-// XFAIL: use_system_cxx_lib && target={{.+}}-apple-macosx{{10.9|10.10|10.11|10.12|10.13}}
-
 // <memory>
 
 // shared_ptr
@@ -107,6 +103,17 @@ int main(int, char**) {
         assert(ptr[i][1][1] == 0);
         assert(ptr[i][2][0] == 0);
         assert(ptr[i][2][1] == 0);
+      }
+    }
+    {
+      // https://llvm.org/PR169765
+      // Ensure that the allocated size is properly rounded up
+      using Array                = char[][3];
+      std::shared_ptr<Array> ptr = std::make_shared<Array>(3);
+      for (unsigned i = 0; i < 3; ++i) {
+        assert(ptr[i][0] == '\0');
+        assert(ptr[i][1] == '\0');
+        assert(ptr[i][2] == '\0');
       }
     }
 

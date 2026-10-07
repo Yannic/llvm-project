@@ -14,7 +14,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/ELFObjectFile.h"
@@ -24,7 +23,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/YAMLTraits.h"
-#include <algorithm>
+#include "llvm/TargetParser/Triple.h"
 #include <cstddef>
 #include <cstdint>
 #include <system_error>
@@ -60,9 +59,12 @@ loadObj(StringRef Filename, object::OwningBinary<object::ObjectFile> &ObjFile,
   // Find the section named "xray_instr_map".
   if ((!ObjFile.getBinary()->isELF() && !ObjFile.getBinary()->isMachO()) ||
       !(ObjFile.getBinary()->getArch() == Triple::x86_64 ||
+        ObjFile.getBinary()->getArch() == Triple::loongarch64 ||
         ObjFile.getBinary()->getArch() == Triple::ppc64le ||
         ObjFile.getBinary()->getArch() == Triple::arm ||
-        ObjFile.getBinary()->getArch() == Triple::aarch64))
+        ObjFile.getBinary()->getArch() == Triple::aarch64 ||
+        ObjFile.getBinary()->getArch() == Triple::riscv64 ||
+        ObjFile.getBinary()->getArch() == Triple::systemz))
     return make_error<StringError>(
         "File format not supported (only does ELF and Mach-O little endian "
         "64-bit).",
@@ -166,9 +168,8 @@ loadObj(StringRef Filename, object::OwningBinary<object::ObjectFile> &ObjFile,
   int32_t FuncId = 1;
   uint64_t CurFn = 0;
   for (; C != Contents.bytes_end(); C += ELFSledEntrySize) {
-    DataExtractor Extractor(
-        StringRef(reinterpret_cast<const char *>(C), ELFSledEntrySize), true,
-        8);
+    DataExtractor Extractor(ArrayRef<uint8_t>(C, ELFSledEntrySize),
+                            ObjFile.getBinary()->isLittleEndian());
     Sleds.push_back({});
     auto &Entry = Sleds.back();
     uint64_t OffsetPtr = 0;

@@ -13,13 +13,17 @@
 #ifndef MLIR_DIALECT_SCF_SCF_H
 #define MLIR_DIALECT_SCF_SCF_H
 
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/DeviceMappingInterface.h"
+#include "mlir/Dialect/SCF/IR/SCFDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/RegionKindInterface.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Interfaces/ParallelCombiningOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
@@ -30,19 +34,11 @@ void buildTerminatedBody(OpBuilder &builder, Location loc);
 } // namespace scf
 } // namespace mlir
 
-#include "mlir/Dialect/SCF/IR/SCFOpsDialect.h.inc"
-
 #define GET_OP_CLASSES
 #include "mlir/Dialect/SCF/IR/SCFOps.h.inc"
 
 namespace mlir {
 namespace scf {
-
-// Insert `loop.yield` at the end of the only region's only block if it
-// does not have a terminator already.  If a new `loop.yield` is inserted,
-// the location is specified by `loc`. If the region is empty, insert a new
-// block first.
-void ensureLoopTerminator(Region &region, Builder &builder, Location loc);
 
 /// Returns the loop parent of an induction variable. If the provided value is
 /// not an induction variable, then return nullptr.
@@ -52,14 +48,17 @@ ForOp getForInductionVarOwner(Value val);
 /// value is not an induction variable, then return nullptr.
 ParallelOp getParallelForInductionVarOwner(Value val);
 
-/// Returns the ForeachThreadOp parent of an thread index variable.
+/// Returns the ForallOp parent of an thread index variable.
 /// If the provided value is not a thread index variable, then return nullptr.
-ForeachThreadOp getForeachThreadOpThreadIndexOwner(Value val);
+ForallOp getForallOpThreadIndexOwner(Value val);
 
 /// Return true if ops a and b (or their ancestors) are in mutually exclusive
 /// regions/blocks of an IfOp.
 // TODO: Consider moving this functionality to RegionBranchOpInterface.
 bool insideMutuallyExclusiveBranches(Operation *a, Operation *b);
+
+/// Promotes the loop body of a scf::ForallOp to its containing block.
+void promote(RewriterBase &rewriter, scf::ForallOp forallOp);
 
 /// An owning vector of values, handy to return from functions.
 using ValueVector = SmallVector<Value>;
@@ -101,6 +100,21 @@ LoopNest buildLoopNest(OpBuilder &builder, Location loc, ValueRange lbs,
                        ValueRange ubs, ValueRange steps,
                        function_ref<void(OpBuilder &, Location, ValueRange)>
                            bodyBuilder = nullptr);
+
+/// Perform a replacement of one iter OpOperand of an scf.for to the
+/// `replacement` value with a different type. A callback is used to insert
+/// cast ops inside the block to account for type differences.
+using ValueTypeCastFnTy =
+    llvm::function_ref<Value(OpBuilder &, Location loc, Type, Value)>;
+SmallVector<Value> replaceAndCastForOpIterArg(RewriterBase &rewriter,
+                                              scf::ForOp forOp,
+                                              OpOperand &operand,
+                                              Value replacement,
+                                              const ValueTypeCastFnTy &castFn);
+
+/// Helper function to compute the difference between two values. This is used
+/// by the loop implementations to compute the trip count.
+std::optional<llvm::APSInt> computeUbMinusLb(Value lb, Value ub, bool isSigned);
 
 } // namespace scf
 } // namespace mlir

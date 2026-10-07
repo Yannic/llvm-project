@@ -7,20 +7,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/__support/FPUtil/ManipulationFunctions.h"
+#include "test/UnitTest/FEnvSafeTest.h"
+#include "test/UnitTest/FPMatcher.h"
+#include "test/UnitTest/Test.h"
 #include "utils/MPFRWrapper/MPFRUtils.h"
-#include "utils/UnitTest/FPMatcher.h"
-#include "utils/UnitTest/Test.h"
 
-#include <math.h>
+#include "hdr/math_macros.h"
 
-namespace mpfr = __llvm_libc::testing::mpfr;
+namespace mpfr = LIBC_NAMESPACE::testing::mpfr;
 
-template <typename T> class LogbTest : public __llvm_libc::testing::Test {
+template <typename T>
+class LogbTest : public LIBC_NAMESPACE::testing::FEnvSafeTest {
 
   DECLARE_SPECIAL_CONSTANTS(T)
 
-  static constexpr UIntType HIDDEN_BIT =
-      UIntType(1) << __llvm_libc::fputil::MantissaWidth<T>::VALUE;
+  static constexpr StorageType HIDDEN_BIT =
+      StorageType(1) << LIBC_NAMESPACE::fputil::FPBits<T>::FRACTION_LEN;
 
 public:
   typedef T (*LogbFunc)(T);
@@ -71,24 +73,24 @@ public:
   }
 
   void testRange(LogbFunc func) {
-    using UIntType = typename FPBits::UIntType;
-    constexpr UIntType COUNT = 10000000;
-    constexpr UIntType STEP = UIntType(-1) / COUNT;
-    for (UIntType i = 0, v = 0; i <= COUNT; ++i, v += STEP) {
-      T x = static_cast<T>(FPBits(v));
-      if (isnan(x) || isinf(x) || x == 0.0l)
+    using StorageType = typename FPBits::StorageType;
+    constexpr StorageType COUNT = 1'231;
+    constexpr StorageType STEP = STORAGE_MAX / COUNT;
+    for (StorageType i = 0, v = 0; i <= COUNT; ++i, v += STEP) {
+      T x = FPBits(v).get_val();
+      if (FPBits(v).is_nan() || FPBits(v).is_inf() || x == 0.0l)
         continue;
 
       int exponent;
-      __llvm_libc::fputil::frexp(x, exponent);
+      LIBC_NAMESPACE::fputil::frexp(x, exponent);
       ASSERT_FP_EQ(T(exponent), func(x) + T(1.0));
     }
   }
 };
 
-#define LIST_LOGB_TESTS(T, func)                                               \
-  using LlvmLibcLogbTest = LogbTest<T>;                                        \
-  TEST_F(LlvmLibcLogbTest, SpecialNumbers) { testSpecialNumbers(&func); }      \
-  TEST_F(LlvmLibcLogbTest, PowersOfTwo) { testPowersOfTwo(&func); }            \
-  TEST_F(LlvmLibcLogbTest, SomeIntegers) { testSomeIntegers(&func); }          \
-  TEST_F(LlvmLibcLogbTest, InRange) { testRange(&func); }
+#define LIST_LOGB_TESTS(Name, T, func)                                         \
+  using LlvmLibc##Name##Test = LogbTest<T>;                                    \
+  TEST_F(LlvmLibc##Name##Test, SpecialNumbers) { testSpecialNumbers(&func); }  \
+  TEST_F(LlvmLibc##Name##Test, PowersOfTwo) { testPowersOfTwo(&func); }        \
+  TEST_F(LlvmLibc##Name##Test, SomeIntegers) { testSomeIntegers(&func); }      \
+  TEST_F(LlvmLibc##Name##Test, InRange) { testRange(&func); }

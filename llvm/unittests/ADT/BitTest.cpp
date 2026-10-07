@@ -247,6 +247,67 @@ TEST(BitTest, BitWidth) {
   EXPECT_EQ(64, llvm::bit_width(uint64_t(0xffffffffffffffffull)));
 }
 
+TEST(BitTest, BitWidthConstexpr) {
+  static_assert(llvm::bit_width_constexpr(0u) == 0);
+  static_assert(llvm::bit_width_constexpr(1u) == 1);
+  static_assert(llvm::bit_width_constexpr(2u) == 2);
+  static_assert(llvm::bit_width_constexpr(3u) == 2);
+  static_assert(llvm::bit_width_constexpr(4u) == 3);
+  static_assert(llvm::bit_width_constexpr(5u) == 3);
+  static_assert(llvm::bit_width_constexpr(6u) == 3);
+  static_assert(llvm::bit_width_constexpr(7u) == 3);
+  static_assert(llvm::bit_width_constexpr(8u) == 4);
+
+  static_assert(llvm::bit_width_constexpr(255u) == 8);
+  static_assert(llvm::bit_width_constexpr(256u) == 9);
+  static_assert(llvm::bit_width_constexpr(257u) == 9);
+
+  static_assert(
+      llvm::bit_width_constexpr(std::numeric_limits<uint16_t>::max()) == 16);
+  static_assert(
+      llvm::bit_width_constexpr(std::numeric_limits<uint32_t>::max()) == 32);
+  static_assert(
+      llvm::bit_width_constexpr(std::numeric_limits<uint64_t>::max()) == 64);
+}
+
+TEST(BitTest, BitCeilConstexpr) {
+  static_assert(llvm::bit_ceil_constexpr(0u) == 1);
+  static_assert(llvm::bit_ceil_constexpr(1u) == 1);
+  static_assert(llvm::bit_ceil_constexpr(2u) == 2);
+  static_assert(llvm::bit_ceil_constexpr(3u) == 4);
+  static_assert(llvm::bit_ceil_constexpr(4u) == 4);
+  static_assert(llvm::bit_ceil_constexpr(5u) == 8);
+  static_assert(llvm::bit_ceil_constexpr(6u) == 8);
+  static_assert(llvm::bit_ceil_constexpr(7u) == 8);
+  static_assert(llvm::bit_ceil_constexpr(8u) == 8);
+
+  static_assert(llvm::bit_ceil_constexpr(255u) == 256);
+  static_assert(llvm::bit_ceil_constexpr(256u) == 256);
+  static_assert(llvm::bit_ceil_constexpr(257u) == 512);
+}
+
+TEST(BitTest, CountrZeroConstexpr) {
+  static_assert(llvm::countr_zero_constexpr(0u) == 32);
+  static_assert(llvm::countr_zero_constexpr(1u) == 0);
+  static_assert(llvm::countr_zero_constexpr(2u) == 1);
+  static_assert(llvm::countr_zero_constexpr(3u) == 0);
+  static_assert(llvm::countr_zero_constexpr(4u) == 2);
+  static_assert(llvm::countr_zero_constexpr(8u) == 3);
+  static_assert(llvm::countr_zero_constexpr(0x80000000u) == 31);
+
+  static_assert(llvm::countr_zero_constexpr(0ull) == 64);
+  static_assert(llvm::countr_zero_constexpr(1ull) == 0);
+  static_assert(llvm::countr_zero_constexpr(0x100000000ull) == 32);
+  static_assert(llvm::countr_zero_constexpr(0x8000000000000000ull) == 63);
+
+  static_assert(
+      llvm::countr_zero_constexpr(std::numeric_limits<uint16_t>::max()) == 0);
+  static_assert(
+      llvm::countr_zero_constexpr(std::numeric_limits<uint32_t>::max()) == 0);
+  static_assert(
+      llvm::countr_zero_constexpr(std::numeric_limits<uint64_t>::max()) == 0);
+}
+
 TEST(BitTest, CountlZero) {
   uint8_t Z8 = 0;
   uint16_t Z16 = 0;
@@ -297,6 +358,14 @@ TEST(BitTest, CountrZero) {
   EXPECT_EQ(1, llvm::countr_zero(NZ16));
   EXPECT_EQ(1, llvm::countr_zero(NZ32));
   EXPECT_EQ(1, llvm::countr_zero(NZ64));
+
+  EXPECT_EQ(0, llvm::countr_zero(uint8_t(1)));
+  EXPECT_EQ(3, llvm::countr_zero(uint8_t(8)));
+  EXPECT_EQ(7, llvm::countr_zero(uint8_t(128)));
+
+  EXPECT_EQ(0, llvm::countr_zero(uint16_t(1)));
+  EXPECT_EQ(8, llvm::countr_zero(uint16_t(256)));
+  EXPECT_EQ(15, llvm::countr_zero(uint16_t(32768)));
 }
 
 TEST(BitTest, CountlOne) {
@@ -352,6 +421,50 @@ TEST(BitTest, PopCount) {
 
   for (int I = 0; I != 32; ++I)
     EXPECT_EQ(1, llvm::popcount(1U << I));
+}
+
+TEST(BitTest, Rotl) {
+  EXPECT_EQ(0x53U, llvm::rotl<uint8_t>(0x53, 0));
+  EXPECT_EQ(0x4dU, llvm::rotl<uint8_t>(0x53, 2));
+  EXPECT_EQ(0xa6U, llvm::rotl<uint8_t>(0x53, 9));
+  EXPECT_EQ(0x9aU, llvm::rotl<uint8_t>(0x53, -5));
+
+  EXPECT_EQ(0xabcdU, llvm::rotl<uint16_t>(0xabcd, 0));
+  EXPECT_EQ(0xf36aU, llvm::rotl<uint16_t>(0xabcd, 6));
+  EXPECT_EQ(0xaf36U, llvm::rotl<uint16_t>(0xabcd, 18));
+  EXPECT_EQ(0xf36aU, llvm::rotl<uint16_t>(0xabcd, -10));
+
+  EXPECT_EQ(0xdeadbeefU, llvm::rotl<uint32_t>(0xdeadbeef, 0));
+  EXPECT_EQ(0x7ddfbd5bU, llvm::rotl<uint32_t>(0xdeadbeef, 17));
+  EXPECT_EQ(0x5b7ddfbdU, llvm::rotl<uint32_t>(0xdeadbeef, 41));
+  EXPECT_EQ(0xb6fbbf7aU, llvm::rotl<uint32_t>(0xdeadbeef, -22));
+
+  EXPECT_EQ(0x12345678deadbeefULL, llvm::rotl<uint64_t>(0x12345678deadbeefULL, 0));
+  EXPECT_EQ(0xf56df77891a2b3c6ULL, llvm::rotl<uint64_t>(0x12345678deadbeefULL, 35));
+  EXPECT_EQ(0x8d159e37ab6fbbc4ULL, llvm::rotl<uint64_t>(0x12345678deadbeefULL, 70));
+  EXPECT_EQ(0xb7dde2468acf1bd5ULL, llvm::rotl<uint64_t>(0x12345678deadbeefULL, -19));
+}
+
+TEST(BitTest, Rotr) {
+  EXPECT_EQ(0x53U, llvm::rotr<uint8_t>(0x53, 0));
+  EXPECT_EQ(0xd4U, llvm::rotr<uint8_t>(0x53, 2));
+  EXPECT_EQ(0xa9U, llvm::rotr<uint8_t>(0x53, 9));
+  EXPECT_EQ(0x6aU, llvm::rotr<uint8_t>(0x53, -5));
+
+  EXPECT_EQ(0xabcdU, llvm::rotr<uint16_t>(0xabcd, 0));
+  EXPECT_EQ(0x36afU, llvm::rotr<uint16_t>(0xabcd, 6));
+  EXPECT_EQ(0x6af3U, llvm::rotr<uint16_t>(0xabcd, 18));
+  EXPECT_EQ(0x36afU, llvm::rotr<uint16_t>(0xabcd, -10));
+
+  EXPECT_EQ(0xdeadbeefU, llvm::rotr<uint32_t>(0xdeadbeef, 0));
+  EXPECT_EQ(0xdf77ef56U, llvm::rotr<uint32_t>(0xdeadbeef, 17));
+  EXPECT_EQ(0x77ef56dfU, llvm::rotr<uint32_t>(0xdeadbeef, 41));
+  EXPECT_EQ(0xbbf7ab6fU, llvm::rotr<uint32_t>(0xdeadbeef, -22));
+
+  EXPECT_EQ(0x12345678deadbeefULL, llvm::rotr<uint64_t>(0x12345678deadbeefULL, 0));
+  EXPECT_EQ(0x1bd5b7dde2468acfULL, llvm::rotr<uint64_t>(0x12345678deadbeefULL, 35));
+  EXPECT_EQ(0xbc48d159e37ab6fbULL, llvm::rotr<uint64_t>(0x12345678deadbeefULL, 70));
+  EXPECT_EQ(0xb3c6f56df77891a2ULL, llvm::rotr<uint64_t>(0x12345678deadbeefULL, -19));
 }
 
 } // anonymous namespace

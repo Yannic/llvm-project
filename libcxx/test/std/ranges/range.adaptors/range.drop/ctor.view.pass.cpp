@@ -8,12 +8,19 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
-// constexpr drop_view(V base, range_difference_t<V> count);
+// constexpr explicit drop_view(V base, range_difference_t<V> count);  // explicit since C++23
 
+#include <cassert>
 #include <ranges>
 
+#include "test_convertible.h"
 #include "test_macros.h"
 #include "types.h"
+
+// SFINAE tests.
+
+static_assert(!test_convertible<std::ranges::drop_view<View>, View, std::ranges::range_difference_t<View>>(),
+              "This constructor must be explicit");
 
 constexpr bool test() {
   std::ranges::drop_view dropView1(MoveOnlyView(), 4);

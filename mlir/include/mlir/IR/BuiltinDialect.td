@@ -24,6 +24,9 @@ def Builtin_Dialect : Dialect {
   let useDefaultAttributePrinterParser = 0;
   let useDefaultTypePrinterParser = 0;
   let extraClassDeclaration = [{
+    std::optional<BuiltinDialectVersion> getVersion() const { return version; }
+    void setVersion(std::optional<BuiltinDialectVersion> v) { version = v; }
+
   private:
     // Register the builtin Attributes.
     void registerAttributes();
@@ -32,10 +35,9 @@ def Builtin_Dialect : Dialect {
     // Register the builtin Types.
     void registerTypes();
 
-  public:
+    std::optional<BuiltinDialectVersion> version;
   }];
 
-  let useFoldAPI = kEmitFoldAdaptorFolder;
 }
 
 #endif // BUILTIN_BASE

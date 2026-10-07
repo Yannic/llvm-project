@@ -6,21 +6,20 @@
 //
 //===----------------------------------------------------------------------===//
 
-// REQUIRES: has-unix-headers
-// UNSUPPORTED: c++03
-// XFAIL: use_system_cxx_lib && target={{.+}}-apple-macosx{{10.9|10.10|10.11|10.12|10.13|10.14|10.15|11.0|12.0}}
-// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_ENABLE_ASSERTIONS=1
+// REQUIRES: can-test-hardening-assertions-debug
+// UNSUPPORTED: c++03, c++11, c++14
 
 // <filesystem>
 
 // class path
 
-#include "filesystem_include.h"
+#include <filesystem>
 #include <iterator>
 #include <type_traits>
 #include <cassert>
 
 #include "check_assertion.h"
+namespace fs = std::filesystem;
 
 int main(int, char**) {
   // Test incrementing/decrementing a singular iterator

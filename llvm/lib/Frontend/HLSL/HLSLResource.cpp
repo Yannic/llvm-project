@@ -11,46 +11,34 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Frontend/HLSL/HLSLResource.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Metadata.h"
-#include "llvm/IR/Module.h"
+#include "llvm/IR/DerivedTypes.h"
 
 using namespace llvm;
 using namespace llvm::hlsl;
 
-GlobalVariable *FrontendResource::getGlobalVariable() {
-  return cast<GlobalVariable>(
-      cast<ConstantAsMetadata>(Entry->getOperand(0))->getValue());
-}
+dxil::ElementType hlsl::getDXILElementType(Type *Ty, bool IsSigned) {
+  // TODO: Handle unorm, snorm, and packed.
+  Ty = Ty->getScalarType();
 
-StringRef FrontendResource::getSourceType() {
-  return cast<MDString>(Entry->getOperand(1))->getString();
-}
+  if (Ty->isIntegerTy()) {
+    switch (Ty->getIntegerBitWidth()) {
+    case 16:
+      return IsSigned ? dxil::ElementType::I16 : dxil::ElementType::U16;
+    case 32:
+      return IsSigned ? dxil::ElementType::I32 : dxil::ElementType::U32;
+    case 64:
+      return IsSigned ? dxil::ElementType::I64 : dxil::ElementType::U64;
+    case 1:
+    default:
+      return dxil::ElementType::Invalid;
+    }
+  } else if (Ty->isFloatTy()) {
+    return dxil::ElementType::F32;
+  } else if (Ty->isDoubleTy()) {
+    return dxil::ElementType::F64;
+  } else if (Ty->isHalfTy()) {
+    return dxil::ElementType::F16;
+  }
 
-uint32_t FrontendResource::FrontendResource::getResourceKind() {
-  return cast<ConstantInt>(
-             cast<ConstantAsMetadata>(Entry->getOperand(2))->getValue())
-      ->getLimitedValue();
-}
-uint32_t FrontendResource::getResourceIndex() {
-  return cast<ConstantInt>(
-             cast<ConstantAsMetadata>(Entry->getOperand(3))->getValue())
-      ->getLimitedValue();
-}
-uint32_t FrontendResource::getSpace() {
-  return cast<ConstantInt>(
-             cast<ConstantAsMetadata>(Entry->getOperand(4))->getValue())
-      ->getLimitedValue();
-}
-
-FrontendResource::FrontendResource(GlobalVariable *GV, StringRef TypeStr,
-                                   ResourceKind RK, uint32_t ResIndex,
-                                   uint32_t Space) {
-  auto &Ctx = GV->getContext();
-  IRBuilder<> B(Ctx);
-  Entry = MDNode::get(
-      Ctx, {ValueAsMetadata::get(GV), MDString::get(Ctx, TypeStr),
-            ConstantAsMetadata::get(B.getInt32(static_cast<int>(RK))),
-            ConstantAsMetadata::get(B.getInt32(ResIndex)),
-            ConstantAsMetadata::get(B.getInt32(Space))});
+  return dxil::ElementType::Invalid;
 }

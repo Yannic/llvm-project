@@ -13,15 +13,18 @@
 #ifndef LLVM_LIB_CODEGEN_ASMPRINTER_CODEVIEWDEBUG_H
 #define LLVM_LIB_CODEGEN_ASMPRINTER_CODEVIEWDEBUG_H
 
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/DbgEntityHistoryCalculator.h"
 #include "llvm/CodeGen/DebugHandlerBase.h"
+#include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/DebugInfo/CodeView/GlobalTypeTableBuilder.h"
 #include "llvm/DebugInfo/CodeView/TypeIndex.h"
@@ -60,29 +63,44 @@ public:
     int DataOffset : 31;
 
     /// Non-zero if this is a piece of an aggregate.
-    uint16_t IsSubfield : 1;
+    uint32_t IsSubfield : 1;
 
     /// Offset into aggregate.
-    uint16_t StructOffset : 15;
+    uint32_t StructOffset : 15;
 
     /// Register containing the data or the register base of the memory
     /// location containing the data.
-    uint16_t CVRegister;
+    uint32_t CVRegister : 16;
 
-    uint64_t static toOpaqueValue(const LocalVarDef DR) {
-      uint64_t Val = 0;
-      std::memcpy(&Val, &DR, sizeof(Val));
-      return Val;
+    /// Value for `DerefOffset` indicating this is not an indirect load.
+    constexpr static int32_t NoDeref = INT32_MIN;
+
+    /// Offset to add after dereferencing `CVRegister + DataOffset` for
+    /// indirect loads. If this is not an indirect load, it's set to NoDeref.
+    int32_t DerefOffset = NoDeref;
+
+    static LocalVarDef emptyValue() {
+      LocalVarDef V;
+      std::memset(&V, 0xff, sizeof(LocalVarDef));
+      return V;
     }
 
-    LocalVarDef static createFromOpaqueValue(uint64_t Val) {
-      LocalVarDef DR;
-      std::memcpy(&DR, &Val, sizeof(Val));
-      return DR;
+    unsigned hashValue() const {
+      uint64_t H = 0;
+      std::memcpy(&H, this, sizeof(uint64_t));
+      static_assert(sizeof(LocalVarDef) == 8 + 4 &&
+                    offsetof(LocalVarDef, DerefOffset) == 8);
+      H = hash_combine(H, DerefOffset);
+      return H;
+    }
+
+    bool operator==(const LocalVarDef &Other) const {
+      return InMemory == Other.InMemory && DataOffset == Other.DataOffset &&
+             IsSubfield == Other.IsSubfield &&
+             StructOffset == Other.StructOffset &&
+             CVRegister == Other.CVRegister && DerefOffset == Other.DerefOffset;
     }
   };
-
-  static_assert(sizeof(uint64_t) == sizeof(LocalVarDef));
 
 private:
   MCStreamer &OS;
@@ -95,7 +113,14 @@ private:
   /// The codeview CPU type used by the translation unit.
   codeview::CPUType TheCPU;
 
-  static LocalVarDef createDefRangeMem(uint16_t CVRegister, int Offset);
+  const DICompileUnit *TheCU = nullptr;
+
+  /// The AsmPrinter used for emitting compiler metadata. When only compiler
+  /// info is being emitted, DebugHandlerBase::Asm may be null.
+  AsmPrinter *CompilerInfoAsm = nullptr;
+
+  static LocalVarDef createDefRangeMem(uint16_t CVRegister, int Offset,
+                                       int32_t DerefOffset);
 
   /// Similar to DbgVariable in DwarfDebug, but not dwarf-specific.
   struct LocalVariable {
@@ -103,7 +128,6 @@ private:
     MapVector<LocalVarDef,
               SmallVector<std::pair<const MCSymbol *, const MCSymbol *>, 1>>
         DefRanges;
-    bool UseReferenceType = false;
     std::optional<APSInt> ConstantValue;
   };
 
@@ -132,6 +156,16 @@ private:
     StringRef Name;
   };
 
+  struct JumpTableInfo {
+    codeview::JumpTableEntrySize EntrySize;
+    const MCSymbol *Base;
+    uint64_t BaseOffset;
+    const MCSymbol *Branch;
+    const MCSymbol *Table;
+    size_t TableSize;
+    std::vector<const MCSymbol *> Cases;
+  };
+
   // For each function, store a vector of labels to its instructions, as well as
   // to the end of the function.
   struct FunctionInfo {
@@ -147,6 +181,9 @@ private:
     /// Ordered list of top-level inlined call sites.
     SmallVector<const DILocation *, 1> ChildSites;
 
+    /// Set of all functions directly inlined into this one.
+    SmallSet<codeview::TypeIndex, 1> Inlinees;
+
     SmallVector<LocalVariable, 1> Locals;
     SmallVector<CVGlobalVariable, 1> Globals;
 
@@ -159,6 +196,8 @@ private:
     std::vector<std::tuple<const MCSymbol *, const MCSymbol *, const DIType *>>
         HeapAllocSites;
 
+    std::vector<JumpTableInfo> JumpTables;
+
     const MCSymbol *Begin = nullptr;
     const MCSymbol *End = nullptr;
     unsigned FuncId = 0;
@@ -166,9 +205,6 @@ private:
 
     /// Number of bytes allocated in the prologue for all local stack objects.
     unsigned FrameSize = 0;
-
-    /// Number of bytes of parameters on the stack.
-    unsigned ParamSize = 0;
 
     /// Number of bytes pushed to save CSRs.
     unsigned CSRSize = 0;
@@ -191,6 +227,8 @@ private:
     bool HasStackRealignment = false;
 
     bool HaveLineInfo = false;
+
+    bool HasFramePointer = false;
   };
   FunctionInfo *CurFn = nullptr;
 
@@ -201,7 +239,7 @@ private:
   // DIGlobalVariableExpression referencing the DIGlobalVariable.
   DenseMap<const DIGlobalVariable *, uint64_t> CVGlobalVariableOffsets;
 
-  // Map used to seperate variables according to the lexical scope they belong
+  // Map used to separate variables according to the lexical scope they belong
   // in.  This is populated by recordLocalVariable() before
   // collectLexicalBlocks() separates the variables between the FunctionInfo
   // and LexicalBlocks.
@@ -211,6 +249,8 @@ private:
   // belong in. A null local scope represents the global scope.
   typedef SmallVector<CVGlobalVariable, 1> GlobalVariableList;
   DenseMap<const DIScope*, std::unique_ptr<GlobalVariableList> > ScopeGlobals;
+  DenseMap<const DIGlobalVariableExpression *, const GlobalVariable *>
+      GlobalMap;
 
   // Array of global variables which  need to be emitted into a COMDAT section.
   SmallVector<CVGlobalVariable, 1> ComdatVariables;
@@ -314,6 +354,8 @@ private:
 
   void emitCompilerInformation();
 
+  void emitSecureHotPatchInformation();
+
   void emitBuildInfo();
 
   void emitInlineeLinesSubsection();
@@ -356,9 +398,13 @@ private:
   void emitInlinedCallSite(const FunctionInfo &FI, const DILocation *InlinedAt,
                            const InlineSite &Site);
 
+  void emitInlinees(const SmallSet<codeview::TypeIndex, 1> &Inlinees);
+
   using InlinedEntity = DbgValueHistoryMap::InlinedEntity;
 
   void collectGlobalVariableInfo();
+  void
+  collectGlobalOrStaticLocalVariableInfo(const DIGlobalVariableExpression *GVE);
   void collectVariableInfo(const DISubprogram *SP);
 
   void collectVariableInfoFromMFTable(DenseSet<InlinedEntity> &Processed);
@@ -400,8 +446,6 @@ private:
   codeview::TypeIndex
   getTypeIndexForThisPtr(const DIDerivedType *PtrTy,
                          const DISubroutineType *SubroutineTy);
-
-  codeview::TypeIndex getTypeIndexForReferenceTo(const DIType *Ty);
 
   codeview::TypeIndex getMemberFunctionType(const DISubprogram *SP,
                                             const DICompositeType *Class);
@@ -475,6 +519,10 @@ private:
 
   unsigned getPointerSizeInBytes();
 
+  void discoverJumpTableBranches(const MachineFunction *MF, bool isThumb);
+  void collectDebugInfoForJumpTables(const MachineFunction *MF, bool isThumb);
+  void emitDebugInfoForJumpTables(const FunctionInfo &FI);
+
 protected:
   /// Gather pre-function debug information.
   void beginFunctionImpl(const MachineFunction *MF) override;
@@ -492,8 +540,6 @@ public:
 
   void beginModule(Module *M) override;
 
-  void setSymbolSize(const MCSymbol *, uint64_t) override {}
-
   /// Emit the COFF section that holds the line table information.
   void endModule() override;
 
@@ -503,22 +549,13 @@ public:
 
 template <> struct DenseMapInfo<CodeViewDebug::LocalVarDef> {
 
-  static inline CodeViewDebug::LocalVarDef getEmptyKey() {
-    return CodeViewDebug::LocalVarDef::createFromOpaqueValue(~0ULL);
-  }
-
-  static inline CodeViewDebug::LocalVarDef getTombstoneKey() {
-    return CodeViewDebug::LocalVarDef::createFromOpaqueValue(~0ULL - 1ULL);
-  }
-
   static unsigned getHashValue(const CodeViewDebug::LocalVarDef &DR) {
-    return CodeViewDebug::LocalVarDef::toOpaqueValue(DR) * 37ULL;
+    return DR.hashValue();
   }
 
   static bool isEqual(const CodeViewDebug::LocalVarDef &LHS,
                       const CodeViewDebug::LocalVarDef &RHS) {
-    return CodeViewDebug::LocalVarDef::toOpaqueValue(LHS) ==
-           CodeViewDebug::LocalVarDef::toOpaqueValue(RHS);
+    return LHS == RHS;
   }
 };
 

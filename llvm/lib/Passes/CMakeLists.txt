@@ -1,10 +1,11 @@
 add_llvm_component_library(LLVMPasses
-  OptimizationLevel.cpp
+  CodeGenPassBuilder.cpp
   PassBuilder.cpp
   PassBuilderBindings.cpp
   PassBuilderPipelines.cpp
-  PassPlugin.cpp
+  RunCodeGen.cpp
   StandardInstrumentations.cpp
+  TriggerCrashPasses.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm
@@ -16,9 +17,13 @@ add_llvm_component_library(LLVMPasses
   LINK_COMPONENTS
   AggressiveInstCombine
   Analysis
+  AsmPrinter
+  CFGuard
   CodeGen
+  GlobalISel
   Core
   Coroutines
+  HipStdPar
   IPO
   InstCombine
   IRPrinter

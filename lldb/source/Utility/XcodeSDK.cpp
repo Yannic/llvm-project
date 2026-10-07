@@ -11,7 +11,7 @@
 
 #include "lldb/lldb-types.h"
 
-#include "llvm/ADT/Triple.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <string>
 
@@ -34,8 +34,12 @@ static llvm::StringRef GetName(XcodeSDK::Type type) {
     return "WatchSimulator";
   case XcodeSDK::watchOS:
     return "WatchOS";
-  case XcodeSDK::bridgeOS:
-    return "bridgeOS";
+  case XcodeSDK::XRSimulator:
+    return "XRSimulator";
+  case XcodeSDK::XROS:
+    return "XROS";
+  case XcodeSDK::BridgeOS:
+    return "BridgeOS";
   case XcodeSDK::Linux:
     return "Linux";
   case XcodeSDK::unknown:
@@ -56,7 +60,7 @@ XcodeSDK::XcodeSDK(XcodeSDK::Info info) : m_name(GetName(info.type).str()) {
 
 XcodeSDK &XcodeSDK::operator=(const XcodeSDK &other) = default;
 
-bool XcodeSDK::operator==(const XcodeSDK &other) {
+bool XcodeSDK::operator==(const XcodeSDK &other) const {
   return m_name == other.m_name;
 }
 
@@ -75,8 +79,12 @@ static XcodeSDK::Type ParseSDKName(llvm::StringRef &name) {
     return XcodeSDK::WatchSimulator;
   if (name.consume_front("WatchOS"))
     return XcodeSDK::watchOS;
-  if (name.consume_front("bridgeOS"))
-    return XcodeSDK::bridgeOS;
+  if (name.consume_front("XRSimulator"))
+    return XcodeSDK::XRSimulator;
+  if (name.consume_front("XROS"))
+    return XcodeSDK::XROS;
+  if (name.consume_front("BridgeOS"))
+    return XcodeSDK::BridgeOS;
   if (name.consume_front("Linux"))
     return XcodeSDK::Linux;
   static_assert(XcodeSDK::Linux == XcodeSDK::numSDKTypes - 1,
@@ -145,6 +153,10 @@ bool XcodeSDK::Info::operator==(const Info &other) const {
 }
 
 void XcodeSDK::Merge(const XcodeSDK &other) {
+  auto add_internal_sdk_suffix = [](llvm::StringRef sdk) {
+    return (sdk.substr(0, sdk.size() - 3) + "Internal.sdk").str();
+  };
+
   // The "bigger" SDK always wins.
   auto l = Parse();
   auto r = other.Parse();
@@ -152,10 +164,10 @@ void XcodeSDK::Merge(const XcodeSDK &other) {
     *this = other;
   else {
     // The Internal flag always wins.
-    if (llvm::StringRef(m_name).endswith(".sdk"))
-      if (!l.internal && r.internal)
-        m_name =
-            m_name.substr(0, m_name.size() - 3) + std::string("Internal.sdk");
+    if (!l.internal && r.internal) {
+      if (llvm::StringRef(m_name).ends_with(".sdk"))
+        m_name = add_internal_sdk_suffix(m_name);
+    }
   }
 }
 
@@ -183,7 +195,13 @@ std::string XcodeSDK::GetCanonicalName(XcodeSDK::Info info) {
   case watchOS:
     name = "watchos";
     break;
-  case bridgeOS:
+  case XRSimulator:
+    name = "xrsimulator";
+    break;
+  case XROS:
+    name = "xros";
+    break;
+  case BridgeOS:
     name = "bridgeos";
     break;
   case Linux:
@@ -212,6 +230,9 @@ bool XcodeSDK::SDKSupportsModules(XcodeSDK::Type sdk_type,
   case Type::watchOS:
   case Type::WatchSimulator:
     return version >= llvm::VersionTuple(6);
+  case Type::XROS:
+  case Type::XRSimulator:
+    return true;
   default:
     return false;
   }
@@ -219,35 +240,14 @@ bool XcodeSDK::SDKSupportsModules(XcodeSDK::Type sdk_type,
   return false;
 }
 
-bool XcodeSDK::SupportsSwift() const {
-  XcodeSDK::Info info = Parse();
-  switch (info.type) {
-  case Type::MacOSX:
-    return info.version.empty() || info.version >= llvm::VersionTuple(10, 10);
-  case Type::iPhoneOS:
-  case Type::iPhoneSimulator:
-    return info.version.empty() || info.version >= llvm::VersionTuple(8);
-  case Type::AppleTVSimulator:
-  case Type::AppleTVOS:
-    return info.version.empty() || info.version >= llvm::VersionTuple(9);
-  case Type::WatchSimulator:
-  case Type::watchOS:
-    return info.version.empty() || info.version >= llvm::VersionTuple(2);
-  case Type::Linux:
-    return true;
-  default:
-    return false;
-  }
-}
-
 bool XcodeSDK::SDKSupportsModules(XcodeSDK::Type desired_type,
                                   const FileSpec &sdk_path) {
-  ConstString last_path_component = sdk_path.GetLastPathComponent();
+  llvm::StringRef last_path_component = sdk_path.GetFilename();
 
-  if (!last_path_component)
+  if (last_path_component.empty())
     return false;
 
-  XcodeSDK sdk(last_path_component.GetStringRef().str());
+  XcodeSDK sdk(last_path_component.str());
   if (sdk.GetType() != desired_type)
     return false;
   return SDKSupportsModules(sdk.GetType(), sdk.GetVersion());
@@ -276,6 +276,10 @@ XcodeSDK::Type XcodeSDK::GetSDKTypeForTriple(const llvm::Triple &triple) {
     if (triple.getEnvironment() == Triple::Simulator)
       return XcodeSDK::WatchSimulator;
     return XcodeSDK::watchOS;
+  case Triple::XROS:
+    if (triple.getEnvironment() == Triple::Simulator)
+      return XcodeSDK::XRSimulator;
+    return XcodeSDK::XROS;
   case Triple::Linux:
     return XcodeSDK::Linux;
   default:
@@ -291,7 +295,7 @@ std::string XcodeSDK::FindXcodeContentsDirectoryInPath(llvm::StringRef path) {
   // .app. If the next component is Contents then we've found the Contents
   // directory.
   for (auto it = begin; it != end; ++it) {
-    if (it->endswith(".app")) {
+    if (it->ends_with(".app")) {
       auto next = it;
       if (++next != end && *next == "Contents") {
         llvm::SmallString<128> buffer;
@@ -303,4 +307,32 @@ std::string XcodeSDK::FindXcodeContentsDirectoryInPath(llvm::StringRef path) {
   }
 
   return {};
+}
+
+void XcodeSDKAndSysroot::Merge(const XcodeSDKAndSysroot &other) {
+  std::string old_name = m_sdk.GetString().str();
+  m_sdk.Merge(other.m_sdk);
+  llvm::StringRef new_name = m_sdk.GetString();
+  if (old_name == new_name)
+    return;
+
+  // The other SDK won outright, so its sysroot comes along with it.
+  if (new_name == other.m_sdk.GetString()) {
+    m_sysroot = other.m_sysroot;
+    return;
+  }
+
+  // Otherwise merging only added the Internal suffix to our own SDK name. The
+  // internal SDK is a sibling of the public one, so the sysroot can be renamed
+  // along with it.
+  if (m_sysroot.GetFileNameExtension() == ".sdk")
+    m_sysroot.SetFilename(new_name);
+}
+
+bool XcodeSDKAndSysroot::operator==(const XcodeSDKAndSysroot &other) const {
+  return m_sdk == other.m_sdk && m_sysroot == other.m_sysroot;
+}
+
+bool XcodeSDKAndSysroot::operator!=(const XcodeSDKAndSysroot &other) const {
+  return !(*this == other);
 }

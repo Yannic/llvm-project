@@ -10,7 +10,7 @@
 /// Atomic ordering constants.
 ///
 /// These values are used by LLVM to represent atomic ordering for C++11's
-/// memory model and more, as detailed in docs/Atomics.rst.
+/// memory model and more, as detailed in docs/Atomics.md.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -74,7 +74,8 @@ bool operator>=(AtomicOrdering, AtomicOrdering) = delete;
 // is a valid AtomicOrdering.
 template <typename Int> inline bool isValidAtomicOrdering(Int I) {
   return static_cast<Int>(AtomicOrdering::NotAtomic) <= I &&
-         I <= static_cast<Int>(AtomicOrdering::SequentiallyConsistent);
+         I <= static_cast<Int>(AtomicOrdering::SequentiallyConsistent) &&
+         I != 3;
 }
 
 /// String used by LLVM IR to represent atomic ordering.

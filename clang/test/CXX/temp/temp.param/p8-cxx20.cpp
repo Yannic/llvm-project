@@ -40,7 +40,7 @@ namespace ConstDestruction {
   };
 
   template<D d>
-  void f() {} // expected-note 2{{invalid explicitly-specified argument}}
+  void f() {} // expected-note 2{{non-type template argument is not a constant expression}}
 
   void g() {
     f<D{0, true}>();
@@ -61,5 +61,5 @@ namespace ConstDestruction {
 
   template<D d> struct Z {};
   Z<D{2, true}> z1;
-  Z<D{2, false}> z2; // expected-error {{non-type template argument is not a constant expression}} expected-note-re {{in call to '{{.*}}->~D()'}}
+  Z<D{2, false}> z2; // expected-error {{non-type template argument is not a constant expression}} expected-note-re {{in call to '{{.*}}.~D()'}}
 }

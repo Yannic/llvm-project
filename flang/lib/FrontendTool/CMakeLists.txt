@@ -8,21 +8,18 @@ add_flang_library(flangFrontendTool
 
   LINK_LIBS
   flangFrontend
-  MLIRPass
+  flangPasses
 
   LINK_COMPONENTS
   Option
+  Plugins
   Support
-)
 
-if(CLANG_LINK_CLANG_DYLIB)
-  add_dependencies(flangFrontend clang-cpp)
-else()
-  add_dependencies(flangFrontendTool clangBasic)
-endif()
+  MLIR_LIBS
+  MLIRPass
 
-clang_target_link_libraries(flangFrontendTool
-  PRIVATE
+  CLANG_LIBS
   clangBasic
+  clangOptions
   clangDriver
 )

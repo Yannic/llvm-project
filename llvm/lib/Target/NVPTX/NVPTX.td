@@ -14,131 +14,135 @@
 
 include "llvm/Target/Target.td"
 
+//===----------------------------------------------------------------------===//
+// PTX ISA versions.
+//===----------------------------------------------------------------------===//
+
+class FeaturePTX<int version, list<SubtargetFeature> implies>:
+   SubtargetFeature<"ptx" # version, "PTXVersion",
+                    "" # version,
+                    "Use PTX version " # version, implies>,
+   Predicate<"Subtarget->hasFeature(NVPTX::" # NAME # ")">;
+
+defvar PTXVersions = [32, 40, 41, 42, 43, 50, 60, 61, 62, 63, 64, 65, 70, 71,
+                      72, 73, 74, 75, 76, 77, 78, 80, 81, 82, 83, 84, 85, 86,
+                      87, 88, 90, 91, 92, 93, 94];
+
+foreach version = PTXVersions in
+  def PTX # version : FeaturePTX<version,
+                                 !foreach(earlier,
+                                      !filter(v, PTXVersions, !lt(v, version)),
+                                      !cast<SubtargetFeature>("PTX" # earlier))>;
+
+//===----------------------------------------------------------------------===//
+// Target architectures.
+//
+// Architectures are named sm_XYz, where 'X' is the generation, 'Y' the version
+// within the generation, and 'z' an optional feature suffix. Together they form
+// a lattice, spelled out below as `Implies` edges: sm_A implies sm_B exactly
+// when PTX written against sm_B is accepted for sm_A. Every edge is listed
+// rather than leaning on `Implies` being transitive, which costs nothing
+// because a feature's implied set is a fixed-size bitset either way. Asking
+// whether a target may use what sm_B introduced is then a single bit test.
+//
+// The three tiers below are the three portability guarantees the PTX ISA
+// defines for a `.target`; see the .target directive in the PTX ISA manual.
+//
+//  * Base architectures are portable: what they introduce is supported on all
+//    later architectures, including ones in other families. This is the "onion
+//    layer" model, and it makes them totally ordered by their number, so sm_120
+//    implies sm_110, which implies sm_107, and so on.
+//
+//  * A family-specific variant sm_XYf is portable within its family only, so
+//    sm_103f implies sm_100f. A family is the set of architectures sharing an
+//    SM major version. There are no edges between families, which is what makes
+//    sm_120f and sm_100f incomparable.
+//
+//  * An architecture-specific variant sm_XYa is not portable at all, so
+//    sm_103a implies sm_103f and nothing implies sm_103a.
+//
+// There is deliberately no numeric encoding of an architecture. Asking whether a
+// target may use something is a bit test against the node that introduced it,
+// which is what the partial order above requires; a number would only invite the
+// ordered comparisons it cannot answer.
+//===----------------------------------------------------------------------===//
+
+class FeatureSM<list<SubtargetFeature> implies>:
+   SubtargetFeature<"sm_"# !substr(NAME, 2), "HasArchitecture", "true",
+                    "Target SM " # !substr(NAME, 2), implies>,
+   Predicate<"Subtarget->hasFeature(NVPTX::" # NAME # ")"> {
+  assert !eq(!substr(NAME, 0, 2), "SM"),
+         "architecture record " # NAME # " must be named SM<version>";
+}
+
+class Proc<FeatureSM SM>
+ : Processor<SM.Name, NoItineraries, [SM]>;
+
+multiclass ProcSM<list<SubtargetFeature> implies> {
+  def NAME : FeatureSM<implies>;
+  def : Proc<!cast<FeatureSM>(NAME)>;
+}
+
+// Base architectures, in increasing order. Each implies the features of every
+// earlier one.
+defvar SMVersions = [20, 21, 30, 32, 35, 37, 50, 52, 53, 60,
+                     61, 62, 70, 72, 75, 80, 86, 87, 88, 89,
+                     90, 100, 103, 107, 110, 120, 121];
+
+foreach sm = SMVersions in
+  defm SM#sm : ProcSM<!foreach(earlier, !filter(v, SMVersions, !lt(v, sm)),
+                               !cast<SubtargetFeature>("SM"#earlier))>;
+
+// Defines the family-specific ('f') and architecture-specific ('a') variants of
+// the base architecture this is named after.
+multiclass FeatureSMVariants<list<SubtargetFeature> EarlierInFamily> {
+  defm f : ProcSM<[!cast<SubtargetFeature>(NAME)] # EarlierInFamily>;
+  defm a : ProcSM<[!cast<SubtargetFeature>(NAME # "f")]>;
+}
+
+// The families, each listed in increasing order, mirroring the architecture
+// family table in the PTX ISA manual.
+defvar SMFamilies = [[100, 103, 107],  // sm_10x
+                     [110],            // sm_11x
+                     [120, 121]];      // sm_12x
+
+foreach Family = SMFamilies in
+  foreach sm = Family in
+    defm SM#sm : FeatureSMVariants<
+        !foreach(earlier, !filter(v, Family, !lt(v, sm)),
+                 !cast<SubtargetFeature>("SM" # earlier # "f"))>;
+
+// sm_90 predates family-specific variants, so sm_90a is the only member of the
+// sm_9x family and stands in for its 'f' variant, which does not exist.
+defm SM90a : ProcSM<[SM90]>;
+
+// sm_101 was the name PTX 8.6 through 8.8 used for what PTX 9.0 renamed to
+// sm_110. The two names describe the same hardware, so they share a node rather
+// than duplicating one.
+def : ProcessorAlias<"sm_101", "sm_110">;
+def : ProcessorAlias<"sm_101f", "sm_110f">;
+def : ProcessorAlias<"sm_101a", "sm_110a">;
+
 include "NVPTXRegisterInfo.td"
 include "NVPTXInstrInfo.td"
 
-//===----------------------------------------------------------------------===//
-// Subtarget Features.
-// - We use the SM version number instead of explicit feature table.
-// - Need at least one feature to avoid generating zero sized array by
-//   TableGen in NVPTXGenSubtarget.inc.
-//===----------------------------------------------------------------------===//
+def Is64Bit : Predicate<"Subtarget->getTargetTriple().getArch() == Triple::nvptx64">;
+def NVPTX64 : HwMode<[Is64Bit]>;
 
-// SM Versions
-def SM20 : SubtargetFeature<"sm_20", "SmVersion", "20",
-                            "Target SM 2.0">;
-def SM21 : SubtargetFeature<"sm_21", "SmVersion", "21",
-                            "Target SM 2.1">;
-def SM30 : SubtargetFeature<"sm_30", "SmVersion", "30",
-                            "Target SM 3.0">;
-def SM32 : SubtargetFeature<"sm_32", "SmVersion", "32",
-                            "Target SM 3.2">;
-def SM35 : SubtargetFeature<"sm_35", "SmVersion", "35",
-                            "Target SM 3.5">;
-def SM37 : SubtargetFeature<"sm_37", "SmVersion", "37",
-                            "Target SM 3.7">;
-def SM50 : SubtargetFeature<"sm_50", "SmVersion", "50",
-                            "Target SM 5.0">;
-def SM52 : SubtargetFeature<"sm_52", "SmVersion", "52",
-                            "Target SM 5.2">;
-def SM53 : SubtargetFeature<"sm_53", "SmVersion", "53",
-                            "Target SM 5.3">;
-def SM60 : SubtargetFeature<"sm_60", "SmVersion", "60",
-                             "Target SM 6.0">;
-def SM61 : SubtargetFeature<"sm_61", "SmVersion", "61",
-                             "Target SM 6.1">;
-def SM62 : SubtargetFeature<"sm_62", "SmVersion", "62",
-                             "Target SM 6.2">;
-def SM70 : SubtargetFeature<"sm_70", "SmVersion", "70",
-                             "Target SM 7.0">;
-def SM72 : SubtargetFeature<"sm_72", "SmVersion", "72",
-                             "Target SM 7.2">;
-def SM75 : SubtargetFeature<"sm_75", "SmVersion", "75",
-                             "Target SM 7.5">;
-def SM80 : SubtargetFeature<"sm_80", "SmVersion", "80",
-                             "Target SM 8.0">;
-def SM86 : SubtargetFeature<"sm_86", "SmVersion", "86",
-                             "Target SM 8.6">;
-def SM87 : SubtargetFeature<"sm_87", "SmVersion", "87",
-                             "Target SM 8.7">;
-def SM89 : SubtargetFeature<"sm_89", "SmVersion", "89",
-                             "Target SM 8.9">;
-def SM90 : SubtargetFeature<"sm_90", "SmVersion", "90",
-                             "Target SM 9.0">;
+def nvptx_ptr_rc : RegClassByHwMode<
+  [DefaultMode, NVPTX64],
+  [B32, B64]>;
 
-// PTX Versions
-def PTX32 : SubtargetFeature<"ptx32", "PTXVersion", "32",
-                             "Use PTX version 3.2">;
-def PTX40 : SubtargetFeature<"ptx40", "PTXVersion", "40",
-                             "Use PTX version 4.0">;
-def PTX41 : SubtargetFeature<"ptx41", "PTXVersion", "41",
-                             "Use PTX version 4.1">;
-def PTX42 : SubtargetFeature<"ptx42", "PTXVersion", "42",
-                             "Use PTX version 4.2">;
-def PTX43 : SubtargetFeature<"ptx43", "PTXVersion", "43",
-                             "Use PTX version 4.3">;
-def PTX50 : SubtargetFeature<"ptx50", "PTXVersion", "50",
-                             "Use PTX version 5.0">;
-def PTX60 : SubtargetFeature<"ptx60", "PTXVersion", "60",
-                             "Use PTX version 6.0">;
-def PTX61 : SubtargetFeature<"ptx61", "PTXVersion", "61",
-                             "Use PTX version 6.1">;
-def PTX63 : SubtargetFeature<"ptx63", "PTXVersion", "63",
-                             "Use PTX version 6.3">;
-def PTX64 : SubtargetFeature<"ptx64", "PTXVersion", "64",
-                             "Use PTX version 6.4">;
-def PTX65 : SubtargetFeature<"ptx65", "PTXVersion", "65",
-                             "Use PTX version 6.5">;
-def PTX70 : SubtargetFeature<"ptx70", "PTXVersion", "70",
-                             "Use PTX version 7.0">;
-def PTX71 : SubtargetFeature<"ptx71", "PTXVersion", "71",
-                             "Use PTX version 7.1">;
-def PTX72 : SubtargetFeature<"ptx72", "PTXVersion", "72",
-                             "Use PTX version 7.2">;
-def PTX73 : SubtargetFeature<"ptx73", "PTXVersion", "73",
-                             "Use PTX version 7.3">;
-def PTX74 : SubtargetFeature<"ptx74", "PTXVersion", "74",
-                             "Use PTX version 7.4">;
-def PTX75 : SubtargetFeature<"ptx75", "PTXVersion", "75",
-                             "Use PTX version 7.5">;
-def PTX76 : SubtargetFeature<"ptx76", "PTXVersion", "76",
-                             "Use PTX version 7.6">;
-def PTX77 : SubtargetFeature<"ptx77", "PTXVersion", "77",
-                             "Use PTX version 7.7">;
-def PTX78 : SubtargetFeature<"ptx78", "PTXVersion", "78",
-                             "Use PTX version 7.8">;
-
-//===----------------------------------------------------------------------===//
-// NVPTX supported processors.
-//===----------------------------------------------------------------------===//
-
-class Proc<string Name, list<SubtargetFeature> Features>
- : Processor<Name, NoItineraries, Features>;
-
-def : Proc<"sm_20", [SM20, PTX32]>;
-def : Proc<"sm_21", [SM21, PTX32]>;
-def : Proc<"sm_30", [SM30]>;
-def : Proc<"sm_32", [SM32, PTX40]>;
-def : Proc<"sm_35", [SM35, PTX32]>;
-def : Proc<"sm_37", [SM37, PTX41]>;
-def : Proc<"sm_50", [SM50, PTX40]>;
-def : Proc<"sm_52", [SM52, PTX41]>;
-def : Proc<"sm_53", [SM53, PTX42]>;
-def : Proc<"sm_60", [SM60, PTX50]>;
-def : Proc<"sm_61", [SM61, PTX50]>;
-def : Proc<"sm_62", [SM62, PTX50]>;
-def : Proc<"sm_70", [SM70, PTX60]>;
-def : Proc<"sm_72", [SM72, PTX61]>;
-def : Proc<"sm_75", [SM75, PTX63]>;
-def : Proc<"sm_80", [SM80, PTX70]>;
-def : Proc<"sm_86", [SM86, PTX71]>;
-def : Proc<"sm_87", [SM87, PTX74]>;
-def : Proc<"sm_89", [SM89, PTX78]>;
-def : Proc<"sm_90", [SM90, PTX78]>;
+defm : RemapAllTargetPseudoPointerOperands<nvptx_ptr_rc>;
 
 def NVPTXInstrInfo : InstrInfo {
 }
 
+def NVPTXAsmWriter : AsmWriter {
+  int PassSubtarget = 1;
+}
+
 def NVPTX : Target {
   let InstructionSet = NVPTXInstrInfo;
+  let AssemblyWriters = [NVPTXAsmWriter];
 }

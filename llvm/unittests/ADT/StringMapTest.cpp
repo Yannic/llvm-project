@@ -12,6 +12,7 @@
 #include "llvm/Support/DataTypes.h"
 #include "gtest/gtest.h"
 #include <limits>
+#include <map>
 #include <tuple>
 using namespace llvm;
 
@@ -41,6 +42,7 @@ protected:
     EXPECT_TRUE(testMap.begin() == testMap.end());
 
     // Lookup tests
+    EXPECT_FALSE(testMap.contains(testKey));
     EXPECT_EQ(0u, testMap.count(testKey));
     EXPECT_EQ(0u, testMap.count(StringRef(testKeyFirst, testKeyLength)));
     EXPECT_EQ(0u, testMap.count(testKeyStr));
@@ -64,6 +66,7 @@ protected:
     EXPECT_TRUE(it == testMap.end());
 
     // Lookup tests
+    EXPECT_TRUE(testMap.contains(testKey));
     EXPECT_EQ(1u, testMap.count(testKey));
     EXPECT_EQ(1u, testMap.count(StringRef(testKeyFirst, testKeyLength)));
     EXPECT_EQ(1u, testMap.count(testKeyStr));
@@ -178,6 +181,42 @@ TEST_F(StringMapTest, SmallFullMapTest) {
   EXPECT_EQ(5, Map.lookup("funf"));
 }
 
+// Stress test erase. Interleave inserts and erases so that probe clusters form,
+// shrink, and straddle the wrap-around, then verify every surviving key is
+// still findable and every erased key is gone.
+TEST_F(StringMapTest, EraseStressTest) {
+  llvm::StringMap<unsigned> Map;
+  std::map<std::string, unsigned> Ref;
+  // 64-bit Linear Congruential Generator.
+  uint64_t State = 1;
+  auto Next = [&] {
+    return (State = State * 6364136223846793005ULL + 1) >> 33;
+  };
+  for (unsigned I = 0; I != 4000; ++I) {
+    std::string Key = Twine(Next() % 100).str();
+    if (Next() & 1) {
+      Map[Key] = I;
+      Ref[Key] = I;
+    } else {
+      EXPECT_EQ(Map.erase(Key), Ref.erase(Key) != 0);
+    }
+
+    // Periodically cross-check the whole map against the reference.
+    if (I % 200 == 0) {
+      EXPECT_EQ(Map.size(), Ref.size());
+      for (const auto &KV : Ref) {
+        auto It = Map.find(KV.first);
+        ASSERT_NE(It, Map.end()) << "missing key " << KV.first;
+        EXPECT_EQ(It->second, KV.second);
+      }
+    }
+  }
+
+  EXPECT_EQ(Map.size(), Ref.size());
+  for (const auto &KV : Ref)
+    EXPECT_EQ(Map.lookup(KV.first), KV.second);
+}
+
 TEST_F(StringMapTest, CopyCtorTest) {
   llvm::StringMap<int> Map;
 
@@ -203,6 +242,18 @@ TEST_F(StringMapTest, CopyCtorTest) {
   EXPECT_EQ(0, Map2.lookup("drei"));
   EXPECT_EQ(4, Map2.lookup("veir"));
   EXPECT_EQ(5, Map2.lookup("funf"));
+}
+
+TEST_F(StringMapTest, AtTest) {
+  llvm::StringMap<int> Map;
+
+  // keys both found and not found on non-empty map
+  Map["a"] = 1;
+  Map["b"] = 2;
+  Map["c"] = 3;
+  EXPECT_EQ(1, Map.at("a"));
+  EXPECT_EQ(2, Map.at("b"));
+  EXPECT_EQ(3, Map.at("c"));
 }
 
 // A more complex iteration test.
@@ -353,7 +404,7 @@ TEST_F(StringMapTest, NonDefaultConstructable) {
 }
 
 struct Immovable {
-  Immovable() {}
+  Immovable() = default;
   Immovable(Immovable &&) = delete; // will disable the other special members
 };
 
@@ -366,6 +417,9 @@ struct MoveOnly {
     i = RHS.i;
     return *this;
   }
+
+  bool operator==(const MoveOnly &RHS) const { return i == RHS.i; }
+  bool operator!=(const MoveOnly &RHS) const { return i != RHS.i; }
 
 private:
   MoveOnly(const MoveOnly &) = delete;
@@ -473,6 +527,17 @@ TEST_F(StringMapTest, NotEqualWithDifferentValues) {
   ASSERT_TRUE(B != A);
 }
 
+TEST_F(StringMapTest, PrecomputedHash) {
+  StringMap<int> A;
+  StringRef Key = "foo";
+  int Value = 42;
+  uint64_t Hash = StringMap<int>::hash(Key);
+  A.insert({"foo", Value}, Hash);
+  auto I = A.find(Key, Hash);
+  ASSERT_NE(I, A.end());
+  ASSERT_EQ(I->second, Value);
+}
+
 struct Countable {
   int &InstanceCount;
   int Number;
@@ -524,6 +589,26 @@ TEST_F(StringMapTest, StructuredBindings) {
   for (auto &[Key, Value] : A) {
     EXPECT_EQ("a", Key);
     EXPECT_EQ(42, Value);
+  }
+
+  for (const auto &[Key, Value] : A) {
+    EXPECT_EQ("a", Key);
+    EXPECT_EQ(42, Value);
+  }
+}
+
+TEST_F(StringMapTest, StructuredBindingsMoveOnly) {
+  StringMap<MoveOnly> A;
+  A.insert(std::make_pair("a", MoveOnly(42)));
+
+  for (auto &[Key, Value] : A) {
+    EXPECT_EQ("a", Key);
+    EXPECT_EQ(MoveOnly(42), Value);
+  }
+
+  for (const auto &[Key, Value] : A) {
+    EXPECT_EQ("a", Key);
+    EXPECT_EQ(MoveOnly(42), Value);
   }
 }
 
@@ -644,5 +729,201 @@ TEST(StringMapCustomTest, StringMapEntrySize) {
   Key = LargerEntry.getKey();
   EXPECT_EQ(LargeValue, Key.size());
 }
+
+TEST(StringMapCustomTest, NonConstIterator) {
+  StringMap<int> Map;
+  Map["key"] = 1;
+
+  // Check that Map.begin() returns a non-const iterator.
+  static_assert(
+      std::is_same_v<decltype(Map.begin()), StringMap<int>::iterator>);
+
+  // Check that the value_type of a non-const iterator is not a const type.
+  static_assert(
+      !std::is_const_v<StringMap<int>::iterator::value_type>,
+      "The value_type of a non-const iterator should not be a const type.");
+
+  // Check that pointer and reference types are not const.
+  static_assert(std::is_same_v<StringMap<int>::iterator::pointer,
+                               StringMap<int>::iterator::value_type *>);
+  static_assert(std::is_same_v<StringMap<int>::iterator::reference,
+                               StringMap<int>::iterator::value_type &>);
+
+  // Check that we can construct a const_iterator from an iterator.
+  static_assert(std::is_constructible_v<StringMap<int>::const_iterator,
+                                        StringMap<int>::iterator>);
+
+  // Double check that we can actually construct a const_iterator.
+  StringMap<int>::const_iterator const_it = Map.begin();
+  (void)const_it;
+}
+
+TEST(StringMapCustomTest, ConstIterator) {
+  StringMap<int> Map;
+  const StringMap<int> &ConstMap = Map;
+
+  // Check that ConstMap.begin() returns a const_iterator.
+  static_assert(std::is_same_v<decltype(ConstMap.begin()),
+                               StringMap<int>::const_iterator>);
+
+  // Check that the value_type of a const iterator is not a const type.
+  static_assert(
+      !std::is_const_v<StringMap<int>::const_iterator::value_type>,
+      "The value_type of a const iterator should not be a const type.");
+
+  // Check that pointer and reference types are const.
+  static_assert(
+      std::is_same_v<StringMap<int>::const_iterator::pointer,
+                     const StringMap<int>::const_iterator::value_type *>);
+  static_assert(
+      std::is_same_v<StringMap<int>::const_iterator::reference,
+                     const StringMap<int>::const_iterator::value_type &>);
+
+  // Check that we cannot construct an iterator from a const_iterator.
+  static_assert(!std::is_constructible_v<StringMap<int>::iterator,
+                                         StringMap<int>::const_iterator>);
+}
+
+TEST(StringMapCustomTest, RemoveIf) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  Map["b"] = 2;
+  Map["c"] = 3;
+  Map["d"] = 4;
+
+  EXPECT_TRUE(Map.remove_if(
+      [](const StringMapEntry<int> &E) { return E.getValue() % 2 == 0; }));
+  EXPECT_EQ(2u, Map.size());
+  EXPECT_TRUE(Map.contains("a"));
+  EXPECT_FALSE(Map.contains("b"));
+  EXPECT_TRUE(Map.contains("c"));
+  EXPECT_FALSE(Map.contains("d"));
+
+  EXPECT_FALSE(Map.remove_if(
+      [](const StringMapEntry<int> &E) { return E.getValue() > 100; }));
+  EXPECT_EQ(2u, Map.size());
+}
+
+// Stress remove_if: it deletes in place using Algorithm R backward shifting and
+// re-examines each slot after a removal, which is subtle around probe clusters
+// that wrap past the end of the table. Remove a subset from a large map and
+// verify the survivors exactly match the reference.
+TEST(StringMapCustomTest, RemoveIfStress) {
+  llvm::StringMap<unsigned> Map;
+  std::map<std::string, unsigned> Ref;
+
+  // Deterministic LCG so the sequence is reproducible across platforms.
+  uint64_t State = 0x9e3779b9;
+  auto Next = [&] {
+    return (State = State * 6364136223846793005ULL + 1) >> 33;
+  };
+
+  for (unsigned I = 0; I != 4000; ++I) {
+    std::string Key = Twine(Next() % 1500).str();
+    Map[Key] = I;
+    Ref[Key] = I;
+  }
+
+  auto IsEven = [](unsigned V) { return V % 2 == 0; };
+  Map.remove_if(
+      [&](const StringMapEntry<unsigned> &E) { return IsEven(E.getValue()); });
+  for (auto It = Ref.begin(); It != Ref.end();) {
+    if (IsEven(It->second))
+      It = Ref.erase(It);
+    else
+      ++It;
+  }
+
+  EXPECT_EQ(Map.size(), Ref.size());
+  for (const auto &KV : Ref) {
+    auto It = Map.find(KV.first);
+    ASSERT_NE(It, Map.end()) << "missing key " << KV.first;
+    EXPECT_EQ(It->second, KV.second);
+  }
+  for (const auto &E : Map)
+    EXPECT_FALSE(IsEven(E.getValue())) << "stale key " << E.getKey();
+}
+
+#if LLVM_ENABLE_ABI_BREAKING_CHECKS
+TEST(StringMapCustomTest, InsertInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  auto It = Map.find("a");
+  Map.try_emplace("b", 2);
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, EraseInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  Map["b"] = 2;
+  auto It = Map.find("a");
+  Map.erase(Map.find("b"));
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, RemoveInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  Map["b"] = 2;
+  auto It = Map.find("a");
+  auto *Entry = &*Map.find("b");
+  Map.remove(Entry);
+  Entry->Destroy(Map.getAllocator());
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, ClearInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  auto It = Map.find("a");
+  Map.clear();
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, SwapInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  auto It = Map.find("a");
+  StringMap<int> Other;
+  Map.swap(Other);
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, MoveConstructInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  auto It = Map.find("a");
+  StringMap<int> Other = std::move(Map);
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, MoveAssignInvalidatesIterators) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  auto It = Map.find("a");
+  StringMap<int> Other;
+  Other = std::move(Map);
+  EXPECT_DEATH((void)It->second, "invalid iterator access");
+}
+
+TEST(StringMapCustomTest, IteratorComparability) {
+  StringMap<int>::iterator I1, I2;
+  EXPECT_EQ(I1, I2);
+
+  StringMap<int> Map1, Map2;
+  Map1["a"] = 1;
+  Map2["b"] = 2;
+  EXPECT_DEATH((void)(Map1.begin() == Map2.begin()), "incomparable iterators");
+}
+
+TEST(StringMapCustomTest, InsertInvalidatesIteratorComparison) {
+  StringMap<int> Map;
+  Map["a"] = 1;
+  auto It = Map.begin();
+  Map["b"] = 2;
+  EXPECT_DEATH((void)(It == Map.end()), "incomparable iterators");
+}
+#endif
 
 } // end anonymous namespace

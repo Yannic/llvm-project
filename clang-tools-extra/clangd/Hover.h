@@ -14,6 +14,8 @@
 #include "support/Markup.h"
 #include "clang/Index/IndexSymbol.h"
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace clang {
 namespace clangd {
@@ -67,9 +69,13 @@ struct HoverInfo {
   std::string LocalScope;
   /// Name of the symbol, does not contain any "::".
   std::string Name;
+  /// Header providing the symbol (best match). Contains ""<>.
+  std::string Provider;
   std::optional<Range> SymRange;
   index::SymbolKind Kind = index::SymbolKind::Unknown;
   std::string Documentation;
+  // required to create a comments::CommandTraits object without the ASTContext
+  CommentOptions CommentOpts;
   /// Source code containing the definition of the symbol.
   std::string Definition;
   const char *DefinitionLanguage = "cpp";
@@ -87,12 +93,14 @@ struct HoverInfo {
   std::optional<std::vector<Param>> TemplateParameters;
   /// Contains the evaluated value of the symbol if available.
   std::optional<std::string> Value;
-  /// Contains the byte-size of fields and types where it's interesting.
+  /// Contains the bit-size of fields and types where it's interesting.
   std::optional<uint64_t> Size;
   /// Contains the offset of fields within the enclosing class.
   std::optional<uint64_t> Offset;
   /// Contains the padding following a field within the enclosing class.
   std::optional<uint64_t> Padding;
+  /// Contains the alignment of fields and types where it's interesting.
+  std::optional<uint64_t> Align;
   // Set when symbol is inside function call. Contains information extracted
   // from the callee definition about the argument this is passed as.
   std::optional<Param> CalleeArgInfo;
@@ -107,9 +115,28 @@ struct HoverInfo {
   };
   // Set only if CalleeArgInfo is set.
   std::optional<PassType> CallPassType;
+  // Filled when hovering over the #include line. Contains the names of symbols
+  // from a #include'd file that are used in the main file, sorted in
+  // alphabetical order.
+  std::vector<std::string> UsedSymbolNames;
 
-  /// Produce a user-readable information.
-  markup::Document present() const;
+  /// Produce a user-readable information based on the specified markup kind.
+  std::string present(MarkupKind Kind) const;
+
+private:
+  void usedSymbolNamesToMarkup(markup::Document &Output) const;
+  void providerToMarkupParagraph(markup::Document &Output) const;
+  void definitionScopeToMarkup(markup::Document &Output) const;
+  void calleeArgInfoToMarkupParagraph(markup::Paragraph &P) const;
+  void valueToMarkupParagraph(markup::Paragraph &P) const;
+  void offsetToMarkupParagraph(markup::Paragraph &P) const;
+  void sizeToMarkupParagraph(markup::Paragraph &P) const;
+
+  /// Parse and render the hover information as Doxygen documentation.
+  markup::Document presentDoxygen() const;
+
+  /// Render the hover information as a default documentation.
+  markup::Document presentDefault() const;
 };
 
 inline bool operator==(const HoverInfo::PrintedType &LHS,

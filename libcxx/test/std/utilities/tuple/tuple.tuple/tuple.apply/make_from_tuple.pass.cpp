@@ -14,9 +14,10 @@
 
 #include <tuple>
 #include <array>
-#include <utility>
-#include <string>
 #include <cassert>
+#include <cstdint>
+#include <string>
+#include <utility>
 
 #include "test_macros.h"
 #include "type_id.h"
@@ -43,7 +44,7 @@ struct ConstructibleFromTuple<Tuple<Types...>> {
   TypeID const* arg_types;
 };
 
-template <class Tp, size_t N>
+template <class Tp, std::size_t N>
 struct ConstructibleFromTuple<std::array<Tp, N>> {
 template <class ...Args>
   explicit ConstructibleFromTuple(Args&&... xargs)
@@ -59,12 +60,6 @@ constexpr bool do_constexpr_test(Tuple&& tup) {
     using RawTuple = std::decay_t<Tuple>;
     using Tp = ConstexprConstructibleFromTuple<RawTuple>;
     return std::make_from_tuple<Tp>(std::forward<Tuple>(tup)).args == tup;
-}
-
-// Needed by do_forwarding_test() since it compares pairs of different types.
-template <class T1, class T2, class U1, class U2>
-inline bool operator==(const std::pair<T1, T2>& lhs, const std::pair<U1, U2>& rhs) {
-    return lhs.first == rhs.first && lhs.second == rhs.second;
 }
 
 template <class ...ExpectTypes, class Tuple>
@@ -201,11 +196,69 @@ void test_noexcept() {
     }
 }
 
+namespace LWG3528 {
+template <class T, class Tuple>
+auto test_make_from_tuple(T&&, Tuple&& t) -> decltype(std::make_from_tuple<T>(t), std::uint8_t()) {
+  return 0;
+}
+template <class T, class Tuple>
+uint32_t test_make_from_tuple(...) {
+  return 0;
+}
+
+template <class T, class Tuple>
+static constexpr bool can_make_from_tuple =
+    std::is_same_v<decltype(test_make_from_tuple<T, Tuple>(T{}, Tuple{})), std::uint8_t>;
+
+struct A {
+  int a;
+};
+struct B : public A {};
+
+struct C {
+  C(const B&) {}
+};
+
+enum class D {
+  ONE,
+  TWO,
+};
+
+// Test std::make_from_tuple constraints.
+
+// reinterpret_cast
+static_assert(!can_make_from_tuple<int*, std::tuple<A*>>);
+static_assert(can_make_from_tuple<A*, std::tuple<A*>>);
+
+// const_cast
+static_assert(!can_make_from_tuple<char*, std::tuple<const char*>>);
+static_assert(!can_make_from_tuple<volatile char*, std::tuple<const volatile char*>>);
+static_assert(can_make_from_tuple<volatile char*, std::tuple<volatile char*>>);
+static_assert(can_make_from_tuple<char*, std::tuple<char*>>);
+static_assert(can_make_from_tuple<const char*, std::tuple<char*>>);
+static_assert(can_make_from_tuple<const volatile char*, std::tuple<volatile char*>>);
+
+// static_cast
+static_assert(!can_make_from_tuple<int, std::tuple<D>>);
+static_assert(!can_make_from_tuple<D, std::tuple<int>>);
+static_assert(can_make_from_tuple<long, std::tuple<int>>);
+static_assert(can_make_from_tuple<double, std::tuple<float>>);
+static_assert(can_make_from_tuple<float, std::tuple<double>>);
+
+} // namespace LWG3528
+
+static_assert(LWG3528::can_make_from_tuple<int, std::tuple<>>);
+
 int main(int, char**)
 {
     test_constexpr_construction();
     test_perfect_forwarding();
     test_noexcept();
+
+  { // Test that constructing a T& returns the same object
+    int i;
+    assert(&std::make_from_tuple<const int&>(std::tuple<int&>(i)) == &i);
+  }
 
   return 0;
 }

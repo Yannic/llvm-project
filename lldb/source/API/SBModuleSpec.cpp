@@ -9,6 +9,7 @@
 #include "lldb/API/SBModuleSpec.h"
 #include "Utils.h"
 #include "lldb/API/SBStream.h"
+#include "lldb/API/SBTarget.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Host/Host.h"
@@ -27,6 +28,11 @@ SBModuleSpec::SBModuleSpec(const SBModuleSpec &rhs) {
   LLDB_INSTRUMENT_VA(this, rhs);
 
   m_opaque_up = clone(rhs.m_opaque_up);
+}
+
+SBModuleSpec::SBModuleSpec(const lldb_private::ModuleSpec &module_spec)
+    : m_opaque_up(new lldb_private::ModuleSpec(module_spec)) {
+  LLDB_INSTRUMENT_VA(this, module_spec);
 }
 
 const SBModuleSpec &SBModuleSpec::operator=(const SBModuleSpec &rhs) {
@@ -111,7 +117,7 @@ const char *SBModuleSpec::GetTriple() {
   // Unique the string so we don't run into ownership issues since the const
   // strings put the string into the string pool once and the strings never
   // comes out
-  ConstString const_triple(triple.c_str());
+  ConstString const_triple(triple);
   return const_triple.GetCString();
 }
 
@@ -145,6 +151,42 @@ bool SBModuleSpec::GetDescription(lldb::SBStream &description) {
   return true;
 }
 
+uint64_t SBModuleSpec::GetObjectOffset() {
+  LLDB_INSTRUMENT_VA(this);
+
+  return m_opaque_up->GetObjectOffset();
+}
+
+void SBModuleSpec::SetObjectOffset(uint64_t object_offset) {
+  LLDB_INSTRUMENT_VA(this, object_offset);
+
+  m_opaque_up->SetObjectOffset(object_offset);
+}
+
+uint64_t SBModuleSpec::GetObjectSize() {
+  LLDB_INSTRUMENT_VA(this);
+
+  return m_opaque_up->GetObjectSize();
+}
+
+void SBModuleSpec::SetObjectSize(uint64_t object_size) {
+  LLDB_INSTRUMENT_VA(this, object_size);
+
+  m_opaque_up->SetObjectSize(object_size);
+}
+
+SBTarget SBModuleSpec::GetTarget() const {
+  LLDB_INSTRUMENT_VA(this);
+
+  return SBTarget(m_opaque_up->GetTargetSP());
+}
+
+void SBModuleSpec::SetTarget(SBTarget target) {
+  LLDB_INSTRUMENT_VA(this, target);
+
+  m_opaque_up->SetTarget(target.GetSP());
+}
+
 SBModuleSpecList::SBModuleSpecList() : m_opaque_up(new ModuleSpecList()) {
   LLDB_INSTRUMENT_VA(this);
 }
@@ -152,6 +194,11 @@ SBModuleSpecList::SBModuleSpecList() : m_opaque_up(new ModuleSpecList()) {
 SBModuleSpecList::SBModuleSpecList(const SBModuleSpecList &rhs)
     : m_opaque_up(new ModuleSpecList(*rhs.m_opaque_up)) {
   LLDB_INSTRUMENT_VA(this, rhs);
+}
+
+SBModuleSpecList::SBModuleSpecList(lldb_private::ModuleSpecList &&module_spec)
+    : m_opaque_up(new ModuleSpecList(std::move(module_spec))) {
+  LLDB_INSTRUMENT_VA(this);
 }
 
 SBModuleSpecList &SBModuleSpecList::operator=(const SBModuleSpecList &rhs) {
@@ -171,7 +218,7 @@ SBModuleSpecList SBModuleSpecList::GetModuleSpecifications(const char *path) {
   FileSpec file_spec(path);
   FileSystem::Instance().Resolve(file_spec);
   Host::ResolveExecutableInBundle(file_spec);
-  ObjectFile::GetModuleSpecifications(file_spec, 0, 0, *specs.m_opaque_up);
+  *specs.m_opaque_up = ObjectFile::GetModuleSpecifications(file_spec, 0, 0);
   return specs;
 }
 

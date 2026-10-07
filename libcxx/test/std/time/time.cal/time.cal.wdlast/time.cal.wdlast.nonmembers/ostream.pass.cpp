@@ -8,10 +8,10 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 // UNSUPPORTED: no-localization
-// UNSUPPORTED: libcpp-has-no-incomplete-format
+// UNSUPPORTED: GCC-ALWAYS_INLINE-FIXME
 
-// TODO FMT It seems GCC uses too much memory in the CI and fails.
-// UNSUPPORTED: gcc-12
+// TODO FMT This test should not require std::to_chars(floating-point)
+// XFAIL: availability-fp_to_chars-missing
 
 // REQUIRES: locale.fr_FR.UTF-8
 // REQUIRES: locale.ja_JP.UTF-8
@@ -73,16 +73,6 @@ static void test() {
   assert(stream_c_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{255}}) ==
          SV("255 is not a valid weekday[last]"));
 
-#if defined(__APPLE__)
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{0}}) == SV("Dim[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{1}}) == SV("Lun[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{2}}) == SV("Mar[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{3}}) == SV("Mer[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{4}}) == SV("Jeu[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{5}}) == SV("Ven[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{6}}) == SV("Sam[last]"));
-  assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{7}}) == SV("Dim[last]"));
-#else  // defined(__APPLE__)
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{0}}) == SV("dim.[last]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{1}}) == SV("lun.[last]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{2}}) == SV("mar.[last]"));
@@ -91,7 +81,6 @@ static void test() {
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{5}}) == SV("ven.[last]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{6}}) == SV("sam.[last]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{7}}) == SV("dim.[last]"));
-#endif // defined(__APPLE__)
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{8}}) ==
          SV("8 is not a valid weekday[last]"));
   assert(stream_fr_FR_locale<CharT>(std::chrono::weekday_last{std::chrono::weekday{255}}) ==

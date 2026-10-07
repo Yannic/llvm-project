@@ -44,7 +44,7 @@ def Complex_NumberAttr : Complex_Attr<"Number", "number",
     AttrBuilderWithInferredContext<(ins "mlir::ComplexType":$type,
                                         "double":$real,
                                         "double":$imag), [{
-      auto elementType = type.getElementType().cast<FloatType>();
+      auto elementType = ::llvm::cast<FloatType>(type.getElementType());
       APFloat realFloat(real);
       bool unused;
       realFloat.convert(elementType.getFloatSemantics(),
@@ -57,8 +57,8 @@ def Complex_NumberAttr : Complex_Attr<"Number", "number",
   ];
 
   let extraClassDeclaration = [{
-    std::complex<APFloat> getValue() {
-      return std::complex<APFloat>(getReal(), getImag());
+    mlir::Complex<APFloat> getValue() {
+      return mlir::Complex<APFloat>(getReal(), getImag());
     }
   }];
 

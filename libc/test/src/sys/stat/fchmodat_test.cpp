@@ -6,22 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "hdr/errno_macros.h"
+#include "hdr/fcntl_macros.h"
+#include "hdr/sys_stat_macros.h"
+#include "hdr/types/struct_stat.h"
 #include "src/fcntl/open.h"
 #include "src/sys/stat/fchmodat.h"
 #include "src/unistd/close.h"
 #include "src/unistd/write.h"
-#include "test/ErrnoSetterMatcher.h"
-#include "utils/UnitTest/Test.h"
-#include "utils/testutils/FDReader.h"
+#include "test/UnitTest/ErrnoCheckingTest.h"
+#include "test/UnitTest/ErrnoSetterMatcher.h"
+#include "test/UnitTest/Test.h"
 
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/stat.h>
+using namespace LIBC_NAMESPACE::testing::ErrnoSetterMatcher;
+using LlvmLibcFchmodatTest = LIBC_NAMESPACE::testing::ErrnoCheckingTest;
 
-TEST(LlvmLibcFchmodatTest, ChangeAndOpen) {
-  using __llvm_libc::testing::ErrnoSetterMatcher::Fails;
-  using __llvm_libc::testing::ErrnoSetterMatcher::Succeeds;
-
+TEST_F(LlvmLibcFchmodatTest, ChangeAndOpen) {
   // The test file is initially writable. We open it for writing and ensure
   // that it indeed can be opened for writing. Next, we close the file and
   // make it readonly using chmod. We test that chmod actually succeeded by
@@ -31,41 +31,78 @@ TEST(LlvmLibcFchmodatTest, ChangeAndOpen) {
   constexpr const char *TEST_FILE_BASENAME = "fchmodat.test";
   const char WRITE_DATA[] = "fchmodat test";
   constexpr ssize_t WRITE_SIZE = ssize_t(sizeof(WRITE_DATA));
-  errno = 0;
 
-  int fd = __llvm_libc::open(TEST_FILE, O_CREAT | O_WRONLY, S_IRWXU);
+  int fd = LIBC_NAMESPACE::open(TEST_FILE, O_CREAT | O_WRONLY, S_IRWXU);
   ASSERT_GT(fd, 0);
-  ASSERT_EQ(errno, 0);
-  ASSERT_EQ(__llvm_libc::write(fd, WRITE_DATA, sizeof(WRITE_DATA)), WRITE_SIZE);
-  ASSERT_THAT(__llvm_libc::close(fd), Succeeds(0));
+  ASSERT_ERRNO_SUCCESS();
+  ASSERT_EQ(LIBC_NAMESPACE::write(fd, WRITE_DATA, sizeof(WRITE_DATA)),
+            WRITE_SIZE);
+  ASSERT_THAT(LIBC_NAMESPACE::close(fd), Succeeds(0));
 
-  int dirfd = __llvm_libc::open(TEST_DIR, O_DIRECTORY);
+  int dirfd = LIBC_NAMESPACE::open(TEST_DIR, O_DIRECTORY);
   ASSERT_GT(dirfd, 0);
-  ASSERT_EQ(errno, 0);
+  ASSERT_ERRNO_SUCCESS();
 
-  EXPECT_THAT(__llvm_libc::fchmodat(dirfd, TEST_FILE_BASENAME, S_IRUSR, 0),
+  EXPECT_THAT(LIBC_NAMESPACE::fchmodat(dirfd, TEST_FILE_BASENAME, S_IRUSR, 0),
               Succeeds(0));
 
   // Opening for writing should fail.
-  EXPECT_EQ(__llvm_libc::open(TEST_FILE, O_APPEND | O_WRONLY), -1);
-  EXPECT_NE(errno, 0);
-  errno = 0;
+  EXPECT_EQ(LIBC_NAMESPACE::open(TEST_FILE, O_APPEND | O_WRONLY), -1);
+  ASSERT_ERRNO_FAILURE();
   // But opening for reading should succeed.
-  fd = __llvm_libc::open(TEST_FILE, O_APPEND | O_RDONLY);
+  fd = LIBC_NAMESPACE::open(TEST_FILE, O_APPEND | O_RDONLY);
   EXPECT_GT(fd, 0);
-  EXPECT_EQ(errno, 0);
+  ASSERT_ERRNO_SUCCESS();
 
-  EXPECT_THAT(__llvm_libc::close(fd), Succeeds(0));
-  EXPECT_THAT(__llvm_libc::fchmodat(dirfd, TEST_FILE_BASENAME, S_IRWXU, 0),
+  EXPECT_THAT(LIBC_NAMESPACE::close(fd), Succeeds(0));
+  EXPECT_THAT(LIBC_NAMESPACE::fchmodat(dirfd, TEST_FILE_BASENAME, S_IRWXU, 0),
               Succeeds(0));
 
-  EXPECT_THAT(__llvm_libc::close(dirfd), Succeeds(0));
+  EXPECT_THAT(LIBC_NAMESPACE::close(dirfd), Succeeds(0));
 }
 
-TEST(LlvmLibcFchmodatTest, NonExistentFile) {
-  errno = 0;
-  using __llvm_libc::testing::ErrnoSetterMatcher::Fails;
-  ASSERT_THAT(__llvm_libc::fchmodat(AT_FDCWD, "non-existent-file", S_IRUSR, 0),
-              Fails(ENOENT));
-  errno = 0;
+TEST_F(LlvmLibcFchmodatTest, NonExistentFile) {
+  ASSERT_THAT(
+      LIBC_NAMESPACE::fchmodat(AT_FDCWD, "non-existent-file", S_IRUSR, 0),
+      Fails(ENOENT));
+}
+
+TEST_F(LlvmLibcFchmodatTest, Flags) {
+  constexpr const char *TEST_FILE = "testdata/fchmodat_flags.test";
+  int fd = LIBC_NAMESPACE::open(TEST_FILE, O_CREAT | O_WRONLY, S_IRWXU);
+  ASSERT_GT(fd, 0);
+  ASSERT_ERRNO_SUCCESS();
+  ASSERT_THAT(LIBC_NAMESPACE::close(fd), Succeeds(0));
+
+  int ret = LIBC_NAMESPACE::fchmodat(AT_FDCWD, TEST_FILE, S_IRUSR,
+                                     AT_SYMLINK_NOFOLLOW);
+  if (ret == 0) {
+    // SYS_fchmodat2 is supported by the kernel.
+    ASSERT_ERRNO_SUCCESS();
+    ASSERT_THAT(LIBC_NAMESPACE::fchmodat(AT_FDCWD, "non-existent-file", S_IRUSR,
+                                         AT_SYMLINK_NOFOLLOW),
+                Fails(ENOENT));
+    // Test AT_EMPTY_PATH on an open file descriptor.
+    fd = LIBC_NAMESPACE::open(TEST_FILE, O_PATH);
+    ASSERT_GT(fd, 0);
+    ASSERT_ERRNO_SUCCESS();
+    EXPECT_THAT(LIBC_NAMESPACE::fchmodat(fd, "", S_IRWXU, AT_EMPTY_PATH),
+                Succeeds(0));
+    ASSERT_THAT(LIBC_NAMESPACE::close(fd), Succeeds(0));
+
+    ASSERT_THAT(LIBC_NAMESPACE::fchmodat(AT_FDCWD, TEST_FILE, S_IRUSR, -1),
+                Fails(EINVAL));
+  } else {
+    // Kernel or compile-time headers do not support fchmodat2; non-zero flags
+    // fail with ENOTSUP.
+    ASSERT_ERRNO_EQ(ENOTSUP);
+    ASSERT_THAT(LIBC_NAMESPACE::fchmodat(AT_FDCWD, "non-existent-file", S_IRUSR,
+                                         AT_SYMLINK_NOFOLLOW),
+                Fails(ENOTSUP));
+    ASSERT_THAT(
+        LIBC_NAMESPACE::fchmodat(AT_FDCWD, TEST_FILE, S_IRUSR, AT_EMPTY_PATH),
+        Fails(ENOTSUP));
+    ASSERT_THAT(LIBC_NAMESPACE::fchmodat(AT_FDCWD, TEST_FILE, S_IRUSR, -1),
+                Fails(ENOTSUP));
+  }
 }

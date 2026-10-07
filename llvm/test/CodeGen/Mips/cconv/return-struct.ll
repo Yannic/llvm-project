@@ -4,10 +4,10 @@
 ; RUN: llc -mtriple=mipsel-linux-gnu -relocation-model=static < %s \
 ; RUN:   | FileCheck --check-prefixes=O32,O32-LE %s
 
-; RUN-TODO: llc -mtriple=mips64-linux-gnu -relocation-model=static -target-abi o32 < %s \
-; RUN-TODO:   | FileCheck --check-prefixes=O32 %s
-; RUN-TODO: llc -mtriple=mips64el-linux-gnu -relocation-model=static -target-abi o32 < %s \
-; RUN-TODO:   | FileCheck --check-prefixes=O32 %s
+; RUN: llc -verify-machineinstrs -mtriple=mips64-linux-gnu -relocation-model=static -target-abi o32 < %s \
+; RUN:   | FileCheck --check-prefixes=O32,O32-BE %s
+; RUN: llc -verify-machineinstrs -mtriple=mips64el-linux-gnu -relocation-model=static -target-abi o32 < %s \
+; RUN:   | FileCheck --check-prefixes=O32,O32-LE %s
 
 ; RUN: llc -mtriple=mips64-linux-gnu -relocation-model=static -target-abi n32 < %s \
 ; RUN:   | FileCheck --check-prefixes=N32,N32-BE %s
@@ -139,7 +139,7 @@ define inreg {i16} @ret_struct_i16() nounwind {
 ; N64-LE-NEXT:    jr $ra
 ; N64-LE-NEXT:    daddiu $sp, $sp, 16
 entry:
-        %retval = alloca {i8,i8}, align 1
+        %retval = alloca {i8,i8}, align 8
         call void @llvm.memcpy.p0.p0.i64(ptr %retval, ptr @struct_2byte, i64 2, i1 false)
         %0 = load volatile {i16}, ptr %retval
         ret {i16} %0

@@ -5,18 +5,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-//
-//===----------------------------------------------------------------------===//
 
 #ifndef LLVM_ADT_GENERICUNIFORMITYINFO_H
 #define LLVM_ADT_GENERICUNIFORMITYINFO_H
 
-// #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/GenericCycleInfo.h"
-// #include "llvm/ADT/SmallPtrSet.h"
-// #include "llvm/ADT/Uniformity.h"
-// #include "llvm/Analysis/LegacyDivergenceAnalysis.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
@@ -39,40 +32,72 @@ public:
   using FunctionT = typename ContextT::FunctionT;
   using ValueRefT = typename ContextT::ValueRefT;
   using ConstValueRefT = typename ContextT::ConstValueRefT;
+  using UseT = typename ContextT::UseT;
   using InstructionT = typename ContextT::InstructionT;
   using DominatorTreeT = typename ContextT::DominatorTreeT;
   using ThisT = GenericUniformityInfo<ContextT>;
 
   using CycleInfoT = GenericCycleInfo<ContextT>;
-  using CycleT = typename CycleInfoT::CycleT;
 
-  GenericUniformityInfo(FunctionT &F, const DominatorTreeT &DT,
-                        const CycleInfoT &CI,
+  using TemporalDivergenceTuple =
+      std::tuple<ConstValueRefT, InstructionT *, CycleRef>;
+
+  GenericUniformityInfo(const DominatorTreeT &DT, const CycleInfoT &CI,
                         const TargetTransformInfo *TTI = nullptr);
   GenericUniformityInfo() = default;
   GenericUniformityInfo(GenericUniformityInfo &&) = default;
   GenericUniformityInfo &operator=(GenericUniformityInfo &&) = default;
 
-  /// Whether any divergence was detected.
-  bool hasDivergence() const;
+  void compute() {
+    DA->initialize();
+    DA->compute();
+  }
 
   /// The GPU kernel this analysis result is for
-  const FunctionT &getFunction() const { return *F; }
+  const FunctionT &getFunction() const;
+
+  /// The cycle info this analysis was computed with.
+  const CycleInfoT &getCycleInfo() const;
 
   /// Whether \p V is divergent at its definition.
-  bool isDivergent(ConstValueRefT V) const;
+  bool isDivergentAtDef(ConstValueRefT V) const;
 
-  /// Whether \p V is uniform/non-divergent.
-  bool isUniform(ConstValueRefT V) const { return !isDivergent(V); }
+  /// Whether \p V is uniform/non-divergent at its definition.
+  bool isUniformAtDef(ConstValueRefT V) const { return !isDivergentAtDef(V); }
+
+  // Whether the terminator instruction \p I is uniform/divergent, i.e. whether
+  // the controlling condition of a conditional branch or switch is
+  // uniform/divergent.
+  // TODO: The comment below is now out of date:
+  // These accept a pointer argument so that
+  // in LLVM IR, they overload the equivalent queries for Value*. For example,
+  // if querying whether a CondBrInst is divergent, it should not be treated as
+  // a Value in LLVM IR.
+  bool isUniformTerminator(const InstructionT *I) const {
+    return !isDivergentTerminator(I);
+  };
+  bool isDivergentTerminator(const InstructionT *I) const;
+
+  /// \brief Whether \p U is divergent at its use. Uses of a uniform value can
+  /// be divergent.
+  bool isDivergentAtUse(const UseT &U) const;
+
+  /// \brief Whether \p U is uniform/non-divergent at its use.
+  bool isUniformAtUse(const UseT &U) const { return !isDivergentAtUse(U); }
 
   bool hasDivergentTerminator(const BlockT &B);
 
+  /// Call before erasing \p V, or a later instruction reusing its address
+  /// may be misclassified as uniform.
+  void forgetValue(ConstValueRefT V);
+
   void print(raw_ostream &Out) const;
+
+  iterator_range<TemporalDivergenceTuple *> getTemporalDivergenceList() const;
 
 private:
   using ImplT = GenericUniformityAnalysisImpl<ContextT>;
 
-  FunctionT *F;
   std::unique_ptr<ImplT, GenericUniformityAnalysisImplDeleter<ImplT>> DA;
 
   GenericUniformityInfo(const GenericUniformityInfo &) = delete;

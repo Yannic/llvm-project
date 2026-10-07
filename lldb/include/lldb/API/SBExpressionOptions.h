@@ -10,6 +10,7 @@
 #define LLDB_API_SBEXPRESSIONOPTIONS_H
 
 #include "lldb/API/SBDefines.h"
+#include "lldb/API/SBLanguages.h"
 
 #include <vector>
 
@@ -66,9 +67,19 @@ public:
 
   void SetTrapExceptions(bool trap_exceptions = true);
 
-  void SetLanguage(lldb::LanguageType language);
+  bool GetStopOnFork() const;
 
+  void SetStopOnFork(bool stop_on_fork = false);
+
+  void SetLanguage(lldb::LanguageType language);
+  /// Set the language using a pair of language code and version as
+  /// defined by the DWARF 6 specification.
+  /// WARNING: These codes may change until DWARF 6 is finalized.
+  void SetLanguage(lldb::SBSourceLanguageName name, uint32_t version);
+
+#ifndef SWIG
   void SetCancelCallback(lldb::ExpressionCancelCallback callback, void *baton);
+#endif
 
   bool GetGenerateDebugInfo();
 
@@ -99,6 +110,14 @@ public:
 
   // Sets whether we will JIT an expression if it cannot be interpreted
   void SetAllowJIT(bool allow);
+
+  bool GetBooleanLanguageOption(const char *option_name, SBError &error) const;
+
+  SBError SetBooleanLanguageOption(const char *option_name, bool value);
+
+  bool GetTryDILFirst();
+
+  void SetTryDILFirst(bool b = true);
 
 protected:
   lldb_private::EvaluateExpressionOptions *get() const;

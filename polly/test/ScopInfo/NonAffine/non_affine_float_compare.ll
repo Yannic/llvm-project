@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-allow-nonaffine-branches -polly-print-scops -disable-output < %s | FileCheck %s
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-allow-nonaffine-branches '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s
 ;
 ;    void f(float *A) {
 ;      for (int i = 0; i < 1024; i++)

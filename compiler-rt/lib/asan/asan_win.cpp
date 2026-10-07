@@ -24,6 +24,7 @@
 #  include "asan_report.h"
 #  include "asan_stack.h"
 #  include "asan_thread.h"
+#  include "asan_win_common_runtime_thunk.h"
 #  include "sanitizer_common/sanitizer_libc.h"
 #  include "sanitizer_common/sanitizer_mutex.h"
 #  include "sanitizer_common/sanitizer_win.h"
@@ -131,10 +132,21 @@ INTERCEPTOR(int, _except_handler4, void *a, void *b, void *c, void *d) {
 }
 #endif
 
+struct ThreadStartParams {
+  thread_callback_t start_routine;
+  void *arg;
+};
+
 static thread_return_t THREAD_CALLING_CONV asan_thread_start(void *arg) {
   AsanThread *t = (AsanThread *)arg;
   SetCurrentThread(t);
-  return t->ThreadStart(GetTid());
+  t->ThreadStart(GetTid());
+
+  ThreadStartParams params;
+  t->GetStartData(params);
+
+  auto res = (*params.start_routine)(params.arg);
+  return res;
 }
 
 INTERCEPTOR_WINAPI(HANDLE, CreateThread, LPSECURITY_ATTRIBUTES security,
@@ -148,10 +160,17 @@ INTERCEPTOR_WINAPI(HANDLE, CreateThread, LPSECURITY_ATTRIBUTES security,
   // one.  This is a bandaid fix for PR22025.
   bool detached = false;  // FIXME: how can we determine it on Windows?
   u32 current_tid = GetCurrentTidOrInvalid();
-  AsanThread *t =
-      AsanThread::Create(start_routine, arg, current_tid, &stack, detached);
+  ThreadStartParams params = {start_routine, arg};
+  AsanThread *t = AsanThread::Create(params, current_tid, &stack, detached);
   return REAL(CreateThread)(security, stack_size, asan_thread_start, t,
                             thr_flags, tid);
+}
+
+INTERCEPTOR_WINAPI(void, ExitThread, DWORD dwExitCode) {
+  AsanThread *t = (AsanThread *)__asan::GetCurrentThread();
+  if (t)
+    t->Destroy();
+  REAL(ExitThread)(dwExitCode);
 }
 
 // }}}
@@ -159,6 +178,8 @@ INTERCEPTOR_WINAPI(HANDLE, CreateThread, LPSECURITY_ATTRIBUTES security,
 namespace __asan {
 
 void InitializePlatformInterceptors() {
+  __interception::SetErrorReportCallback(Report);
+
   // The interceptors were not designed to be removable, so we have to keep this
   // module alive for the life of the process.
   HMODULE pinned;
@@ -167,6 +188,7 @@ void InitializePlatformInterceptors() {
       (LPCWSTR)&InitializePlatformInterceptors, &pinned));
 
   ASAN_INTERCEPT_FUNC(CreateThread);
+  ASAN_INTERCEPT_FUNC(ExitThread);
   ASAN_INTERCEPT_FUNC(SetUnhandledExceptionFilter);
 
 #ifdef _WIN64
@@ -189,20 +211,25 @@ void InitializePlatformInterceptors() {
 
 void InstallAtExitCheckLeaks() {}
 
+void InstallAtForkHandler() {}
+
 void AsanApplyToGlobals(globals_op_fptr op, const void *needle) {
   UNIMPLEMENTED();
 }
 
 void FlushUnneededASanShadowMemory(uptr p, uptr size) {
+  // Only asan on 64-bit Windows supports committing shadow memory on demand.
+#if SANITIZER_WINDOWS64
   // Since asan's mapping is compacting, the shadow chunk may be
   // not page-aligned, so we only flush the page-aligned portion.
   ReleaseMemoryPagesToOS(MemToShadow(p), MemToShadow(p + size));
+#endif
 }
 
 // ---------------------- TSD ---------------- {{{
 static bool tsd_key_inited = false;
 
-static __declspec(thread) void *fake_tsd = 0;
+static THREADLOCAL void* fake_tsd = 0;
 
 // https://docs.microsoft.com/en-us/windows/desktop/api/winternl/ns-winternl-_teb
 // "[This structure may be altered in future versions of Windows. Applications
@@ -247,17 +274,14 @@ void PlatformTSDDtor(void *tsd) { AsanThread::TSDDtor(tsd); }
 // }}}
 
 // ---------------------- Various stuff ---------------- {{{
-void *AsanDoesNotSupportStaticLinkage() {
-#if defined(_DEBUG)
-#error Please build the runtime with a non-debug CRT: /MD or /MT
-#endif
-  return 0;
-}
-
 uptr FindDynamicShadowStart() {
   return MapDynamicShadow(MemToShadowSize(kHighMemEnd), ASAN_SHADOW_SCALE,
-                          /*min_shadow_base_alignment*/ 0, kHighMemEnd);
+                          /*min_shadow_base_alignment*/ 0, kHighMemEnd,
+                          GetMmapGranularity());
 }
+
+// Not used
+void TryReExecWithoutASLR() {}
 
 void AsanCheckDynamicRTPrereqs() {}
 
@@ -361,9 +385,10 @@ bool HandleDlopenInit() {
 // beginning of C++ initialization. We set our priority to XCAB to run
 // immediately after the CRT runs. This way, our exception filter is called
 // first and we can delegate to their filter if appropriate.
-#pragma section(".CRT$XCAB", long, read)
-__declspec(allocate(".CRT$XCAB")) int (*__intercept_seh)() =
-    __asan_set_seh_filter;
+#    if !defined(__GNUC__) || defined(__clang__)
+#      pragma section(".CRT$XCAB", long, read)
+#    endif
+IN_SECTION(".CRT$XCAB") int (*__intercept_seh)() = __asan_set_seh_filter;
 
 // Piggyback on the TLS initialization callback directory to initialize asan as
 // early as possible. Initializers in .CRT$XL* are called directly by ntdll,
@@ -374,10 +399,12 @@ static void NTAPI asan_thread_init(void *module, DWORD reason, void *reserved) {
     __asan_init();
 }
 
-#pragma section(".CRT$XLAB", long, read)
-__declspec(allocate(".CRT$XLAB")) void(NTAPI *__asan_tls_init)(
-    void *, unsigned long, void *) = asan_thread_init;
-#endif
+#    if !defined(__GNUC__) || defined(__clang__)
+#      pragma section(".CRT$XLAB", long, read)
+#    endif
+IN_SECTION(".CRT$XLAB")
+void(NTAPI* __asan_tls_init)(void*, unsigned long, void*) = asan_thread_init;
+#  endif
 
 static void NTAPI asan_thread_exit(void *module, DWORD reason, void *reserved) {
   if (reason == DLL_THREAD_DETACH) {
@@ -388,9 +415,11 @@ static void NTAPI asan_thread_exit(void *module, DWORD reason, void *reserved) {
   }
 }
 
-#pragma section(".CRT$XLY", long, read)
-__declspec(allocate(".CRT$XLY")) void(NTAPI *__asan_tls_exit)(
-    void *, unsigned long, void *) = asan_thread_exit;
+#  if !defined(__GNUC__) || defined(__clang__)
+#    pragma section(".CRT$XLY", long, read)
+#  endif
+IN_SECTION(".CRT$XLY")
+void(NTAPI* __asan_tls_exit)(void*, unsigned long, void*) = asan_thread_exit;
 
 WIN_FORCE_LINK(__asan_dso_reg_hook)
 

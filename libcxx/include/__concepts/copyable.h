@@ -18,22 +18,24 @@
 #  pragma GCC system_header
 #endif
 
-_LIBCPP_BEGIN_NAMESPACE_STD
+#if _LIBCPP_STD_VER >= 20
 
-#if _LIBCPP_STD_VER > 17
+_LIBCPP_BEGIN_NAMESPACE_STD
 
 // [concepts.object]
 
-template<class _Tp>
+// clang-format off
+template <class _Tp>
 concept copyable =
-  copy_constructible<_Tp> &&
-  movable<_Tp> &&
-  assignable_from<_Tp&, _Tp&> &&
-  assignable_from<_Tp&, const _Tp&> &&
-  assignable_from<_Tp&, const _Tp>;
-
-#endif // _LIBCPP_STD_VER > 17
+    copy_constructible<_Tp> &&
+    movable<_Tp> &&
+    assignable_from<_Tp&, _Tp&> &&
+    assignable_from<_Tp&, const _Tp&> &&
+    assignable_from<_Tp&, const _Tp>;
+// clang-format on
 
 _LIBCPP_END_NAMESPACE_STD
+
+#endif // _LIBCPP_STD_VER >= 20
 
 #endif // _LIBCPP___CONCEPTS_COPYABLE_H

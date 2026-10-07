@@ -1,4 +1,4 @@
-//===--- LoopConvertCheck.h - clang-tidy-------------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOP_CONVERT_H
-#define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOP_CONVERT_H
+#ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOPCONVERTCHECK_H
+#define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOPCONVERTCHECK_H
 
 #include "../ClangTidyCheck.h"
 #include "../utils/IncludeInserter.h"
@@ -29,13 +29,13 @@ public:
 
 private:
   struct RangeDescriptor {
-    RangeDescriptor();
-    bool ContainerNeedsDereference;
-    bool DerefByConstRef;
-    bool DerefByValue;
+    RangeDescriptor() = default;
+    bool ContainerNeedsDereference = false;
+    bool DerefByConstRef = false;
+    bool DerefByValue = false;
     std::string ContainerString;
     QualType ElemType;
-    bool NeedsReverseCall;
+    bool NeedsReverseCall = false;
   };
 
   void getAliasRange(SourceManager &SM, SourceRange &DeclRange);
@@ -85,4 +85,4 @@ private:
 
 } // namespace clang::tidy::modernize
 
-#endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOP_CONVERT_H
+#endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOPCONVERTCHECK_H

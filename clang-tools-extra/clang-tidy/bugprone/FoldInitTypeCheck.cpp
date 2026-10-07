@@ -1,4 +1,4 @@
-//===--- FoldInitTypeCheck.cpp - clang-tidy--------------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -24,9 +24,24 @@ void FoldInitTypeCheck::registerMatchers(MatchFinder *Finder) {
     return anyOf(
         // Pointer types.
         pointsTo(BuiltinTypeWithId(ID)),
-        // Iterator types.
-        recordType(hasDeclaration(has(typedefNameDecl(
-            hasName("value_type"), hasType(BuiltinTypeWithId(ID)))))));
+        // Iterator types have an `operator*` whose return type is the type we
+        // care about.
+        // Notes:
+        //   - `operator*` can be in one of the bases of the iterator class.
+        //   - this does not handle cases when the `operator*` is defined
+        //     outside the iterator class.
+        recordType(
+            hasDeclaration(cxxRecordDecl(isSameOrDerivedFrom(has(functionDecl(
+                hasOverloadedOperatorName("*"),
+                returns(qualType(hasCanonicalType(anyOf(
+                    // `value_type& operator*();`
+                    references(BuiltinTypeWithId(ID)),
+                    // `value_type operator*();`
+                    BuiltinTypeWithId(ID),
+                    // `auto operator*();`, `decltype(auto) operator*();`
+                    autoType(hasDeducedType(BuiltinTypeWithId(ID)))
+                    //
+                    )))))))))));
   };
 
   const auto IteratorParam = parmVarDecl(
@@ -35,38 +50,53 @@ void FoldInitTypeCheck::registerMatchers(MatchFinder *Finder) {
       hasType(hasCanonicalType(IteratorWithValueType("Iter2ValueType"))));
   const auto InitParam = parmVarDecl(hasType(BuiltinTypeWithId("InitType")));
 
+  // Transparent standard functors that preserve arithmetic conversion
+  // semantics.
+  const auto TransparentFunctor = expr(hasType(
+      hasCanonicalType(recordType(hasDeclaration(cxxRecordDecl(hasAnyName(
+          "::std::plus", "::std::minus", "::std::multiplies", "::std::divides",
+          "::std::bit_and", "::std::bit_or", "::std::bit_xor")))))));
+
   // std::accumulate, std::reduce.
   Finder->addMatcher(
-      callExpr(callee(functionDecl(
-                   hasAnyName("::std::accumulate", "::std::reduce"),
-                   hasParameter(0, IteratorParam), hasParameter(2, InitParam))),
-               argumentCountIs(3))
+      callExpr(
+          callee(functionDecl(hasAnyName("::std::accumulate", "::std::reduce"),
+                              hasParameter(0, IteratorParam),
+                              hasParameter(2, InitParam))),
+          anyOf(argumentCountIs(3),
+                allOf(argumentCountIs(4), hasArgument(3, TransparentFunctor))))
           .bind("Call"),
       this);
   // std::inner_product.
   Finder->addMatcher(
-      callExpr(callee(functionDecl(hasName("::std::inner_product"),
-                                   hasParameter(0, IteratorParam),
-                                   hasParameter(2, Iterator2Param),
-                                   hasParameter(3, InitParam))),
-               argumentCountIs(4))
+      callExpr(
+          callee(functionDecl(
+              hasName("::std::inner_product"), hasParameter(0, IteratorParam),
+              hasParameter(2, Iterator2Param), hasParameter(3, InitParam))),
+          anyOf(argumentCountIs(4),
+                allOf(argumentCountIs(6), hasArgument(4, TransparentFunctor),
+                      hasArgument(5, TransparentFunctor))))
           .bind("Call"),
       this);
   // std::reduce with a policy.
   Finder->addMatcher(
-      callExpr(callee(functionDecl(hasName("::std::reduce"),
-                                   hasParameter(1, IteratorParam),
-                                   hasParameter(3, InitParam))),
-               argumentCountIs(4))
+      callExpr(
+          callee(functionDecl(hasName("::std::reduce"),
+                              hasParameter(1, IteratorParam),
+                              hasParameter(3, InitParam))),
+          anyOf(argumentCountIs(4),
+                allOf(argumentCountIs(5), hasArgument(4, TransparentFunctor))))
           .bind("Call"),
       this);
   // std::inner_product with a policy.
   Finder->addMatcher(
-      callExpr(callee(functionDecl(hasName("::std::inner_product"),
-                                   hasParameter(1, IteratorParam),
-                                   hasParameter(3, Iterator2Param),
-                                   hasParameter(4, InitParam))),
-               argumentCountIs(5))
+      callExpr(
+          callee(functionDecl(
+              hasName("::std::inner_product"), hasParameter(1, IteratorParam),
+              hasParameter(3, Iterator2Param), hasParameter(4, InitParam))),
+          anyOf(argumentCountIs(5),
+                allOf(argumentCountIs(7), hasArgument(5, TransparentFunctor),
+                      hasArgument(6, TransparentFunctor))))
           .bind("Call"),
       this);
 }

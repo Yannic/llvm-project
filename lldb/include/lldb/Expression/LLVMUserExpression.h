@@ -40,7 +40,7 @@ public:
   static bool classof(const Expression *obj) { return obj->isA(&ID); }
 
   // The IRPasses struct is filled in by a runtime after an expression is
-  // compiled and can be used to to run fixups/analysis passes as required.
+  // compiled and can be used to run fixups/analysis passes as required.
   // EarlyPasses are run on the generated module before lldb runs its own IR
   // fixups and inserts instrumentation code/pointer checks. LatePasses are run
   // after the module has been processed by llvm, before the module is
@@ -52,7 +52,7 @@ public:
   };
 
   LLVMUserExpression(ExecutionContextScope &exe_scope, llvm::StringRef expr,
-                     llvm::StringRef prefix, lldb::LanguageType language,
+                     llvm::StringRef prefix, SourceLanguage language,
                      ResultType desired_type,
                      const EvaluateExpressionOptions &options);
   ~LLVMUserExpression() override;
@@ -77,9 +77,6 @@ protected:
             const EvaluateExpressionOptions &options,
             lldb::UserExpressionSP &shared_ptr_to_me,
             lldb::ExpressionVariableSP &result) override;
-
-  virtual void ScanContext(ExecutionContext &exe_ctx,
-                           lldb_private::Status &err) = 0;
 
   bool PrepareToExecuteJITExpression(DiagnosticManager &diagnostic_manager,
                                      ExecutionContext &exe_ctx,
@@ -114,6 +111,23 @@ protected:
                                        ///to the expression have been
                                        ///materialized.
   Materializer::DematerializerSP m_dematerializer_sp; ///< The dematerializer.
+
+private:
+  /// Allocate the interpreter's private, host-only stack, if one has not been
+  /// allocated already. Idempotent.
+  bool AllocateInterpreterStackFrame(DiagnosticManager &diagnostic_manager,
+                                     Target &target, Process *process);
+
+  /// Prepare the struct holding the expression arguments.
+  ///
+  /// Materialize expression arguments into the argument struct
+  /// (m_materialized_address).
+  ///
+  /// This method allocates the struct on first call, and reuses the original
+  /// allocation on subsequent calls.
+  bool PrepareArgumentStruct(DiagnosticManager &diagnostic_manager,
+                             lldb::StackFrameSP &frame,
+                             lldb::addr_t &struct_address);
 };
 
 } // namespace lldb_private

@@ -77,7 +77,9 @@ void DynamicLoaderHexagonDYLD::Initialize() {
                                 GetPluginDescriptionStatic(), CreateInstance);
 }
 
-void DynamicLoaderHexagonDYLD::Terminate() {}
+void DynamicLoaderHexagonDYLD::Terminate() {
+  PluginManager::UnregisterPlugin(CreateInstance);
+}
 
 llvm::StringRef DynamicLoaderHexagonDYLD::GetPluginDescriptionStatic() {
   return "Dynamic loader plug-in that watches for shared library "
@@ -195,7 +197,7 @@ ModuleSP DynamicLoaderHexagonDYLD::GetTargetExecutable() {
   if (executable.get() != target.GetExecutableModulePointer()) {
     // Don't load dependent images since we are in dyld where we will know and
     // find out about all images that are loaded
-    target.SetExecutableModule(executable, eLoadDependentsNo);
+    target.RebuildModuleListWithExecutable(executable, eLoadDependentsNo);
   }
 
   return executable;
@@ -287,7 +289,7 @@ bool DynamicLoaderHexagonDYLD::SetRendezvousBreakpoint() {
 
     // Make sure our breakpoint is at the right address.
     assert(target.GetBreakpointByID(m_dyld_bid)
-               ->FindLocationByAddress(break_addr)
+               ->FindLocationByAddress(Address(break_addr))
                ->GetBreakpoint()
                .GetID() == m_dyld_bid);
 
@@ -362,13 +364,11 @@ void DynamicLoaderHexagonDYLD::RefreshModules() {
         new_modules.Append(module_sp);
       }
 
-      if (log) {
-        LLDB_LOGF(log, "Target is loading '%s'", I->path.c_str());
-        if (!module_sp.get())
-          LLDB_LOGF(log, "LLDB failed to load '%s'", I->path.c_str());
-        else
-          LLDB_LOGF(log, "LLDB successfully loaded '%s'", I->path.c_str());
-      }
+      LLDB_LOGF(log, "Target is loading '%s'", I->path.c_str());
+      if (!module_sp.get())
+        LLDB_LOGF(log, "LLDB failed to load '%s'", I->path.c_str());
+      else
+        LLDB_LOGF(log, "LLDB successfully loaded '%s'", I->path.c_str());
     }
     m_process->GetTarget().ModulesDidLoad(new_modules);
   }
@@ -405,7 +405,7 @@ DynamicLoaderHexagonDYLD::GetStepThroughTrampolinePlan(Thread &thread,
 
   StackFrame *frame = thread.GetStackFrameAtIndex(0).get();
   const SymbolContext &context = frame->GetSymbolContext(eSymbolContextSymbol);
-  Symbol *sym = context.symbol;
+  const Symbol *sym = context.symbol;
 
   if (sym == nullptr || !sym->IsTrampoline())
     return thread_plan_sp;
@@ -420,21 +420,15 @@ DynamicLoaderHexagonDYLD::GetStepThroughTrampolinePlan(Thread &thread,
   const ModuleList &images = target.GetImages();
 
   images.FindSymbolsWithNameAndType(sym_name, eSymbolTypeCode, target_symbols);
-  size_t num_targets = target_symbols.GetSize();
-  if (!num_targets)
+  if (target_symbols.GetSize() == 0)
     return thread_plan_sp;
 
   typedef std::vector<lldb::addr_t> AddressVector;
   AddressVector addrs;
-  for (size_t i = 0; i < num_targets; ++i) {
-    SymbolContext context;
-    AddressRange range;
-    if (target_symbols.GetContextAtIndex(i, context)) {
-      context.GetAddressRange(eSymbolContextEverything, 0, false, range);
-      lldb::addr_t addr = range.GetBaseAddress().GetLoadAddress(&target);
-      if (addr != LLDB_INVALID_ADDRESS)
-        addrs.push_back(addr);
-    }
+  for (const SymbolContext &context : target_symbols) {
+    addr_t addr = context.GetFunctionOrSymbolAddress().GetLoadAddress(&target);
+    if (addr != LLDB_INVALID_ADDRESS)
+      addrs.push_back(addr);
   }
 
   if (addrs.size() > 0) {

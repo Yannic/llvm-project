@@ -15,7 +15,7 @@
 #ifndef BOLT_CORE_BINARY_LOOP_H
 #define BOLT_CORE_BINARY_LOOP_H
 
-#include "llvm/Analysis/LoopInfoImpl.h"
+#include "llvm/Support/GenericLoopInfo.h"
 
 namespace llvm {
 namespace bolt {
@@ -36,11 +36,6 @@ public:
   uint64_t ExitCount{0};
 
   // Most of the public interface is provided by LoopBase.
-
-protected:
-  friend class LoopInfoBase<BinaryBasicBlock, BinaryLoop>;
-  explicit BinaryLoop(BinaryBasicBlock *BB)
-      : LoopBase<BinaryBasicBlock, BinaryLoop>(BB) {}
 };
 
 class BinaryLoopInfo : public LoopInfoBase<BinaryBasicBlock, BinaryLoop> {

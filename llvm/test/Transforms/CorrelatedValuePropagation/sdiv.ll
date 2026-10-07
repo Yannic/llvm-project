@@ -128,10 +128,10 @@ define void @test5(i32 %n) {
 ; CHECK-NEXT:    br i1 [[CMP]], label [[LOOP:%.*]], label [[EXIT:%.*]]
 ; CHECK:       loop:
 ; CHECK-NEXT:    [[A:%.*]] = phi i32 [ [[N]], [[ENTRY:%.*]] ], [ [[DIV1:%.*]], [[LOOP]] ]
-; CHECK-NEXT:    [[COND:%.*]] = icmp ugt i32 [[A]], 4
+; CHECK-NEXT:    [[COND:%.*]] = icmp samesign ugt i32 [[A]], 4
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[COND]])
 ; CHECK-NEXT:    [[DIV1]] = udiv i32 [[A]], 6
-; CHECK-NEXT:    [[LOOPCOND:%.*]] = icmp ugt i32 [[DIV1]], 8
+; CHECK-NEXT:    [[LOOPCOND:%.*]] = icmp samesign ugt i32 [[DIV1]], 8
 ; CHECK-NEXT:    br i1 [[LOOPCOND]], label [[LOOP]], label [[EXIT]]
 ; CHECK:       exit:
 ; CHECK-NEXT:    ret void
@@ -631,4 +631,145 @@ entry:
 
   %div = sdiv exact i64 %x, %y
   ret i64 %div
+}
+
+define void @sdiv_zero(ptr %p, i32 %arg) {
+; CHECK-LABEL: @sdiv_zero(
+; CHECK-NEXT:    [[ADD:%.*]] = add i32 [[ARG:%.*]], 5
+; CHECK-NEXT:    [[CMP:%.*]] = icmp ult i32 [[ADD]], 11
+; CHECK-NEXT:    call void @llvm.assume(i1 [[CMP]])
+; CHECK-NEXT:    store i32 0, ptr [[P:%.*]], align 4
+; CHECK-NEXT:    ret void
+;
+  %add = add i32 %arg, 5
+  %cmp = icmp ult i32 %add, 11
+  call void @llvm.assume(i1 %cmp)
+  %div = sdiv i32 %arg, 6
+  store i32 %div, ptr %p
+  ret void
+}
+
+define void @sdiv_not_zero(ptr %p, i32 %arg) {
+; CHECK-LABEL: @sdiv_not_zero(
+; CHECK-NEXT:    [[ADD:%.*]] = add i32 [[ARG:%.*]], 5
+; CHECK-NEXT:    [[CMP:%.*]] = icmp ult i32 [[ADD]], 12
+; CHECK-NEXT:    call void @llvm.assume(i1 [[CMP]])
+; CHECK-NEXT:    [[DIV_LHS_TRUNC:%.*]] = trunc i32 [[ARG]] to i8
+; CHECK-NEXT:    [[DIV1:%.*]] = sdiv i8 [[DIV_LHS_TRUNC]], 6
+; CHECK-NEXT:    [[DIV_SEXT:%.*]] = sext i8 [[DIV1]] to i32
+; CHECK-NEXT:    store i32 [[DIV_SEXT]], ptr [[P:%.*]], align 4
+; CHECK-NEXT:    ret void
+;
+  %add = add i32 %arg, 5
+  %cmp = icmp ult i32 %add, 12
+  call void @llvm.assume(i1 %cmp)
+  %div = sdiv i32 %arg, 6
+  store i32 %div, ptr %p
+  ret void
+}
+
+define void @sdiv_pos(ptr %p, i32 %arg) {
+; CHECK-LABEL: @sdiv_pos(
+; CHECK-NEXT:    [[ADD:%.*]] = add i32 [[ARG:%.*]], -12
+; CHECK-NEXT:    [[CMP:%.*]] = icmp ult i32 [[ADD]], 6
+; CHECK-NEXT:    call void @llvm.assume(i1 [[CMP]])
+; CHECK-NEXT:    store i32 2, ptr [[P:%.*]], align 4
+; CHECK-NEXT:    ret void
+;
+  %add = add i32 %arg, -12
+  %cmp = icmp ult i32 %add, 6
+  call void @llvm.assume(i1 %cmp)
+  %div = sdiv i32 %arg, 6
+  store i32 %div, ptr %p
+  ret void
+}
+
+define void @sdiv_neg(ptr %p, i32 %arg) {
+; CHECK-LABEL: @sdiv_neg(
+; CHECK-NEXT:    [[ADD:%.*]] = add i32 [[ARG:%.*]], 17
+; CHECK-NEXT:    [[CMP:%.*]] = icmp ult i32 [[ADD]], 6
+; CHECK-NEXT:    call void @llvm.assume(i1 [[CMP]])
+; CHECK-NEXT:    store i32 -2, ptr [[P:%.*]], align 4
+; CHECK-NEXT:    ret void
+;
+  %add = add i32 %arg, 17
+  %cmp = icmp ult i32 %add, 6
+  call void @llvm.assume(i1 %cmp)
+  %div = sdiv i32 %arg, 6
+  store i32 %div, ptr %p
+  ret void
+}
+
+; The loop guard `%sub > 47` proves %sub non-negative at %div1's only use, so
+; %div1 is converted to udiv.
+define i64 @sdiv_partially_dominated_redundant_pair(i64 %x) {
+; CHECK-LABEL: @sdiv_partially_dominated_redundant_pair(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[SUB:%.*]] = sub i64 0, [[X:%.*]]
+; CHECK-NEXT:    [[DIV1:%.*]] = udiv i64 [[SUB]], 24
+; CHECK-NEXT:    [[C1:%.*]] = icmp sgt i64 [[SUB]], 47
+; CHECK-NEXT:    br i1 [[C1]], label [[BODY:%.*]], label [[EXIT:%.*]]
+; CHECK:       body:
+; CHECK-NEXT:    [[IV:%.*]] = phi i64 [ 1, [[ENTRY:%.*]] ], [ [[NEXT:%.*]], [[BODY]] ]
+; CHECK-NEXT:    store volatile i32 0, ptr null, align 4
+; CHECK-NEXT:    [[NEXT]] = shl i64 [[IV]], 1
+; CHECK-NEXT:    [[C:%.*]] = icmp slt i64 [[NEXT]], [[DIV1]]
+; CHECK-NEXT:    br i1 [[C]], label [[BODY]], label [[EXIT]]
+; CHECK:       exit:
+; CHECK-NEXT:    [[DIV2:%.*]] = sdiv i64 [[SUB]], 24
+; CHECK-NEXT:    ret i64 [[DIV2]]
+;
+entry:
+  %sub = sub i64 0, %x
+  %div1 = sdiv i64 %sub, 24
+  %c1 = icmp sgt i64 %sub, 47
+  br i1 %c1, label %body, label %exit
+
+body:
+  %iv = phi i64 [ 1, %entry ], [ %next, %body ]
+  store volatile i32 0, ptr null, align 4
+  %next = shl i64 %iv, 1
+  %c = icmp slt i64 %next, %div1
+  br i1 %c, label %body, label %exit
+
+exit:
+  %div2 = sdiv i64 %sub, 24
+  ret i64 %div2
+}
+
+define i64 @sdiv_narrowed_breaks_divrem_pairing(ptr %p) {
+; CHECK-LABEL: @sdiv_narrowed_breaks_divrem_pairing(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[X:%.*]] = load i32, ptr [[P:%.*]], align 4
+; CHECK-NEXT:    [[REM:%.*]] = srem i32 [[X]], 1000
+; CHECK-NEXT:    [[DIV_LHS_TRUNC:%.*]] = trunc i32 [[X]] to i16
+; CHECK-NEXT:    [[DIV1:%.*]] = sdiv i16 [[DIV_LHS_TRUNC]], 1000
+; CHECK-NEXT:    [[DIV_SEXT:%.*]] = sext i16 [[DIV1]] to i32
+; CHECK-NEXT:    [[OFF:%.*]] = add i32 [[X]], -4000
+; CHECK-NEXT:    [[C:%.*]] = icmp ult i32 [[OFF]], -4999
+; CHECK-NEXT:    br i1 [[C]], label [[EXIT:%.*]], label [[USE:%.*]]
+; CHECK:       use:
+; CHECK-NEXT:    [[AND:%.*]] = and i32 [[DIV_SEXT]], 255
+; CHECK-NEXT:    [[Z:%.*]] = zext nneg i32 [[AND]] to i64
+; CHECK-NEXT:    ret i64 [[Z]]
+; CHECK:       exit:
+; CHECK-NEXT:    [[R:%.*]] = zext i32 [[REM]] to i64
+; CHECK-NEXT:    ret i64 [[R]]
+;
+entry:
+  %x = load i32, ptr %p, align 4
+  %rem = srem i32 %x, 1000
+  %div = sdiv i32 %x, 1000
+  %off = add i32 %x, -4000
+  %c = icmp ult i32 %off, -4999
+  br i1 %c, label %exit, label %use
+
+use:
+  %and = and i32 %div, 255
+  %z = zext nneg i32 %and to i64
+  ret i64 %z
+
+exit:
+  %r = zext i32 %rem to i64
+  ret i64 %r
 }

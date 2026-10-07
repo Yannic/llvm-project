@@ -22,23 +22,20 @@ namespace Fortran::runtime {
 // through `extentPointer`. The `bufferPointer` is overloaded
 // and is null, points to an array of headers (isIndirection), or data.
 // By default, a header is set to zero, which is its unused state.
-// The layout of a ragged buffer header is mirrored in the compiler.
+// This layout is runtime ABI; compiler-generated code from older flang
+// versions may allocate and access ragged arrays with it.
 struct RaggedArrayHeader {
   std::uint64_t flags;
   void *bufferPointer;
   std::int64_t *extentPointer;
 };
 
-RaggedArrayHeader *RaggedArrayAllocate(
-    RaggedArrayHeader *, bool, std::int64_t, std::int64_t, std::int64_t *);
-
-void RaggedArrayDeallocate(RaggedArrayHeader *);
-
 extern "C" {
 
-// For more on ragged arrays see https://en.wikipedia.org/wiki/Jagged_array. The
-// Flang compiler allocates ragged arrays as a generalization for
-// non-rectangular array temporaries. Ragged arrays can be allocated recursively
+// For more on ragged arrays see https://en.wikipedia.org/wiki/Jagged_array.
+// Flang historically generated ragged arrays as a generalization for
+// non-rectangular array temporaries; these entry points are retained as ABI
+// for previously compiled objects. Ragged arrays can be allocated recursively
 // and on demand. Structurally, each leaf is an optional rectangular array of
 // elements. The shape of each leaf is independent and may be computed on
 // demand. Each branch node is an optional, possibly sparse rectangular array of
@@ -53,12 +50,12 @@ extern "C" {
 // non-negative rank indicates the length of the extentVector, which is a list
 // of non-negative extents. elementSize is the size of a data element in the
 // rectangular space defined by the extentVector.
-void *RTNAME(RaggedArrayAllocate)(void *header, bool isHeader,
+void *RTDECL(RaggedArrayAllocate)(void *header, bool isHeader,
     std::int64_t rank, std::int64_t elementSize, std::int64_t *extentVector);
 
 // Runtime helper for deallocation of ragged array buffers. The root header of
 // the ragged array structure is passed to deallocate the entire ragged array.
-void RTNAME(RaggedArrayDeallocate)(void *raggedArrayHeader);
+void RTDECL(RaggedArrayDeallocate)(void *raggedArrayHeader);
 
 } // extern "C"
 } // namespace Fortran::runtime

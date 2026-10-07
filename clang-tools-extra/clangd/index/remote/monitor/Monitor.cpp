@@ -16,7 +16,7 @@
 
 #include <chrono>
 #include <google/protobuf/util/json_util.h>
-#include <grpc++/grpc++.h>
+#include <grpcpp/grpcpp.h>
 
 namespace clang {
 namespace clangd {
@@ -67,8 +67,9 @@ int main(int argc, char *argv[]) {
       google::protobuf::util::MessageToJsonString(Response, &Output, Options);
   if (!JsonStatus.ok()) {
     clang::clangd::elog("Can not convert response ({0}) to JSON ({1}): {2}\n",
-                        Response.DebugString(), JsonStatus.error_code(),
-                        JsonStatus.error_message().as_string());
+                        Response.DebugString(),
+                        static_cast<int>(JsonStatus.code()),
+                        JsonStatus.message().as_string());
     return -1;
   }
   llvm::outs() << Output;

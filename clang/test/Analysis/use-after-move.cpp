@@ -570,13 +570,8 @@ void differentBranchesTest(int i) {
   {
     A a;
     a.foo() > 0 ? a.foo() : A(std::move(a)).foo();
-#ifdef DFS
-    // peaceful-note@-2 {{Assuming the condition is false}}
-    // peaceful-note@-3 {{'?' condition is false}}
-#else
-    // peaceful-note@-5 {{Assuming the condition is true}}
-    // peaceful-note@-6 {{'?' condition is true}}
-#endif
+    // peaceful-note@-1 {{Assuming the condition is true}}
+    // peaceful-note@-2 {{'?' condition is true}}
   }
   // Same thing, but with a switch statement.
   {
@@ -611,6 +606,14 @@ void tempTest() {
   for (int i = 0; i < bignum(); i++) {
     A::get().foo(); // no-warning
   }
+}
+
+void lifeTimeExtendTest() {
+  A&& a = A{};
+  A b = std::move(a); // peaceful-note {{Object is moved}}
+
+  a.foo(); // peaceful-warning {{Method called on moved-from object}}
+           // peaceful-note@-1 {{Method called on moved-from object}}
 }
 
 void interFunTest1(A &a) {
@@ -1012,3 +1015,16 @@ struct OtherMoveSafeClasses {
     // aggressive-note@-2   {{Moved-from object 'Task' is moved}}
   }
 };
+
+template<class Container>
+void safeOperatorAfterMove(Container lst) {
+    Container dest;
+    lst.push_back(typename Container::value_type {});
+    std::move(lst.begin(), lst.end(), std::back_inserter(dest)); // no-warning
+    lst.size();
+}
+
+template void safeOperatorAfterMove<std::list<int>>(std::list<int>);
+template void safeOperatorAfterMove<std::list<std::string>>(std::list<std::string>);
+template void safeOperatorAfterMove<std::vector<int>>(std::vector<int>);
+template void safeOperatorAfterMove<std::vector<std::string>>(std::vector<std::string>);

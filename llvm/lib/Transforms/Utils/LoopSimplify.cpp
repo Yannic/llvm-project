@@ -47,7 +47,6 @@
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
-#include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/LoopInfo.h"
@@ -83,10 +82,8 @@ static void placeSplitBlockCarefully(BasicBlock *NewBB,
                                      Loop *L) {
   // Check to see if NewBB is already well placed.
   Function::iterator BBI = --NewBB->getIterator();
-  for (unsigned i = 0, e = SplitPreds.size(); i != e; ++i) {
-    if (&*BBI == SplitPreds[i])
-      return;
-  }
+  if (llvm::is_contained(SplitPreds, &*BBI))
+    return;
 
   // If it isn't already after an outside block, move it after one.  This is
   // always good as it makes the uncond branch from the outside block into a
@@ -95,10 +92,10 @@ static void placeSplitBlockCarefully(BasicBlock *NewBB,
   // Figure out *which* outside block to put this after.  Prefer an outside
   // block that neighbors a BB actually in the loop.
   BasicBlock *FoundBB = nullptr;
-  for (unsigned i = 0, e = SplitPreds.size(); i != e; ++i) {
-    Function::iterator BBI = SplitPreds[i]->getIterator();
+  for (BasicBlock *Pred : SplitPreds) {
+    Function::iterator BBI = Pred->getIterator();
     if (++BBI != NewBB->getParent()->end() && L->contains(&*BBI)) {
-      FoundBB = SplitPreds[i];
+      FoundBB = Pred;
       break;
     }
   }
@@ -172,7 +169,7 @@ static void addBlockAndPredsToSet(BasicBlock *InputBB, BasicBlock *StopBlock,
 /// us how to partition the loops.
 static PHINode *findPHIToPartitionLoops(Loop *L, DominatorTree *DT,
                                         AssumptionCache *AC) {
-  const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
+  const DataLayout &DL = L->getHeader()->getDataLayout();
   for (BasicBlock::iterator I = L->getHeader()->begin(); isa<PHINode>(I); ) {
     PHINode *PN = cast<PHINode>(I);
     ++I;
@@ -280,10 +277,7 @@ static Loop *separateNestedLoop(Loop *L, BasicBlock *Preheader,
   Loop *NewOuter = LI->AllocateLoop();
 
   // Change the parent loop to use the outer loop as its child now.
-  if (Loop *Parent = L->getParentLoop())
-    Parent->replaceChildLoopWith(L, NewOuter);
-  else
-    LI->changeTopLevelLoop(L, NewOuter);
+  LI->replaceLoop(L, NewOuter);
 
   // L is now a subloop of our outer loop.
   NewOuter->addChildLoop(L);
@@ -381,11 +375,11 @@ static BasicBlock *insertUniqueBackedgeBlock(Loop *L, BasicBlock *Preheader,
     if (P != Preheader) BackedgeBlocks.push_back(P);
   }
 
-  // Create and insert the new backedge block...
+  // Create and insert the new backedge block.
   BasicBlock *BEBlock = BasicBlock::Create(Header->getContext(),
                                            Header->getName() + ".backedge", F);
-  BranchInst *BETerminator = BranchInst::Create(Header, BEBlock);
-  BETerminator->setDebugLoc(Header->getFirstNonPHI()->getDebugLoc());
+  UncondBrInst *BETerminator = UncondBrInst::Create(Header, BEBlock);
+  BETerminator->setDebugLoc(Header->getFirstNonPHIIt()->getDebugLoc());
 
   LLVM_DEBUG(dbgs() << "LoopSimplify: Inserting unique backedge block "
                     << BEBlock->getName() << "\n");
@@ -399,7 +393,7 @@ static BasicBlock *insertUniqueBackedgeBlock(Loop *L, BasicBlock *Preheader,
   for (BasicBlock::iterator I = Header->begin(); isa<PHINode>(I); ++I) {
     PHINode *PN = cast<PHINode>(I);
     PHINode *NewPN = PHINode::Create(PN->getType(), BackedgeBlocks.size(),
-                                     PN->getName()+".be", BETerminator);
+                                     PN->getName()+".be", BETerminator->getIterator());
 
     // Loop over the PHI node, moving all entries except the one for the
     // preheader over to the new PHI node.
@@ -429,8 +423,8 @@ static BasicBlock *insertUniqueBackedgeBlock(Loop *L, BasicBlock *Preheader,
       PN->setIncomingBlock(0, PN->getIncomingBlock(PreheaderIdx));
     }
     // Nuke all entries except the zero'th.
-    for (unsigned i = 0, e = PN->getNumIncomingValues()-1; i != e; ++i)
-      PN->removeIncomingValue(e-i, false);
+    PN->removeIncomingValueIf([](unsigned Idx) { return Idx != 0; },
+                              /* DeletePHIIfEmpty */ false);
 
     // Finally, add the newly constructed PHI node as the entry for the BEBlock.
     PN->addIncoming(NewPN, BEBlock);
@@ -448,16 +442,15 @@ static BasicBlock *insertUniqueBackedgeBlock(Loop *L, BasicBlock *Preheader,
   // backedge blocks to jump to the BEBlock instead of the header.
   // If one of the backedges has llvm.loop metadata attached, we remove
   // it from the backedge and add it to BEBlock.
-  unsigned LoopMDKind = BEBlock->getContext().getMDKindID("llvm.loop");
   MDNode *LoopMD = nullptr;
   for (BasicBlock *BB : BackedgeBlocks) {
     Instruction *TI = BB->getTerminator();
     if (!LoopMD)
-      LoopMD = TI->getMetadata(LoopMDKind);
-    TI->setMetadata(LoopMDKind, nullptr);
+      LoopMD = TI->getMetadata(LLVMContext::MD_loop);
+    TI->setMetadata(LLVMContext::MD_loop, nullptr);
     TI->replaceSuccessorWith(Header, BEBlock);
   }
-  BEBlock->getTerminator()->setMetadata(LoopMDKind, LoopMD);
+  BEBlock->getTerminator()->setMetadata(LLVMContext::MD_loop, LoopMD);
 
   //===--- Update all analyses which we must preserve now -----------------===//
 
@@ -522,20 +515,19 @@ ReprocessLoop:
   SmallVector<BasicBlock*, 8> ExitingBlocks;
   L->getExitingBlocks(ExitingBlocks);
   for (BasicBlock *ExitingBlock : ExitingBlocks)
-    if (BranchInst *BI = dyn_cast<BranchInst>(ExitingBlock->getTerminator()))
-      if (BI->isConditional()) {
-        if (UndefValue *Cond = dyn_cast<UndefValue>(BI->getCondition())) {
+    if (CondBrInst *BI = dyn_cast<CondBrInst>(ExitingBlock->getTerminator())) {
+      if (UndefValue *Cond = dyn_cast<UndefValue>(BI->getCondition())) {
 
-          LLVM_DEBUG(dbgs()
-                     << "LoopSimplify: Resolving \"br i1 undef\" to exit in "
-                     << ExitingBlock->getName() << "\n");
+        LLVM_DEBUG(
+            dbgs() << "LoopSimplify: Resolving \"br i1 undef\" to exit in "
+                   << ExitingBlock->getName() << "\n");
 
-          BI->setCondition(ConstantInt::get(Cond->getType(),
-                                            !L->contains(BI->getSuccessor(0))));
+        BI->setCondition(ConstantInt::get(Cond->getType(),
+                                          !L->contains(BI->getSuccessor(0))));
 
-          Changed = true;
-        }
+        Changed = true;
       }
+    }
 
   // Does the loop already have a preheader?  If so, don't insert one.
   BasicBlock *Preheader = L->getLoopPreheader();
@@ -589,7 +581,7 @@ ReprocessLoop:
   if (MSSAU && VerifyMemorySSA)
     MSSAU->getMemorySSA()->verifyMemorySSA();
 
-  const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
+  const DataLayout &DL = L->getHeader()->getDataLayout();
 
   // Scan over the PHI nodes in the loop header.  Since they now have only two
   // incoming values (the loop is canonicalized), we may have simplified the PHI
@@ -631,11 +623,11 @@ ReprocessLoop:
     return true;
   };
   if (HasUniqueExitBlock()) {
-    for (unsigned i = 0, e = ExitingBlocks.size(); i != e; ++i) {
-      BasicBlock *ExitingBlock = ExitingBlocks[i];
+    for (BasicBlock *ExitingBlock : ExitingBlocks) {
       if (!ExitingBlock->getSinglePredecessor()) continue;
-      BranchInst *BI = dyn_cast<BranchInst>(ExitingBlock->getTerminator());
-      if (!BI || !BI->isConditional()) continue;
+      CondBrInst *BI = dyn_cast<CondBrInst>(ExitingBlock->getTerminator());
+      if (!BI)
+        continue;
       CmpInst *CI = dyn_cast<CmpInst>(BI->getCondition());
       if (!CI || CI->getParent() != ExitingBlock) continue;
 
@@ -643,7 +635,7 @@ ReprocessLoop:
       // comparison and the branch.
       bool AllInvariant = true;
       bool AnyInvariant = false;
-      for (auto I = ExitingBlock->instructionsWithoutDebug().begin(); &*I != BI; ) {
+      for (auto I = ExitingBlock->begin(); &*I != BI;) {
         Instruction *Inst = &*I++;
         if (Inst == CI)
           continue;
@@ -661,7 +653,7 @@ ReprocessLoop:
       // The block has now been cleared of all instructions except for
       // a comparison and a conditional branch. SimplifyCFG may be able
       // to fold it now.
-      if (!FoldBranchToCommonDest(BI, /*DTU=*/nullptr, MSSAU))
+      if (!foldBranchToCommonDest(BI, /*DTU=*/nullptr, MSSAU))
         continue;
 
       // Success. The block is now dead, so remove it from the loop,
@@ -674,10 +666,8 @@ ReprocessLoop:
       LI->removeBlock(ExitingBlock);
 
       DomTreeNode *Node = DT->getNode(ExitingBlock);
-      while (!Node->isLeaf()) {
-        DomTreeNode *Child = Node->back();
-        DT->changeImmediateDominator(Child, Node->getIDom());
-      }
+      while (!Node->isLeaf())
+        DT->changeImmediateDominator(*Node->begin(), Node->getIDom());
       DT->eraseNode(ExitingBlock);
       if (MSSAU) {
         SmallSetVector<BasicBlock *, 8> ExitBlockSet;
@@ -692,12 +682,6 @@ ReprocessLoop:
       ExitingBlock->eraseFromParent();
     }
   }
-
-  // Changing exit conditions for blocks may affect exit counts of this loop and
-  // any of its paretns, so we must invalidate the entire subtree if we've made
-  // any changes.
-  if (Changed && SE)
-    SE->forgetTopmostLoop(L);
 
   if (MSSAU && VerifyMemorySSA)
     MSSAU->getMemorySSA()->verifyMemorySSA();
@@ -737,44 +721,50 @@ bool llvm::simplifyLoop(Loop *L, DominatorTree *DT, LoopInfo *LI,
     Changed |= simplifyOneLoop(Worklist.pop_back_val(), Worklist, DT, LI, SE,
                                AC, MSSAU, PreserveLCSSA);
 
+  // Changing exit conditions for blocks may affect exit counts of this loop and
+  // any of its parents, so we must invalidate the entire subtree if we've made
+  // any changes. Do this here rather than in simplifyOneLoop() as the top-most
+  // loop is going to be the same for all child loops.
+  if (Changed && SE)
+    SE->forgetTopmostLoop(L);
+
   return Changed;
 }
 
 namespace {
-  struct LoopSimplify : public FunctionPass {
-    static char ID; // Pass identification, replacement for typeid
-    LoopSimplify() : FunctionPass(ID) {
-      initializeLoopSimplifyPass(*PassRegistry::getPassRegistry());
-    }
+struct LoopSimplify : public FunctionPass {
+  static char ID; // Pass identification, replacement for typeid
+  LoopSimplify() : FunctionPass(ID) {
+    initializeLoopSimplifyPass(*PassRegistry::getPassRegistry());
+  }
 
-    bool runOnFunction(Function &F) override;
+  bool runOnFunction(Function &F) override;
 
-    void getAnalysisUsage(AnalysisUsage &AU) const override {
-      AU.addRequired<AssumptionCacheTracker>();
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<AssumptionCacheTracker>();
 
-      // We need loop information to identify the loops...
-      AU.addRequired<DominatorTreeWrapperPass>();
-      AU.addPreserved<DominatorTreeWrapperPass>();
+    // We need loop information to identify the loops.
+    AU.addRequired<DominatorTreeWrapperPass>();
+    AU.addPreserved<DominatorTreeWrapperPass>();
 
-      AU.addRequired<LoopInfoWrapperPass>();
-      AU.addPreserved<LoopInfoWrapperPass>();
+    AU.addRequired<LoopInfoWrapperPass>();
+    AU.addPreserved<LoopInfoWrapperPass>();
 
-      AU.addPreserved<BasicAAWrapperPass>();
-      AU.addPreserved<AAResultsWrapperPass>();
-      AU.addPreserved<GlobalsAAWrapperPass>();
-      AU.addPreserved<ScalarEvolutionWrapperPass>();
-      AU.addPreserved<SCEVAAWrapperPass>();
-      AU.addPreservedID(LCSSAID);
-      AU.addPreserved<DependenceAnalysisWrapperPass>();
-      AU.addPreservedID(BreakCriticalEdgesID);  // No critical edges added.
-      AU.addPreserved<BranchProbabilityInfoWrapperPass>();
-      AU.addPreserved<MemorySSAWrapperPass>();
-    }
+    AU.addPreserved<BasicAAWrapperPass>();
+    AU.addPreserved<AAResultsWrapperPass>();
+    AU.addPreserved<GlobalsAAWrapperPass>();
+    AU.addPreserved<ScalarEvolutionWrapperPass>();
+    AU.addPreserved<SCEVAAWrapperPass>();
+    AU.addPreservedID(LCSSAID);
+    AU.addPreservedID(BreakCriticalEdgesID); // No critical edges added.
+    AU.addPreserved<BranchProbabilityInfoWrapperPass>();
+    AU.addPreserved<MemorySSAWrapperPass>();
+  }
 
-    /// verifyAnalysis() - Verify LoopSimplifyForm's guarantees.
-    void verifyAnalysis() const override;
-  };
-}
+  /// verifyAnalysis() - Verify LoopSimplifyForm's guarantees.
+  void verifyAnalysis() const override;
+};
+} // namespace
 
 char LoopSimplify::ID = 0;
 INITIALIZE_PASS_BEGIN(LoopSimplify, "loop-simplify",
@@ -782,15 +772,15 @@ INITIALIZE_PASS_BEGIN(LoopSimplify, "loop-simplify",
 INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
-INITIALIZE_PASS_END(LoopSimplify, "loop-simplify",
-                "Canonicalize natural loops", false, false)
+INITIALIZE_PASS_END(LoopSimplify, "loop-simplify", "Canonicalize natural loops",
+                    false, false)
 
-// Publicly exposed interface to pass...
+// Publicly exposed interface to pass.
 char &llvm::LoopSimplifyID = LoopSimplify::ID;
 Pass *llvm::createLoopSimplifyPass() { return new LoopSimplify(); }
 
 /// runOnFunction - Run down all loops in the CFG (recursively, but we could do
-/// it in any convenient order) inserting preheaders...
+/// it in any convenient order) inserting preheaders.
 ///
 bool LoopSimplify::runOnFunction(Function &F) {
   bool Changed = false;
@@ -852,7 +842,6 @@ PreservedAnalyses LoopSimplifyPass::run(Function &F,
   PA.preserve<DominatorTreeAnalysis>();
   PA.preserve<LoopAnalysis>();
   PA.preserve<ScalarEvolutionAnalysis>();
-  PA.preserve<DependenceAnalysis>();
   if (MSSAAnalysis)
     PA.preserve<MemorySSAAnalysis>();
   // BPI maps conditional terminators to probabilities, LoopSimplify can insert

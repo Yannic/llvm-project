@@ -19,6 +19,7 @@
 #include "lldb/lldb-private-enumerations.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 
 #include <vector>
@@ -58,9 +59,8 @@ public:
 
   void GetStatus(Stream &strm) override;
 
-  Status GetSharedModule(const ModuleSpec &module_spec, Process *process,
+  Status GetSharedModule(const ModuleSpec &module_spec, Target &target,
                          lldb::ModuleSP &module_sp,
-                         const FileSpecList *module_search_paths_ptr,
                          llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules,
                          bool *did_create_ptr) override;
 
@@ -76,7 +76,6 @@ protected:
   // the kext bundle on the host
   // ("/System/Library/Extensions/exfat.kext/Contents/Info.plist").
   typedef std::multimap<ConstString, FileSpec> BundleIDToKextMap;
-  typedef BundleIDToKextMap::iterator BundleIDToKextIterator;
 
   typedef std::vector<FileSpec> KernelBinaryCollection;
 
@@ -137,25 +136,35 @@ protected:
   // with the binary inside it ('.../foo.dSYM/Contents/Resources/DWARF/foo').
   // A dSYM bundle may have multiple DWARF binaries in them, so a vector
   // of matches is returned.
-  static std::vector<FileSpec> GetDWARFBinaryInDSYMBundle(FileSpec dsym_bundle);
+  static std::vector<FileSpec>
+  GetDWARFBinaryInDSYMBundle(const FileSpec &dsym_bundle);
 
-  Status GetSharedModuleKext(const ModuleSpec &module_spec, Process *process,
-                             lldb::ModuleSP &module_sp,
-                             const FileSpecList *module_search_paths_ptr,
-                             llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules,
-                             bool *did_create_ptr);
+  llvm::Expected<lldb::ModuleSP>
+  GetSharedModuleKext(const ModuleSpec &module_spec, Target &target,
+                      llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules,
+                      bool *did_create_ptr);
 
-  Status GetSharedModuleKernel(
-      const ModuleSpec &module_spec, Process *process,
-      lldb::ModuleSP &module_sp, const FileSpecList *module_search_paths_ptr,
-      llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules, bool *did_create_ptr);
+  llvm::Expected<lldb::ModuleSP>
+  GetSharedModuleKernel(const ModuleSpec &module_spec, Target &target,
+                        llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules,
+                        bool *did_create_ptr);
 
-  Status ExamineKextForMatchingUUID(const FileSpec &kext_bundle_path,
-                                    const UUID &uuid, const ArchSpec &arch,
-                                    lldb::ModuleSP &exe_module_sp);
+  /// Search the kext index for a bundle ID with a matching UUID.
+  lldb::ModuleSP FindKextInIndex(const ModuleSpec &module_spec);
+
+  /// Search the kernel index for a binary with a matching UUID, and for its
+  /// symbols.
+  lldb::ModuleSP FindKernelInIndex(const ModuleSpec &module_spec,
+                                   const FileSpecList &search_paths);
+
+  lldb::ModuleSP ExamineKextForMatchingUUID(const FileSpec &kext_bundle_path,
+                                            const UUID &uuid,
+                                            const ArchSpec &arch);
 
   bool LoadPlatformBinaryAndSetup(Process *process, lldb::addr_t addr,
                                   bool notify) override;
+
+  void UpdateKextandKernelsLocalScan();
 
   // Most of the ivars are assembled under FileSystem::EnumerateDirectory calls
   // where the function being called for each file/directory must be static.
@@ -192,6 +201,8 @@ public:
   KernelBinaryCollection m_kernel_dsyms_yaas;
 
   LazyBool m_ios_debug_session;
+
+  std::once_flag m_kext_scan_flag;
 
   PlatformDarwinKernel(const PlatformDarwinKernel &) = delete;
   const PlatformDarwinKernel &operator=(const PlatformDarwinKernel &) = delete;

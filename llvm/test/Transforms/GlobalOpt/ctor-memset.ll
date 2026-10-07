@@ -3,7 +3,7 @@
 
 target datalayout = "p1:32:32"
 
-@llvm.global_ctors = appending global [9 x { i32, ptr, ptr }] [
+@llvm.global_ctors = appending global [11 x { i32, ptr, ptr }] [
   { i32, ptr, ptr } { i32 65535, ptr @ctor0, ptr null },
   { i32, ptr, ptr } { i32 65535, ptr @ctor1, ptr null },
   { i32, ptr, ptr } { i32 65535, ptr @ctor2, ptr null },
@@ -12,24 +12,28 @@ target datalayout = "p1:32:32"
   { i32, ptr, ptr } { i32 65535, ptr @ctor5, ptr null },
   { i32, ptr, ptr } { i32 65535, ptr @ctor6, ptr null },
   { i32, ptr, ptr } { i32 65535, ptr @ctor7, ptr null },
-  { i32, ptr, ptr } { i32 65535, ptr @ctor8, ptr null }
+  { i32, ptr, ptr } { i32 65535, ptr @ctor8, ptr null },
+  { i32, ptr, ptr } { i32 65535, ptr @ctor9, ptr null },
+  { i32, ptr, ptr } { i32 65535, ptr @ctor10, ptr null }
 ]
 
-;.
-; CHECK: @[[LLVM_GLOBAL_CTORS:[a-zA-Z0-9_$"\\.-]+]] = appending global [3 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @ctor3, ptr null }, { i32, ptr, ptr } { i32 65535, ptr @ctor4, ptr null }, { i32, ptr, ptr } { i32 65535, ptr @ctor7, ptr null }]
-; CHECK: @[[G0:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32 } zeroinitializer
-; CHECK: @[[G1:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32, i32 } { i32 0, i32 0, i32 1 }
-; CHECK: @[[G2:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32, i32 } { i32 1, i32 0, i32 0 }
-; CHECK: @[[G3:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32 } { i32 0, i32 1 }
-; CHECK: @[[G4:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32 } { i32 0, i32 undef }
-; CHECK: @[[G5:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i16, i32 } { i16 0, i32 1 }
-; CHECK: @[[G6:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32 } { i32 -1, i32 -1 }
-; CHECK: @[[G7:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr global { i32, i32 } { i32 -1, i32 1 }
-; CHECK: @[[G8:[a-zA-Z0-9_$"\\.-]+]] = local_unnamed_addr addrspace(1) global { i32, i32 } zeroinitializer
-;.
 
 ; memset of all-zero global
 @g0 = global { i32, i32 } zeroinitializer
+;.
+; CHECK: @llvm.global_ctors = appending global [4 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @ctor3, ptr null }, { i32, ptr, ptr } { i32 65535, ptr @ctor4, ptr null }, { i32, ptr, ptr } { i32 65535, ptr @ctor7, ptr null }, { i32, ptr, ptr } { i32 65535, ptr @ctor10, ptr null }]
+; CHECK: @g0 = local_unnamed_addr global { i32, i32 } zeroinitializer
+; CHECK: @g1 = local_unnamed_addr global { i32, i32, i32 } { i32 0, i32 0, i32 1 }
+; CHECK: @g2 = local_unnamed_addr global { i32, i32, i32 } { i32 1, i32 0, i32 0 }
+; CHECK: @g3 = local_unnamed_addr global { i32, i32 } { i32 0, i32 1 }
+; CHECK: @g4 = local_unnamed_addr global { i32, i32 } { i32 0, i32 undef }
+; CHECK: @g5 = local_unnamed_addr global { i16, i32 } { i16 0, i32 1 }
+; CHECK: @g6 = local_unnamed_addr global { i32, i32 } { i32 -1, i32 -1 }
+; CHECK: @g7 = local_unnamed_addr global { i32, i32 } { i32 -1, i32 1 }
+; CHECK: @g8 = local_unnamed_addr addrspace(1) global { i32, i32 } zeroinitializer
+; CHECK: @g9 = local_unnamed_addr global [100000000 x i32] zeroinitializer
+; CHECK: @g10 = local_unnamed_addr global { [99999999 x i32], i32 } { [99999999 x i32] zeroinitializer, i32 1 }
+;.
 define internal void @ctor0() {
   call void @llvm.memset.p0.i64(ptr @g0, i8 0, i64 8, i1 false)
   ret void
@@ -113,7 +117,25 @@ define internal void @ctor8() {
   ret void
 }
 
+@g9 = global [100000000 x i32] zeroinitializer
+
+define internal void @ctor9() {
+  call void @llvm.memset.p0.i64(ptr @g9, i8 0, i64 100000000, i1 false)
+  ret void
+}
+
+@g10 = global { [99999999 x i32], i32 } { [99999999 x i32 ] zeroinitializer, i32 1 }
+
+define internal void @ctor10() {
+; CHECK-LABEL: @ctor10(
+; CHECK-NEXT:    call void @llvm.memset.p0.i64(ptr @g10, i8 0, i64 100000000, i1 false)
+; CHECK-NEXT:    ret void
+;
+  call void @llvm.memset.p0.i64(ptr @g10, i8 0, i64 100000000, i1 false)
+  ret void
+}
+
 declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)
 ;.
-; CHECK: attributes #[[ATTR0:[0-9]+]] = { nocallback nofree nounwind willreturn memory(argmem: write) }
+; CHECK: attributes #[[ATTR0:[0-9]+]] = { nocallback nofree nosync nounwind willreturn memory(argmem: write) }
 ;.

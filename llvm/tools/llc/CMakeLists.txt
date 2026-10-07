@@ -4,13 +4,17 @@ set(LLVM_LINK_COMPONENTS
   AllTargetsDescs
   AllTargetsInfos
   Analysis
-  AsmParser
   AsmPrinter
   CodeGen
+  CodeGenTypes
   Core
+  IPO
+  IRPrinter
   IRReader
   MC
   MIRParser
+  Passes
+  Plugins
   Remarks
   ScalarOpts
   SelectionDAG
@@ -28,5 +32,8 @@ add_llvm_tool(llc
   intrinsics_gen
   SUPPORT_PLUGINS
   )
+
+add_subdirectory(lib)
+target_link_libraries(llc PRIVATE LLVMLlcDriver)
 
 export_executable_symbols_for_plugins(llc)

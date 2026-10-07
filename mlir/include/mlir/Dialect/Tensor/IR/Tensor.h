@@ -9,20 +9,26 @@
 #ifndef MLIR_DIALECT_TENSOR_IR_TENSOR_H_
 #define MLIR_DIALECT_TENSOR_IR_TENSOR_H_
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/Dialect/Tensor/IR/TensorDialect.h"
 #include "mlir/Dialect/Utils/ReshapeOpsUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/CastInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
+#include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/ParallelCombiningOpInterface.h"
 #include "mlir/Interfaces/ShapedOpInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+
+namespace llvm {
+class SmallBitVector;
+} // namespace llvm
 
 //===----------------------------------------------------------------------===//
 // Tensor Dialect Helpers
@@ -37,12 +43,6 @@ SmallVector<Range, 8> getOrCreateRanges(OffsetSizeAndStrideOpInterface op,
                                         OpBuilder &b, Location loc);
 
 } // namespace mlir
-
-//===----------------------------------------------------------------------===//
-// Tensor Dialect
-//===----------------------------------------------------------------------===//
-
-#include "mlir/Dialect/Tensor/IR/TensorOpsDialect.h.inc"
 
 //===----------------------------------------------------------------------===//
 // Tensor Dialect Operations
@@ -108,13 +108,43 @@ bool canFoldIntoConsumerOp(CastOp castOp);
 /// this method provides a check that it is worth doing the canonicalization.
 bool canFoldIntoProducerOp(CastOp castOp);
 
+/// Return true if any of the operands of `op` is a CastOp that can be folded
+/// into its consumer, i.e. `op`. This is effectively a convenience wrapper for
+/// `canFoldIntoProducerOp`.
+bool hasFoldableTensorCastOperand(Operation *op);
+
+/// Assuming that `op` contains at least one operand that is a foldable CastOp
+/// (i.e. `hasFoldableTensorCastOperand` returns true), calculate the updated
+/// operands.
+SmallVector<Value>
+getUpdatedOperandsAfterCastOpFolding(DestinationStyleOpInterface op,
+                                     SmallVector<Type> &newResTy);
+
 /// Performs folding of any operand of `op` if it comes from a tensor::CastOp
 /// that can be folded.
 LogicalResult foldTensorCast(Operation *op);
 
+/// Return the dimension of the given tensor value.
+OpFoldResult getMixedSize(OpBuilder &builder, Location loc, Value value,
+                          int64_t dim);
+
 /// Return the dimensions of the given tensor value.
 SmallVector<OpFoldResult> getMixedSizes(OpBuilder &builder, Location loc,
                                         Value value);
+
+/// Infer a slice type for the given sizes and exact dropped-dimension mask. The
+/// result shape omits the sizes whose corresponding bits are set in
+/// `droppedDims`. The encoding of `sourceTensorType` is propagated to the
+/// inferred result type.
+RankedTensorType inferSliceType(RankedTensorType sourceTensorType,
+                                ArrayRef<int64_t> staticSizes,
+                                const llvm::SmallBitVector &droppedDims);
+/// SSA-valued sizes resolve to dynamic dimensions in the inferred type. Only
+/// static unit dimensions may be dropped from the source type to produce the
+/// result slice type.
+RankedTensorType inferSliceType(RankedTensorType sourceTensorType,
+                                ArrayRef<OpFoldResult> sizes,
+                                const llvm::SmallBitVector &droppedDims);
 
 /// Create a rank-reducing ExtractSliceOp @[0 .. 0] with strides [1 .. 1] and
 /// appropriate sizes (i.e. `tensor.getSizes()`) to reduce the rank of `tensor`
@@ -142,6 +172,9 @@ FailureOr<Value> getOrCreateDestination(OpBuilder &b, Location loc,
 LogicalResult getOrCreateDestinations(OpBuilder &b, Location loc, Operation *op,
                                       SmallVector<Value> &result);
 
+/// Tests if types are the same when ignoring encoding on ranked tensors.
+bool isSameTypeWithoutEncoding(Type tp1, Type tp2);
+
 /// Function to control the folding of constant and extract slice.
 using ControlConstantExtractSliceFusionFn = std::function<bool(ExtractSliceOp)>;
 
@@ -155,8 +188,9 @@ void populateFoldConstantExtractSlicePatterns(
           return false;
         });
 
-/// Patterns to simplify tensor.pack.
-void populateSimplifyTensorPack(RewritePatternSet &patterns);
+/// Patterns to fold extracts of a collapse_shaped tensor to an extract of the
+/// source tensor.
+void populateFoldCollapseExtractPatterns(RewritePatternSet &patterns);
 
 } // namespace tensor
 } // namespace mlir

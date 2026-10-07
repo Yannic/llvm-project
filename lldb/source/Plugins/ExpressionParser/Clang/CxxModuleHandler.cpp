@@ -42,7 +42,7 @@ CxxModuleHandler::CxxModuleHandler(ASTImporter &importer, ASTContext *target)
       "allocator",
       "pair",
   };
-  m_supported_templates.insert(supported_names.begin(), supported_names.end());
+  m_supported_templates.insert_range(supported_names);
 }
 
 /// Builds a list of scopes that point into the given context.
@@ -239,7 +239,8 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
         LLDB_LOG_ERROR(log, type.takeError(), "Couldn't import type: {0}");
         return std::nullopt;
       }
-      imported_args.push_back(TemplateArgument(*type));
+      imported_args.push_back(
+          TemplateArgument(*type, /*isNullPtr*/ false, arg.getIsDefaulted()));
       break;
     }
     case TemplateArgument::Integral: {
@@ -250,8 +251,8 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
         LLDB_LOG_ERROR(log, type.takeError(), "Couldn't import type: {0}");
         return std::nullopt;
       }
-      imported_args.push_back(
-          TemplateArgument(d->getASTContext(), integral, *type));
+      imported_args.push_back(TemplateArgument(d->getASTContext(), integral,
+                                               *type, arg.getIsDefaulted()));
       break;
     }
     default:
@@ -261,9 +262,9 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
 
   // Find the class template specialization declaration that
   // corresponds to these arguments.
-  void *InsertPos = nullptr;
+  llvm::FoldingSetInsertToken InsertToken;
   ClassTemplateSpecializationDecl *result =
-      new_class_template->findSpecialization(imported_args, InsertPos);
+      new_class_template->findSpecialization(imported_args, InsertToken);
 
   if (result) {
     // We found an existing specialization in the module that fits our arguments
@@ -279,9 +280,10 @@ std::optional<Decl *> CxxModuleHandler::tryInstantiateStdTemplate(Decl *d) {
       new_class_template->getDeclContext(),
       new_class_template->getTemplatedDecl()->getLocation(),
       new_class_template->getLocation(), new_class_template, imported_args,
-      nullptr);
+      td->hasStrictPackMatch(),
+      /*PrevDecl=*/nullptr);
 
-  new_class_template->AddSpecialization(result, InsertPos);
+  new_class_template->AddSpecialization(result, InsertToken);
   if (new_class_template->isOutOfLine())
     result->setLexicalDeclContext(
         new_class_template->getLexicalDeclContext());

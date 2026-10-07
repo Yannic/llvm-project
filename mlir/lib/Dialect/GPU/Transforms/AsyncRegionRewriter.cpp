@@ -16,14 +16,11 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/GPU/Transforms/Utils.h"
+#include "mlir/Dialect/GPU/Utils/GPUUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
@@ -111,9 +108,10 @@ private:
     resultTypes.reserve(1 + op->getNumResults());
     copy(op->getResultTypes(), std::back_inserter(resultTypes));
     resultTypes.push_back(tokenType);
-    auto *newOp = Operation::create(op->getLoc(), op->getName(), resultTypes,
-                                    op->getOperands(), op->getAttrDictionary(),
-                                    op->getSuccessors(), op->getNumRegions());
+    auto *newOp = Operation::create(
+        op->getLoc(), op->getName(), resultTypes, op->getOperands(),
+        op->getDiscardableAttrDictionary(), op->getPropertiesStorage(),
+        op->getSuccessors(), op->getNumRegions());
 
     // Clone regions into new op.
     IRMapping mapping;
@@ -131,7 +129,7 @@ private:
   }
 
   Value createWaitOp(Location loc, Type resultType, ValueRange operands) {
-    return builder.create<gpu::WaitOp>(loc, resultType, operands)
+    return gpu::WaitOp::create(builder, loc, resultType, operands)
         .getAsyncToken();
   }
 
@@ -145,8 +143,8 @@ private:
 };
 
 /// Erases `executeOp` and returns a clone with additional `results`.
-async::ExecuteOp addExecuteResults(async::ExecuteOp executeOp,
-                                   ValueRange results) {
+static async::ExecuteOp addExecuteResults(async::ExecuteOp executeOp,
+                                          ValueRange results) {
   // Add values to async.yield op.
   Operation *yieldOp = executeOp.getBody()->getTerminator();
   yieldOp->insertOperands(yieldOp->getNumOperands(), results);
@@ -157,9 +155,9 @@ async::ExecuteOp addExecuteResults(async::ExecuteOp executeOp,
   transform(executeOp.getResultTypes(), std::back_inserter(resultTypes),
             [](Type type) {
               // Extract value type from !async.value.
-              if (auto valueType = type.dyn_cast<async::ValueType>())
+              if (auto valueType = dyn_cast<async::ValueType>(type))
                 return valueType.getValueType();
-              assert(type.isa<async::TokenType>() && "expected token type");
+              assert(isa<async::TokenType>(type) && "expected token type");
               return type;
             });
   transform(results, std::back_inserter(resultTypes),
@@ -167,8 +165,9 @@ async::ExecuteOp addExecuteResults(async::ExecuteOp executeOp,
 
   // Clone executeOp with the extra results.
   OpBuilder builder(executeOp);
-  auto newOp = builder.create<async::ExecuteOp>(
-      executeOp.getLoc(), TypeRange{resultTypes}.drop_front() /*drop token*/,
+  auto newOp = async::ExecuteOp::create(
+      builder, executeOp.getLoc(),
+      TypeRange{resultTypes}.drop_front() /*drop token*/,
       executeOp.getDependencies(), executeOp.getBodyOperands());
   IRMapping mapper;
   newOp.getRegion().getBlocks().clear();
@@ -231,9 +230,8 @@ private:
   // control flow code.
   static bool areAllUsersExecuteOrAwait(Value token) {
     return !token.use_empty() &&
-           llvm::all_of(token.getUsers(), [](Operation *user) {
-             return isa<async::ExecuteOp, async::AwaitOp>(user);
-           });
+           llvm::all_of(token.getUsers(),
+                        llvm::IsaPred<async::ExecuteOp, async::AwaitOp>);
   }
 
   // Add the `asyncToken` as dependency as needed after `op`.
@@ -245,16 +243,16 @@ private:
     SmallVector<Value, 1> tokens;
     tokens.reserve(asyncTokens.size());
     TypeSwitch<Operation *>(op)
-        .Case<async::AwaitOp>([&](auto awaitOp) {
+        .Case([&](async::AwaitOp awaitOp) {
           // Add async.await ops to wait for the !gpu.async.tokens.
           builder.setInsertionPointAfter(op);
           for (auto asyncToken : asyncTokens)
             tokens.push_back(
-                builder.create<async::AwaitOp>(loc, asyncToken).getResult());
+                async::AwaitOp::create(builder, loc, asyncToken).getResult());
           // Set `it` after the inserted async.await ops.
           it = builder.getInsertionPoint();
         })
-        .Case<async::ExecuteOp>([&](auto executeOp) {
+        .Case([&](async::ExecuteOp executeOp) {
           // Set `it` to the beginning of the region and add asyncTokens to the
           // async.execute operands.
           it = executeOp.getBody()->begin();
@@ -282,7 +280,7 @@ private:
 
     // Otherwise, insert a gpu.wait before 'it'.
     builder.setInsertionPoint(it->getBlock(), it);
-    auto waitOp = builder.create<gpu::WaitOp>(loc, Type{}, tokens);
+    auto waitOp = gpu::WaitOp::create(builder, loc, Type{}, tokens);
 
     // If the new waitOp is at the end of an async.execute region, add it to the
     // worklist. 'operator()(executeOp)' would do the same, but this is faster.
@@ -304,9 +302,9 @@ struct GpuAsyncRegionPass::SingleTokenUseCallback {
         executeOp.getBodyResults(), [](OpResult result) {
           if (result.use_empty() || result.hasOneUse())
             return false;
-          auto valueType = result.getType().dyn_cast<async::ValueType>();
+          auto valueType = dyn_cast<async::ValueType>(result.getType());
           return valueType &&
-                 valueType.getValueType().isa<gpu::AsyncTokenType>();
+                 isa<gpu::AsyncTokenType>(valueType.getValueType());
         });
     if (multiUseResults.empty())
       return;
@@ -346,8 +344,4 @@ void GpuAsyncRegionPass::runOnOperation() {
   getOperation().getRegion().walk(DeferWaitCallback());
   // Makes each !gpu.async.token returned from async.execute op have single use.
   getOperation().getRegion().walk(SingleTokenUseCallback());
-}
-
-std::unique_ptr<OperationPass<func::FuncOp>> mlir::createGpuAsyncRegionPass() {
-  return std::make_unique<GpuAsyncRegionPass>();
 }

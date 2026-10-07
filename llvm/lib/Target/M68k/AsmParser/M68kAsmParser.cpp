@@ -8,12 +8,14 @@
 
 #include "M68kInstrInfo.h"
 #include "M68kRegisterInfo.h"
+#include "MCTargetDesc/M68kMCAsmInfo.h"
 #include "TargetInfo/M68kTargetInfo.h"
 
 #include "llvm/MC/MCContext.h"
-#include "llvm/MC/MCParser/MCAsmLexer.h"
+#include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
 
@@ -31,7 +33,6 @@ static cl::opt<bool> RegisterPrefixOptional(
 namespace {
 /// Parses M68k assembly from a stream.
 class M68kAsmParser : public MCTargetAsmParser {
-  const MCSubtargetInfo &STI;
   MCAsmParser &Parser;
   const MCRegisterInfo *MRI;
 
@@ -39,25 +40,25 @@ class M68kAsmParser : public MCTargetAsmParser {
 #include "M68kGenAsmMatcher.inc"
 
   // Helpers for Match&Emit.
-  bool invalidOperand(const SMLoc &Loc, const OperandVector &Operands,
+  bool invalidOperand(SMLoc Loc, const OperandVector &Operands,
                       const uint64_t &ErrorInfo);
-  bool missingFeature(const SMLoc &Loc, const uint64_t &ErrorInfo);
-  bool emit(MCInst &Inst, SMLoc const &Loc, MCStreamer &Out) const;
+  bool missingFeature(SMLoc Loc, const uint64_t &ErrorInfo);
+  bool emit(MCInst &Inst, SMLoc Loc, MCStreamer &Out) const;
   bool parseRegisterName(MCRegister &RegNo, SMLoc Loc, StringRef RegisterName);
-  OperandMatchResultTy parseRegister(MCRegister &RegNo);
+  ParseStatus parseRegister(MCRegister &RegNo, bool WithSizeSuffix = false);
 
   // Parser functions.
   void eatComma();
 
   bool isExpr();
-  OperandMatchResultTy parseImm(OperandVector &Operands);
-  OperandMatchResultTy parseMemOp(OperandVector &Operands);
-  OperandMatchResultTy parseRegOrMoveMask(OperandVector &Operands);
+  ParseStatus parseImm(OperandVector &Operands);
+  ParseStatus parseMemOp(OperandVector &Operands);
+  ParseStatus parseRegOrMoveMask(OperandVector &Operands);
 
 public:
   M68kAsmParser(const MCSubtargetInfo &STI, MCAsmParser &Parser,
-                const MCInstrInfo &MII, const MCTargetOptions &Options)
-      : MCTargetAsmParser(Options, STI, MII), STI(STI), Parser(Parser) {
+                const MCInstrInfo &MII)
+      : MCTargetAsmParser(STI, MII), Parser(Parser) {
     MCAsmParserExtension::Initialize(Parser);
     MRI = getContext().getRegisterInfo();
 
@@ -66,14 +67,12 @@ public:
 
   unsigned validateTargetOperandClass(MCParsedAsmOperand &Op,
                                       unsigned Kind) override;
-  bool parseRegister(MCRegister &RegNo, SMLoc &StartLoc,
-                     SMLoc &EndLoc) override;
-  OperandMatchResultTy tryParseRegister(MCRegister &RegNo, SMLoc &StartLoc,
-                                        SMLoc &EndLoc) override;
-  bool ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
+  bool parseRegister(MCRegister &Reg, SMLoc &StartLoc, SMLoc &EndLoc) override;
+  ParseStatus tryParseRegister(MCRegister &Reg, SMLoc &StartLoc,
+                               SMLoc &EndLoc) override;
+  bool parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                         SMLoc NameLoc, OperandVector &Operands) override;
-  bool ParseDirective(AsmToken DirectiveID) override;
-  bool MatchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
+  bool matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                OperandVector &Operands, MCStreamer &Out,
                                uint64_t &ErrorInfo,
                                bool MatchingInlineAsm) override;
@@ -100,17 +99,17 @@ struct M68kMemOp {
   // RegPreDecrement: -(%OuterReg)
   // RegIndirectDisplacement: OuterDisp(%OuterReg)
   // RegIndirectDisplacementIndex:
-  //   OuterDisp(%OuterReg, %InnerReg.Size * Scale, InnerDisp)
+  //   OuterDisp(%OuterReg, %InnerReg * Scale, InnerDisp)
 
   Kind Op;
   MCRegister OuterReg;
   MCRegister InnerReg;
   const MCExpr *OuterDisp;
   const MCExpr *InnerDisp;
-  uint8_t Size : 4;
   uint8_t Scale : 4;
   const MCExpr *Expr;
   uint16_t RegMask;
+  uint8_t AtLeast68020 : 1;
 
   M68kMemOp() {}
   M68kMemOp(Kind Op) : Op(Op) {}
@@ -133,7 +132,6 @@ class M68kOperand : public MCParsedAsmOperand {
   SMLoc Start, End;
   union {
     StringRef Token;
-    int64_t Imm;
     const MCExpr *Expr;
     M68kMemOp MemOp;
   };
@@ -147,7 +145,7 @@ public:
   SMLoc getStartLoc() const override { return Start; }
   SMLoc getEndLoc() const override { return End; }
 
-  void print(raw_ostream &OS) const override;
+  void print(raw_ostream &OS, const MCAsmInfo &MAI) const override;
 
   bool isMem() const override { return false; }
   bool isMemOp() const { return Kind == KindTy::MemOp; }
@@ -158,7 +156,9 @@ public:
   bool isReg() const override;
   bool isAReg() const;
   bool isDReg() const;
-  unsigned getReg() const override;
+  bool isFPDReg() const;
+  bool isFPCReg() const;
+  MCRegister getReg() const override;
   void addRegOperands(MCInst &Inst, unsigned N) const;
 
   static std::unique_ptr<M68kOperand> createMemOp(M68kMemOp MemOp, SMLoc Start,
@@ -176,6 +176,11 @@ public:
 
   static std::unique_ptr<M68kOperand> createImm(const MCExpr *Expr, SMLoc Start,
                                                 SMLoc End);
+
+  // Imm for TRAP instruction
+  bool isTrapImm() const;
+  // Imm for BKPT instruction
+  bool isBkptImm() const;
 
   // MoveMask
   bool isMoveMask() const;
@@ -215,6 +220,12 @@ public:
   // PCI
   bool isPCI() const;
   void addPCIOperands(MCInst &Inst, unsigned N) const;
+
+  // PCIBD
+  bool isPCIBD() const;
+  bool isPCIBD32() const;
+  bool isPCIBD16() const;
+  void addPCIBDOperands(MCInst &Inst, unsigned N) const;
 };
 
 } // end anonymous namespace.
@@ -223,15 +234,16 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeM68kAsmParser() {
   RegisterMCAsmParser<M68kAsmParser> X(getTheM68kTarget());
 }
 
+#define GET_REGISTER_MATCHER
 #define GET_MATCHER_IMPLEMENTATION
 #include "M68kGenAsmMatcher.inc"
 
 static inline unsigned getRegisterByIndex(unsigned RegisterIndex) {
   static unsigned RegistersByIndex[] = {
-      M68k::D0, M68k::D1, M68k::D2, M68k::D3, M68k::D4, M68k::D5,
-      M68k::D6, M68k::D7, M68k::A0, M68k::A1, M68k::A2, M68k::A3,
-      M68k::A4, M68k::A5, M68k::A6, M68k::SP,
-  };
+      M68k::D0,  M68k::D1,  M68k::D2,  M68k::D3,  M68k::D4,  M68k::D5,
+      M68k::D6,  M68k::D7,  M68k::A0,  M68k::A1,  M68k::A2,  M68k::A3,
+      M68k::A4,  M68k::A5,  M68k::A6,  M68k::SP,  M68k::FP0, M68k::FP1,
+      M68k::FP2, M68k::FP3, M68k::FP4, M68k::FP5, M68k::FP6, M68k::FP7};
   assert(RegisterIndex <=
          sizeof(RegistersByIndex) / sizeof(RegistersByIndex[0]));
   return RegistersByIndex[RegisterIndex];
@@ -242,15 +254,22 @@ static inline unsigned getRegisterIndex(unsigned Register) {
     return Register - M68k::D0;
   if (Register >= M68k::A0 && Register <= M68k::A6)
     return Register - M68k::A0 + 8;
+  if (Register >= M68k::FP0 && Register <= M68k::FP7)
+    return Register - M68k::FP0 + 16;
 
   switch (Register) {
   case M68k::SP:
     // SP is sadly not contiguous with the rest of the An registers
     return 15;
 
+  // We don't care about the indices of these registers.
   case M68k::PC:
   case M68k::CCR:
-    return 16;
+  case M68k::SR:
+  case M68k::FPC:
+  case M68k::FPS:
+  case M68k::FPIAR:
+    return UINT_MAX;
 
   default:
     llvm_unreachable("unexpected register number");
@@ -281,8 +300,8 @@ void M68kMemOp::print(raw_ostream &OS) const {
     OS << OuterDisp << "(%" << OuterReg << ")";
     break;
   case Kind::RegIndirectDisplacementIndex:
-    OS << OuterDisp << "(%" << OuterReg << ", " << InnerReg << "." << Size
-       << ", " << InnerDisp << ")";
+    OS << OuterDisp << "(%" << OuterReg << ", " << InnerReg << ", " << InnerDisp
+       << ")";
     break;
   }
 }
@@ -301,7 +320,7 @@ bool M68kOperand::isReg() const {
   return Kind == KindTy::MemOp && MemOp.Op == M68kMemOp::Kind::Reg;
 }
 
-unsigned M68kOperand::getReg() const {
+MCRegister M68kOperand::getReg() const {
   assert(isReg());
   return MemOp.OuterReg;
 }
@@ -348,6 +367,22 @@ std::unique_ptr<M68kOperand> M68kOperand::createImm(const MCExpr *Expr,
   auto Op = std::make_unique<M68kOperand>(KindTy::Imm, Start, End);
   Op->Expr = Expr;
   return Op;
+}
+
+bool M68kOperand::isTrapImm() const {
+  int64_t Value;
+  if (!isImm() || !Expr->evaluateAsAbsolute(Value))
+    return false;
+
+  return isUInt<4>(Value);
+}
+
+bool M68kOperand::isBkptImm() const {
+  int64_t Value;
+  if (!isImm() || !Expr->evaluateAsAbsolute(Value))
+    return false;
+
+  return isUInt<3>(Value);
 }
 
 // MoveMask
@@ -448,7 +483,7 @@ void M68kOperand::addARIPIOperands(MCInst &Inst, unsigned N) const {
 // PCD
 bool M68kOperand::isPCD() const {
   return isMemOp() && MemOp.Op == M68kMemOp::Kind::RegIndirectDisplacement &&
-         MemOp.OuterReg == M68k::PC;
+         MemOp.OuterReg == M68k::PC && !MemOp.AtLeast68020;
 }
 void M68kOperand::addPCDOperands(MCInst &Inst, unsigned N) const {
   M68kOperand::addExpr(Inst, MemOp.OuterDisp);
@@ -458,15 +493,43 @@ void M68kOperand::addPCDOperands(MCInst &Inst, unsigned N) const {
 bool M68kOperand::isPCI() const {
   return isMemOp() &&
          MemOp.Op == M68kMemOp::Kind::RegIndirectDisplacementIndex &&
-         MemOp.OuterReg == M68k::PC;
+         MemOp.OuterReg == M68k::PC && MemOp.Scale == 1 && !MemOp.AtLeast68020;
 }
 void M68kOperand::addPCIOperands(MCInst &Inst, unsigned N) const {
   M68kOperand::addExpr(Inst, MemOp.OuterDisp);
   Inst.addOperand(MCOperand::createReg(MemOp.InnerReg));
 }
 
+// PCIBD
+// We use this to capture all PCI and PCD addressing modes on M68020+.
+// In order to leverage the large displacement size.
+bool M68kOperand::isPCIBD() const {
+  return isMemOp() && MemOp.AtLeast68020 &&
+         (MemOp.Op == M68kMemOp::Kind::RegIndirectDisplacementIndex ||
+          MemOp.Op == M68kMemOp::Kind::RegIndirectDisplacement) &&
+         MemOp.OuterReg == M68k::PC;
+}
+bool M68kOperand::isPCIBD32() const {
+  return isPCIBD() &&
+         // If InnerReg is NoReg, this is essentially a PCD with larger
+         // displacement.
+         (!MemOp.InnerReg.isValid() ||
+          getM68kMCRegisterClass(M68k::XR32RegClassID)
+              .contains(MemOp.InnerReg));
+}
+bool M68kOperand::isPCIBD16() const {
+  return isPCIBD() &&
+         getM68kMCRegisterClass(M68k::XR16RegClassID).contains(MemOp.InnerReg);
+}
+void M68kOperand::addPCIBDOperands(MCInst &Inst, unsigned N) const {
+  M68kOperand::addExpr(Inst, MemOp.OuterDisp);
+  Inst.addOperand(MCOperand::createReg(MemOp.InnerReg));
+  Inst.addOperand(MCOperand::createImm(MemOp.Scale));
+}
+
 static inline bool checkRegisterClass(unsigned RegNo, bool Data, bool Address,
-                                      bool SP) {
+                                      bool SP, bool FPDR = false,
+                                      bool FPCR = false) {
   switch (RegNo) {
   case M68k::A0:
   case M68k::A1:
@@ -494,6 +557,21 @@ static inline bool checkRegisterClass(unsigned RegNo, bool Data, bool Address,
   case M68k::CCR:
     return false;
 
+  case M68k::FP0:
+  case M68k::FP1:
+  case M68k::FP2:
+  case M68k::FP3:
+  case M68k::FP4:
+  case M68k::FP5:
+  case M68k::FP6:
+  case M68k::FP7:
+    return FPDR;
+
+  case M68k::FPC:
+  case M68k::FPS:
+  case M68k::FPIAR:
+    return FPCR;
+
   default:
     llvm_unreachable("unexpected register type");
     return false;
@@ -510,6 +588,20 @@ bool M68kOperand::isDReg() const {
   return isReg() && checkRegisterClass(getReg(),
                                        /*Data=*/true,
                                        /*Address=*/false, /*SP=*/false);
+}
+
+bool M68kOperand::isFPDReg() const {
+  return isReg() && checkRegisterClass(getReg(),
+                                       /*Data=*/false,
+                                       /*Address=*/false, /*SP=*/false,
+                                       /*FPDR=*/true);
+}
+
+bool M68kOperand::isFPCReg() const {
+  return isReg() && checkRegisterClass(getReg(),
+                                       /*Data=*/false,
+                                       /*Address=*/false, /*SP=*/false,
+                                       /*FPDR=*/false, /*FPCR=*/true);
 }
 
 unsigned M68kAsmParser::validateTargetOperandClass(MCParsedAsmOperand &Op,
@@ -579,9 +671,12 @@ bool M68kAsmParser::parseRegisterName(MCRegister &RegNo, SMLoc Loc,
                                       StringRef RegisterName) {
   auto RegisterNameLower = RegisterName.lower();
 
-  // CCR register
+  // CCR and SR register
   if (RegisterNameLower == "ccr") {
     RegNo = M68k::CCR;
+    return true;
+  } else if (RegisterNameLower == "sr") {
+    RegNo = M68k::SR;
     return true;
   }
 
@@ -619,12 +714,31 @@ bool M68kAsmParser::parseRegisterName(MCRegister &RegNo, SMLoc Loc,
       }
       break;
     }
+  } else if (StringRef(RegisterNameLower).starts_with("fp") &&
+             RegisterNameLower.size() > 2) {
+    auto RegIndex = unsigned(RegisterNameLower[2] - '0');
+    if (RegIndex < 8 && RegisterNameLower.size() == 3) {
+      // Floating point data register.
+      RegNo = getRegisterByIndex(16 + RegIndex);
+      return true;
+    } else {
+      // Floating point control register.
+      RegNo = StringSwitch<unsigned>(RegisterNameLower)
+                  .Cases({"fpc", "fpcr"}, M68k::FPC)
+                  .Cases({"fps", "fpsr"}, M68k::FPS)
+                  .Cases({"fpi", "fpiar"}, M68k::FPIAR)
+                  .Default(M68k::NoRegister);
+      assert(RegNo != M68k::NoRegister &&
+             "Unrecognized FP control register name");
+      return true;
+    }
   }
 
   return false;
 }
 
-OperandMatchResultTy M68kAsmParser::parseRegister(MCRegister &RegNo) {
+ParseStatus M68kAsmParser::parseRegister(MCRegister &RegNo,
+                                         bool WithSizeSuffix) {
   bool HasPercent = false;
   AsmToken PercentToken;
 
@@ -634,43 +748,51 @@ OperandMatchResultTy M68kAsmParser::parseRegister(MCRegister &RegNo) {
     HasPercent = true;
     PercentToken = Lex();
   } else if (!RegisterPrefixOptional.getValue()) {
-    return MatchOperand_NoMatch;
+    return ParseStatus::NoMatch;
   }
 
   if (!Parser.getTok().is(AsmToken::Identifier)) {
     if (HasPercent) {
       getLexer().UnLex(PercentToken);
     }
-    return MatchOperand_NoMatch;
+    return ParseStatus::NoMatch;
   }
 
   auto RegisterName = Parser.getTok().getString();
+  unsigned RegSize = 4;
+  if (WithSizeSuffix && (RegisterName.ends_with_insensitive(".w") ||
+                         RegisterName.ends_with_insensitive(".l"))) {
+    if (RegisterName.ends_with_insensitive(".w"))
+      RegSize = 2;
+    RegisterName = RegisterName.drop_back(2);
+  }
+
   if (!parseRegisterName(RegNo, Parser.getLexer().getLoc(), RegisterName)) {
     if (HasPercent) {
       getLexer().UnLex(PercentToken);
     }
-    return MatchOperand_NoMatch;
+    return ParseStatus::NoMatch;
   }
+  if (RegSize == 2)
+    RegNo = MRI->getSubReg(RegNo, M68k::MxSubRegIndex16Lo);
 
   Parser.Lex();
-  return MatchOperand_Success;
+  return ParseStatus::Success;
 }
 
-bool M68kAsmParser::parseRegister(MCRegister &RegNo, SMLoc &StartLoc,
+bool M68kAsmParser::parseRegister(MCRegister &Reg, SMLoc &StartLoc,
                                   SMLoc &EndLoc) {
-  auto Result = tryParseRegister(RegNo, StartLoc, EndLoc);
-  if (Result != MatchOperand_Success) {
+  ParseStatus Result = tryParseRegister(Reg, StartLoc, EndLoc);
+  if (!Result.isSuccess())
     return Error(StartLoc, "expected register");
-  }
 
   return false;
 }
 
-OperandMatchResultTy M68kAsmParser::tryParseRegister(MCRegister &RegNo,
-                                                     SMLoc &StartLoc,
-                                                     SMLoc &EndLoc) {
+ParseStatus M68kAsmParser::tryParseRegister(MCRegister &Reg, SMLoc &StartLoc,
+                                            SMLoc &EndLoc) {
   StartLoc = getLexer().getLoc();
-  auto Result = parseRegister(RegNo);
+  ParseStatus Result = parseRegister(Reg);
   EndLoc = getLexer().getLoc();
   return Result;
 }
@@ -688,34 +810,34 @@ bool M68kAsmParser::isExpr() {
   }
 }
 
-OperandMatchResultTy M68kAsmParser::parseImm(OperandVector &Operands) {
-  if (getLexer().isNot(AsmToken::Hash)) {
-    return MatchOperand_NoMatch;
-  }
+ParseStatus M68kAsmParser::parseImm(OperandVector &Operands) {
+  if (getLexer().isNot(AsmToken::Hash))
+    return ParseStatus::NoMatch;
   SMLoc Start = getLexer().getLoc();
   Parser.Lex();
 
   SMLoc End;
   const MCExpr *Expr;
 
-  if (getParser().parseExpression(Expr, End)) {
-    return MatchOperand_ParseFail;
-  }
+  if (getParser().parseExpression(Expr, End))
+    return ParseStatus::Failure;
 
   Operands.push_back(M68kOperand::createImm(Expr, Start, End));
-  return MatchOperand_Success;
+  return ParseStatus::Success;
 }
 
-OperandMatchResultTy M68kAsmParser::parseMemOp(OperandVector &Operands) {
+ParseStatus M68kAsmParser::parseMemOp(OperandVector &Operands) {
   SMLoc Start = getLexer().getLoc();
   bool IsPD = false;
   M68kMemOp MemOp;
 
+  MemOp.AtLeast68020 = STI->hasFeature(M68k::FeatureISA20);
+  MemOp.Scale = 1;
+
   // Check for a plain register or register mask.
-  auto Result = parseRegOrMoveMask(Operands);
-  if (Result != llvm::MatchOperand_NoMatch) {
+  ParseStatus Result = parseRegOrMoveMask(Operands);
+  if (!Result.isNoMatch())
     return Result;
-  }
 
   // Check for pre-decrement & outer displacement.
   bool HasDisplacement = false;
@@ -723,9 +845,8 @@ OperandMatchResultTy M68kAsmParser::parseMemOp(OperandVector &Operands) {
     IsPD = true;
     Parser.Lex();
   } else if (isExpr()) {
-    if (Parser.parseExpression(MemOp.OuterDisp)) {
-      return MatchOperand_ParseFail;
-    }
+    if (Parser.parseExpression(MemOp.OuterDisp))
+      return ParseStatus::Failure;
     HasDisplacement = true;
   }
 
@@ -734,21 +855,19 @@ OperandMatchResultTy M68kAsmParser::parseMemOp(OperandVector &Operands) {
       MemOp.Op = M68kMemOp::Kind::Addr;
       Operands.push_back(
           M68kOperand::createMemOp(MemOp, Start, getLexer().getLoc()));
-      return MatchOperand_Success;
-    } else if (IsPD) {
-      Error(getLexer().getLoc(), "expected (");
-      return MatchOperand_ParseFail;
+      return ParseStatus::Success;
     }
+    if (IsPD)
+      return Error(getLexer().getLoc(), "expected (");
 
-    return MatchOperand_NoMatch;
+    return ParseStatus::NoMatch;
   }
   Parser.Lex();
 
   // Check for constant dereference & MIT-style displacement
   if (!HasDisplacement && isExpr()) {
-    if (Parser.parseExpression(MemOp.OuterDisp)) {
-      return MatchOperand_ParseFail;
-    }
+    if (Parser.parseExpression(MemOp.OuterDisp))
+      return ParseStatus::Failure;
     HasDisplacement = true;
 
     // If we're not followed by a comma, we're a constant dereference.
@@ -756,48 +875,50 @@ OperandMatchResultTy M68kAsmParser::parseMemOp(OperandVector &Operands) {
       MemOp.Op = M68kMemOp::Kind::Addr;
       Operands.push_back(
           M68kOperand::createMemOp(MemOp, Start, getLexer().getLoc()));
-      return MatchOperand_Success;
+      return ParseStatus::Success;
     }
 
     Parser.Lex();
   }
 
   Result = parseRegister(MemOp.OuterReg);
-  if (Result == MatchOperand_ParseFail) {
-    return MatchOperand_ParseFail;
-  }
+  if (Result.isFailure())
+    return ParseStatus::Failure;
 
-  if (Result != MatchOperand_Success) {
-    Error(getLexer().getLoc(), "expected register");
-    return MatchOperand_ParseFail;
-  }
+  if (!Result.isSuccess())
+    return Error(getLexer().getLoc(), "expected register");
 
-  // Check for Index.
   bool HasIndex = false;
+  // Check for Index.
   if (Parser.getTok().is(AsmToken::Comma)) {
     Parser.Lex();
 
-    Result = parseRegister(MemOp.InnerReg);
-    if (Result == MatchOperand_ParseFail) {
+    Result = parseRegister(MemOp.InnerReg, /*WithSizeSuffix=*/true);
+    if (Result.isFailure())
       return Result;
-    }
 
-    if (Result == MatchOperand_NoMatch) {
-      Error(getLexer().getLoc(), "expected register");
-      return MatchOperand_ParseFail;
-    }
-
-    // TODO: parse size, scale and inner displacement.
-    MemOp.Size = 4;
-    MemOp.Scale = 1;
-    MemOp.InnerDisp = MCConstantExpr::create(0, Parser.getContext(), true, 4);
+    if (Result.isNoMatch())
+      return Error(getLexer().getLoc(), "expected register");
     HasIndex = true;
+
+    // Parse the scale
+    if (Parser.getTok().is(AsmToken::Star)) {
+      const auto &ScaleTok = Parser.Lex();
+      if (ScaleTok.isNot(AsmToken::Integer))
+        return Error(getLexer().getLoc(), "expected scale");
+      int64_t ScaleVal = ScaleTok.getIntVal();
+      if (ScaleVal < 1 || ScaleVal > 8 || !isPowerOf2_32(ScaleVal))
+        return Error(ScaleTok.getLoc(), "expected scale to be 1, 2, 4, or 8");
+      MemOp.Scale = static_cast<uint8_t>(ScaleVal);
+      Parser.Lex();
+    }
+
+    // TODO: parse the inner displacement.
+    MemOp.InnerDisp = MCConstantExpr::create(0, Parser.getContext(), true, 4);
   }
 
-  if (Parser.getTok().isNot(AsmToken::RParen)) {
-    Error(getLexer().getLoc(), "expected )");
-    return MatchOperand_ParseFail;
-  }
+  if (Parser.getTok().isNot(AsmToken::RParen))
+    return Error(getLexer().getLoc(), "expected )");
   Parser.Lex();
 
   bool IsPI = false;
@@ -809,11 +930,9 @@ OperandMatchResultTy M68kAsmParser::parseMemOp(OperandVector &Operands) {
   SMLoc End = getLexer().getLoc();
 
   unsigned OpCount = IsPD + IsPI + (HasIndex || HasDisplacement);
-  if (OpCount > 1) {
-    Error(Start, "only one of post-increment, pre-decrement or displacement "
-                 "can be used");
-    return MatchOperand_ParseFail;
-  }
+  if (OpCount > 1)
+    return Error(Start, "only one of post-increment, pre-decrement or "
+                        "displacement can be used");
 
   if (IsPD) {
     MemOp.Op = M68kMemOp::Kind::RegPreDecrement;
@@ -828,11 +947,10 @@ OperandMatchResultTy M68kAsmParser::parseMemOp(OperandVector &Operands) {
   }
 
   Operands.push_back(M68kOperand::createMemOp(MemOp, Start, End));
-  return MatchOperand_Success;
+  return ParseStatus::Success;
 }
 
-OperandMatchResultTy
-M68kAsmParser::parseRegOrMoveMask(OperandVector &Operands) {
+ParseStatus M68kAsmParser::parseRegOrMoveMask(OperandVector &Operands) {
   SMLoc Start = getLexer().getLoc();
   M68kMemOp MemOp(M68kMemOp::Kind::RegMask);
   MemOp.RegMask = 0;
@@ -842,23 +960,17 @@ M68kAsmParser::parseRegOrMoveMask(OperandVector &Operands) {
         (MemOp.Op == M68kMemOp::Kind::RegMask) && (MemOp.RegMask == 0);
 
     MCRegister FirstRegister;
-    auto Result = parseRegister(FirstRegister);
-    if (IsFirstRegister && (Result == llvm::MatchOperand_NoMatch)) {
-      return MatchOperand_NoMatch;
-    }
-    if (Result != llvm::MatchOperand_Success) {
-      Error(getLexer().getLoc(), "expected start register");
-      return MatchOperand_ParseFail;
-    }
+    ParseStatus Result = parseRegister(FirstRegister);
+    if (IsFirstRegister && Result.isNoMatch())
+      return ParseStatus::NoMatch;
+    if (!Result.isSuccess())
+      return Error(getLexer().getLoc(), "expected start register");
 
     MCRegister LastRegister = FirstRegister;
-    if (getLexer().is(AsmToken::Minus)) {
-      getLexer().Lex();
+    if (parseOptionalToken(AsmToken::Minus)) {
       Result = parseRegister(LastRegister);
-      if (Result != llvm::MatchOperand_Success) {
-        Error(getLexer().getLoc(), "expected end register");
-        return MatchOperand_ParseFail;
-      }
+      if (!Result.isSuccess())
+        return Error(getLexer().getLoc(), "expected end register");
     }
 
     unsigned FirstRegisterIndex = getRegisterIndex(FirstRegister);
@@ -879,37 +991,28 @@ M68kAsmParser::parseRegOrMoveMask(OperandVector &Operands) {
         MemOp.Op = M68kMemOp::Kind::RegMask;
         MemOp.RegMask = 1 << getRegisterIndex(MemOp.OuterReg);
 
-        if (MemOp.RegMask == 0) {
-          Error(getLexer().getLoc(),
-                "special registers cannot be used in register masks");
-          return MatchOperand_ParseFail;
-        }
+        if (MemOp.RegMask == 0)
+          return Error(getLexer().getLoc(),
+                       "special registers cannot be used in register masks");
       }
 
-      if ((FirstRegisterIndex >= 16) || (LastRegisterIndex >= 16)) {
-        Error(getLexer().getLoc(),
-              "special registers cannot be used in register masks");
-        return MatchOperand_ParseFail;
-      }
+      if ((FirstRegisterIndex >= 16) || (LastRegisterIndex >= 16))
+        return Error(getLexer().getLoc(),
+                     "special registers cannot be used in register masks");
 
-      if (NewMaskBits & MemOp.RegMask) {
-        Error(getLexer().getLoc(), "conflicting masked registers");
-        return MatchOperand_ParseFail;
-      }
+      if (NewMaskBits & MemOp.RegMask)
+        return Error(getLexer().getLoc(), "conflicting masked registers");
 
       MemOp.RegMask |= NewMaskBits;
     }
 
-    if (getLexer().isNot(AsmToken::Slash)) {
+    if (!parseOptionalToken(AsmToken::Slash))
       break;
-    }
-
-    getLexer().Lex();
   }
 
   Operands.push_back(
       M68kOperand::createMemOp(MemOp, Start, getLexer().getLoc()));
-  return MatchOperand_Success;
+  return ParseStatus::Success;
 }
 
 void M68kAsmParser::eatComma() {
@@ -918,7 +1021,7 @@ void M68kAsmParser::eatComma() {
   }
 }
 
-bool M68kAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
+bool M68kAsmParser::parseInstruction(ParseInstructionInfo &Info, StringRef Name,
                                      SMLoc NameLoc, OperandVector &Operands) {
   SMLoc Start = getLexer().getLoc();
   Operands.push_back(M68kOperand::createToken(Name, Start, Start));
@@ -931,10 +1034,9 @@ bool M68kAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
       First = false;
     }
 
-    auto MatchResult = MatchOperandParserImpl(Operands, Name);
-    if (MatchResult == MatchOperand_Success) {
+    ParseStatus MatchResult = MatchOperandParserImpl(Operands, Name);
+    if (MatchResult.isSuccess())
       continue;
-    }
 
     // Add custom operand formats here...
     SMLoc Loc = getLexer().getLoc();
@@ -947,10 +1049,7 @@ bool M68kAsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
   return false;
 }
 
-bool M68kAsmParser::ParseDirective(AsmToken DirectiveID) { return true; }
-
-bool M68kAsmParser::invalidOperand(SMLoc const &Loc,
-                                   OperandVector const &Operands,
+bool M68kAsmParser::invalidOperand(SMLoc Loc, OperandVector const &Operands,
                                    uint64_t const &ErrorInfo) {
   SMLoc ErrorLoc = Loc;
   char const *Diag = 0;
@@ -973,20 +1072,18 @@ bool M68kAsmParser::invalidOperand(SMLoc const &Loc,
   return Error(ErrorLoc, Diag);
 }
 
-bool M68kAsmParser::missingFeature(llvm::SMLoc const &Loc,
-                                   uint64_t const &ErrorInfo) {
+bool M68kAsmParser::missingFeature(SMLoc Loc, uint64_t const &ErrorInfo) {
   return Error(Loc, "instruction requires a CPU feature not currently enabled");
 }
 
-bool M68kAsmParser::emit(MCInst &Inst, SMLoc const &Loc,
-                         MCStreamer &Out) const {
+bool M68kAsmParser::emit(MCInst &Inst, SMLoc Loc, MCStreamer &Out) const {
   Inst.setLoc(Loc);
-  Out.emitInstruction(Inst, STI);
+  Out.emitInstruction(Inst, *STI);
 
   return false;
 }
 
-bool M68kAsmParser::MatchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
+bool M68kAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
                                             OperandVector &Operands,
                                             MCStreamer &Out,
                                             uint64_t &ErrorInfo,
@@ -1009,7 +1106,7 @@ bool M68kAsmParser::MatchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
   }
 }
 
-void M68kOperand::print(raw_ostream &OS) const {
+void M68kOperand::print(raw_ostream &OS, const MCAsmInfo &MAI) const {
   switch (Kind) {
   case KindTy::Invalid:
     OS << "invalid";
@@ -1019,9 +1116,12 @@ void M68kOperand::print(raw_ostream &OS) const {
     OS << "token '" << Token << "'";
     break;
 
-  case KindTy::Imm:
-    OS << "immediate " << Imm;
+  case KindTy::Imm: {
+    int64_t Value;
+    Expr->evaluateAsAbsolute(Value);
+    OS << "immediate " << Value;
     break;
+  }
 
   case KindTy::MemOp:
     MemOp.print(OS);

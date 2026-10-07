@@ -63,22 +63,27 @@
 ; }
 
 ; CHECK-LABEL: S_GPROC32_ID [size = 52] `use_alloca`
+; CHECK:   type = `0x1002 (use_alloca)`, debug start = 0, debug end = 0, flags = has fp | opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = VFRAME, param fp reg = EBP
 ; CHECK:   flags = has alloca | secure checks | strict secure checks | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 52] `call_setjmp`
+; CHECK:   type = `0x1003 (call_setjmp)`, debug start = 0, debug end = 0, flags = opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = NONE, param fp reg = NONE
 ; CHECK:   flags = has setjmp | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 56] `use_inlineasm`
+; CHECK:   type = `0x1006 (use_inlineasm)`, debug start = 0, debug end = 0, flags = opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = NONE, param fp reg = NONE
 ; CHECK:   flags = has inline asm | safe buffers | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 48] `cpp_eh`
+; CHECK:   type = `0x1007 (cpp_eh)`, debug start = 0, debug end = 0, flags = has fp | opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = EBP, param fp reg = EBP
 ; CHECK:   flags = has eh | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 52] `use_inline`
+; CHECK:   type = `0x100C (use_inline)`, debug start = 0, debug end = 0, flags = opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = NONE, param fp reg = NONE
 ; CHECK:   flags = safe buffers | opt speed
@@ -87,6 +92,7 @@
 ; CHECK:   local fp reg = NONE, param fp reg = NONE
 ; CHECK:   flags = marked inline | safe buffers | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 44] `seh`
+; CHECK:   type = `0x100E (seh)`, debug start = 0, debug end = 0, flags = has fp | opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = EBP, param fp reg = EBP
 ; CHECK:   flags = has seh | opt speed
@@ -95,10 +101,12 @@
 ; CHECK:   local fp reg = EBP, param fp reg = EBP
 ; CHECK:   flags = safe buffers | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 52] `use_naked`
+; CHECK:   type = `0x1010 (use_naked)`, debug start = 0, debug end = 0, flags = noinline | opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = NONE, param fp reg = NONE
 ; CHECK:   flags = has inline asm | naked | safe buffers | opt speed
 ; CHECK-LABEL: S_GPROC32_ID [size = 52] `stack_guard`
+; CHECK:   type = `0x1011 (stack_guard)`, debug start = 0, debug end = 0, flags = opt debuginfo
 ; CHECK: S_FRAMEPROC [size = 32]
 ; CHECK:   local fp reg = VFRAME, param fp reg = VFRAME
 ; CHECK:   flags = secure checks | strict secure checks | opt speed
@@ -264,18 +272,18 @@ declare void @llvm.memset.p0.i32(ptr nocapture writeonly, i8, i32, i1) #2
 ; Function Attrs: nounwind readnone speculatable
 declare void @llvm.dbg.value(metadata, metadata, metadata) #1
 
-attributes #0 = { sspstrong "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { sspstrong "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone speculatable }
 attributes #2 = { argmemonly nounwind }
-attributes #3 = { "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #3 = { "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #4 = { returns_twice }
-attributes #5 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
-attributes #6 = { norecurse nounwind readnone "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
-attributes #7 = { inlinehint nounwind readnone "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
-attributes #8 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #5 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
+attributes #6 = { norecurse nounwind readnone "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
+attributes #7 = { inlinehint nounwind readnone "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
+attributes #8 = { nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #9 = { nounwind readnone }
 attributes #10 = { nounwind }
-attributes #11 = { naked noinline nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #11 = { naked noinline nounwind "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #12 = { noinline }
 
 !llvm.dbg.cu = !{!2}

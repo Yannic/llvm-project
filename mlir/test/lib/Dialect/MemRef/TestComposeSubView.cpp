@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/AffineDialect.h"
 #include "mlir/Dialect/MemRef/Transforms/ComposeSubView.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -32,13 +32,13 @@ struct TestComposeSubViewPass
 
 void TestComposeSubViewPass::getDependentDialects(
     DialectRegistry &registry) const {
-  registry.insert<AffineDialect>();
+  registry.insert<affine::AffineDialect>();
 }
 
 void TestComposeSubViewPass::runOnOperation() {
   RewritePatternSet patterns(&getContext());
   memref::populateComposeSubViewPatterns(patterns, &getContext());
-  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+  (void)applyPatternsGreedily(getOperation(), std::move(patterns));
 }
 } // namespace
 

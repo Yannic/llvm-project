@@ -12,8 +12,8 @@
 #include "llvm/DebugInfo/MSF/MappedBlockStream.h"
 #include "llvm/DebugInfo/PDB/Native/NamedStreamMap.h"
 #include "llvm/DebugInfo/PDB/Native/RawTypes.h"
-#include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/BinaryStreamWriter.h"
+#include "llvm/Support/TimeProfiler.h"
 
 using namespace llvm;
 using namespace llvm::codeview;
@@ -47,7 +47,7 @@ void InfoStreamBuilder::setGuid(GUID G) { Guid = G; }
 Error InfoStreamBuilder::finalizeMsfLayout() {
   uint32_t Length = sizeof(InfoStreamHeader) +
                     NamedStreams.calculateSerializedLength() +
-                    (Features.size() + 1) * sizeof(uint32_t);
+                    Features.size() * sizeof(uint32_t);
   if (auto EC = Msf.setStreamSize(StreamPDB, Length))
     return EC;
   return Error::success();
@@ -55,6 +55,7 @@ Error InfoStreamBuilder::finalizeMsfLayout() {
 
 Error InfoStreamBuilder::commit(const msf::MSFLayout &Layout,
                                 WritableBinaryStreamRef Buffer) const {
+  llvm::TimeTraceScope timeScope("Commit info stream");
   auto InfoS = WritableMappedBlockStream::createIndexedStream(
       Layout, Buffer, StreamPDB, Msf.getAllocator());
   BinaryStreamWriter Writer(*InfoS);
@@ -68,8 +69,6 @@ Error InfoStreamBuilder::commit(const msf::MSFLayout &Layout,
     return EC;
 
   if (auto EC = NamedStreams.commit(Writer))
-    return EC;
-  if (auto EC = Writer.writeInteger(0))
     return EC;
   for (auto E : Features) {
     if (auto EC = Writer.writeEnum(E))

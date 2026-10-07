@@ -14,6 +14,8 @@ lto_module_get_macho_cputype
 lto_module_get_num_symbols
 lto_module_get_symbol_attribute
 lto_module_get_symbol_name
+lto_module_get_num_asm_undef_symbols
+lto_module_get_asm_undef_symbol_name
 lto_module_get_target_triple
 lto_module_set_target_triple
 lto_module_is_object_file
@@ -45,12 +47,6 @@ lto_codegen_compile_optimized
 lto_codegen_set_should_internalize
 lto_codegen_set_should_embed_uselists
 lto_set_debug_options
-LLVMCreateDisasm
-LLVMCreateDisasmCPU
-LLVMDisasmDispose
-LLVMDisasmInstruction
-LLVMSetDisasmOptions
-LLVMCreateDisasmCPUFeatures
 thinlto_create_codegen
 thinlto_codegen_dispose
 thinlto_codegen_add_module
@@ -81,3 +77,4 @@ lto_input_dispose
 lto_input_get_num_dependent_libraries
 lto_input_get_dependent_library
 lto_runtime_lib_symbols_list
+lto_runtime_lib_symbols_list_for_triple

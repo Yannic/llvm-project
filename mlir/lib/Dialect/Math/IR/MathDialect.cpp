@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Conversion/ConvertToEmitC/ToEmitCInterface.h"
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMInterface.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Transforms/InliningUtils.h"
 
@@ -33,4 +35,6 @@ void mlir::math::MathDialect::initialize() {
 #include "mlir/Dialect/Math/IR/MathOps.cpp.inc"
       >();
   addInterfaces<MathInlinerInterface>();
+  declarePromisedInterface<ConvertToEmitCPatternInterface, MathDialect>();
+  declarePromisedInterface<ConvertToLLVMPatternInterface, MathDialect>();
 }

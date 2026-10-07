@@ -14,19 +14,40 @@
 // initializer for a symbol.
 
 #include "expression.h"
+#include "flang/Evaluate/char.h"
 #include <map>
 #include <optional>
 #include <vector>
 
 namespace Fortran::evaluate {
 
+template <typename SCALAR>
+inline void StoreSerialValues(char *dst, llvm::ArrayRef<SCALAR> values,
+    size_t elementSize, bool *changed = nullptr) {
+  for (auto [i, v] : llvm::enumerate(values)) {
+    v.StoreRawBytes(dst + i * elementSize, elementSize, changed);
+  }
+}
+
+template <typename SCALAR>
+inline void LoadSerialValues(
+    const char *src, llvm::MutableArrayRef<SCALAR> values, size_t stride) {
+  for (auto it : llvm::enumerate(values)) {
+    it.value() =
+        SCALAR::FromRawBytes(src + stride * it.index(), SCALAR::bytesStored());
+  }
+}
+
 class InitialImage {
 public:
   enum Result {
     Ok,
+    OkNoChange,
     NotAConstant,
     OutOfRange,
     SizeMismatch,
+    LengthMismatch,
+    TooManyElems,
   };
 
   explicit InitialImage(std::size_t bytes) : data_(bytes) {}
@@ -50,11 +71,13 @@ public:
               x.values().size() * static_cast<std::size_t>(*elementBytes)) {
         return SizeMismatch;
       } else if (bytes == 0) {
-        return Ok;
+        return OkNoChange;
       } else {
         // TODO endianness
-        std::memcpy(&data_.at(offset), &x.values().at(0), bytes);
-        return Ok;
+        bool changed{false};
+        StoreSerialValues<Scalar<T>>(&data_.at(offset),
+            llvm::ArrayRef<Scalar<T>>(x.values()), *elementBytes, &changed);
+        return changed ? Ok : OkNoChange;
       }
     }
   }
@@ -65,27 +88,34 @@ public:
     if (offset < 0 || offset + bytes > data_.size()) {
       return OutOfRange;
     } else {
-      auto elements{TotalElementCount(x.shape())};
+      auto optElements{TotalElementCount(x.shape())};
+      if (!optElements) {
+        return TooManyElems;
+      }
+      auto elements{*optElements};
       auto elementBytes{bytes > 0 ? bytes / elements : 0};
       if (elements * elementBytes != bytes) {
         return SizeMismatch;
       } else if (bytes == 0) {
-        return Ok;
+        return OkNoChange;
       } else {
+        Result result{OkNoChange};
         for (auto at{x.lbounds()}; elements-- > 0; x.IncrementSubscripts(at)) {
-          auto scalar{x.At(at)}; // this is a std string; size() in chars
-          // Subtle: an initializer for a substring may have been
-          // expanded to the length of the entire string.
+          typename value::Character<KIND> scalar{x.At(at)};
           auto scalarBytes{scalar.size() * KIND};
-          if (scalarBytes < elementBytes ||
-              (scalarBytes > elementBytes && elements != 0)) {
-            return SizeMismatch;
+          if (scalarBytes != elementBytes) {
+            result = LengthMismatch;
           }
           // TODO endianness
-          std::memcpy(&data_.at(offset), scalar.data(), elementBytes);
+          auto *to{&data_.at(offset)};
+          bool changed{false};
+          scalar.StoreRawBytes(to, elementBytes, &changed);
+          if (changed && result == OkNoChange) {
+            result = Ok;
+          }
           offset += elementBytes;
         }
-        return Ok;
+        return result;
       }
     }
   }
@@ -98,14 +128,16 @@ public:
         [&](const auto &y) { return Add(offset, bytes, y, c); }, x.u);
   }
 
-  void AddPointer(ConstantSubscript, const Expr<SomeType> &);
+  Result AddPointer(ConstantSubscript, const Expr<SomeType> &);
 
-  void Incorporate(ConstantSubscript toOffset, const InitialImage &from,
+  // Returns true if anything changes
+  bool Incorporate(ConstantSubscript toOffset, const InitialImage &from,
       ConstantSubscript fromOffset, ConstantSubscript bytes);
 
   // Conversions to constant initializers
   std::optional<Expr<SomeType>> AsConstant(FoldingContext &,
-      const DynamicType &, const ConstantSubscripts &, bool padWithZero = false,
+      const DynamicType &, std::optional<std::int64_t> charLength,
+      const ConstantSubscripts &, bool padWithZero = false,
       ConstantSubscript offset = 0) const;
   std::optional<Expr<SomeType>> AsConstantPointer(
       ConstantSubscript offset = 0) const;

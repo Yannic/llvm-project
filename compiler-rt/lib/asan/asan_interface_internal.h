@@ -53,9 +53,10 @@ extern "C" {
     const char *module_name; // Module name as a C string. This pointer is a
                              // unique identifier of a module.
     uptr has_dynamic_init;   // Non-zero if the global has dynamic initializer.
-    uptr windows_padding;    // TODO: Figure out how to remove this padding
-                             // that's simply here to make the MSVC incremental
-                             // linker happy...
+    __asan_global_source_location *gcc_location;  // Source location of a global,
+                                                  // used by GCC compiler. LLVM uses
+                                                  // llvm-symbolizer that relies
+                                                  // on DWARF debugging info.
     uptr odr_indicator;      // The address of the ODR indicator symbol.
   };
 
@@ -156,6 +157,18 @@ extern "C" {
   int __asan_get_report_access_type();
   SANITIZER_INTERFACE_ATTRIBUTE
   uptr __asan_get_report_access_size();
+
+  SANITIZER_INTERFACE_ATTRIBUTE
+  int __asan_get_report_src_address(uptr* out_addr, uptr* out_size);
+  SANITIZER_INTERFACE_ATTRIBUTE
+  int __asan_get_report_dest_address(uptr* out_addr, uptr* out_size);
+  SANITIZER_INTERFACE_ATTRIBUTE
+  int __asan_get_report_dealloc_address(uptr* out_addr, uptr* out_size);
+  SANITIZER_INTERFACE_ATTRIBUTE
+  int __asan_get_report_first_address(uptr* out_addr, uptr* out_size);
+  SANITIZER_INTERFACE_ATTRIBUTE
+  int __asan_get_report_second_address(uptr* out_addr, uptr* out_size);
+
   SANITIZER_INTERFACE_ATTRIBUTE
   const char * __asan_get_report_description();
 

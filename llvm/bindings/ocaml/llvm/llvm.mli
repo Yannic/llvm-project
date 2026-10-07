@@ -36,6 +36,9 @@ type lltype
     This type covers a wide range of subclasses. *)
 type llvalue
 
+(** Non-instruction debug info record. See the [llvm::DbgRecord] class.*)
+type lldbgrecord
+
 (** Used to store users and usees of values. See the [llvm::Use] class. *)
 type lluse
 
@@ -203,7 +206,7 @@ module Opcode : sig
   | Invalid (** Not an instruction *)
 
   | Ret (** Terminator Instructions *)
-  | Br
+  | Invalid3
   | Switch
   | IndirectBr
   | Invoke
@@ -275,6 +278,9 @@ module Opcode : sig
   | FNeg
   | CallBr
   | Freeze
+  | PtrToAddr
+  | UncondBr
+  | CondBr
 end
 
 (** The type of a clause of a [landingpad] instruction.
@@ -328,6 +334,14 @@ module AtomicRMWBinOp : sig
   | UMin
   | FAdd
   | FSub
+  | FMax
+  | FMin
+  | UInc_Wrap
+  | UDec_Wrap
+  | USub_Cond
+  | USub_Sat
+  | FMaximum
+  | FMinimum
 end
 
 (** The kind of an [llvalue], the result of [classify_value v].
@@ -378,6 +392,91 @@ module ModuleFlagBehavior :sig
   | Override
   | Append
   | AppendUnique
+end
+
+module GEPNoWrapFlags : sig
+  val none : int
+  val inbounds : int
+  val nusw : int
+  val nuw : int
+end
+
+(** {6 Data Layout} *)
+
+module Endian : sig
+  type t =
+  | Big
+  | Little
+end
+
+module DataLayout : sig
+  type t
+
+  (** [of_string rep] parses the data layout string representation [rep].
+      See the constructor [llvm::DataLayout::DataLayout]. *)
+  val of_string : string -> t
+
+  (** [as_string dl] is the string representation of the data layout [dl].
+      See the method [llvm::DataLayout::getStringRepresentation]. *)
+  val as_string : t -> string
+
+  (** Returns the byte order of a target, either [Endian.Big] or
+      [Endian.Little].
+      See the method [llvm::DataLayout::isLittleEndian]. *)
+  val byte_order : t -> Endian.t
+
+  (** Returns the pointer size in bytes for a target.
+      See the method [llvm::DataLayout::getPointerSize]. *)
+  val pointer_size : t -> int
+
+  (** Returns the integer type that is the same size as a pointer on a target.
+      See the method [llvm::DataLayout::getIntPtrType]. *)
+  val intptr_type : llcontext -> t -> lltype
+
+  (** Returns the pointer size in bytes for a target in a given address space.
+      See the method [llvm::DataLayout::getPointerSize]. *)
+  val qualified_pointer_size : int -> t -> int
+
+  (** Returns the integer type that is the same size as a pointer on a target
+      in a given address space.
+      See the method [llvm::DataLayout::getIntPtrType]. *)
+  val qualified_intptr_type : llcontext -> int -> t -> lltype
+
+  (** Computes the size of a type in bits for a target.
+      See the method [llvm::DataLayout::getTypeSizeInBits]. *)
+  val size_in_bits : lltype -> t -> Int64.t
+
+  (** Computes the storage size of a type in bytes for a target.
+      See the method [llvm::DataLayout::getTypeStoreSize]. *)
+  val store_size : lltype -> t -> Int64.t
+
+  (** Computes the ABI size of a type in bytes for a target.
+      See the method [llvm::DataLayout::getTypeAllocSize]. *)
+  val abi_size : lltype -> t -> Int64.t
+
+  (** Computes the ABI alignment of a type in bytes for a target.
+      See the method [llvm::DataLayout::getTypeABISize]. *)
+  val abi_align : lltype -> t -> int
+
+  (** Computes the call frame alignment of a type in bytes for a target.
+      See the method [llvm::DataLayout::getTypeABISize]. *)
+  val stack_align : lltype -> t -> int
+
+  (** Computes the preferred alignment of a type in bytes for a target.
+      See the method [llvm::DataLayout::getTypeABISize]. *)
+  val preferred_align : lltype -> t -> int
+
+  (** Computes the preferred alignment of a global variable in bytes for
+      a target. See the method [llvm::DataLayout::getPreferredAlignment]. *)
+  val preferred_align_of_global : llvalue -> t -> int
+
+  (** Computes the structure element that contains the byte offset for a target.
+      See the method [llvm::StructLayout::getElementContainingOffset]. *)
+  val element_at_offset : lltype -> Int64.t -> t -> int
+
+  (** Computes the byte offset of the indexed struct element for a target.
+      See the method [llvm::StructLayout::getElementContainingOffset]. *)
+  val offset_of_element : lltype -> int -> t -> Int64.t
 end
 
 (** {6 Iteration} *)
@@ -453,9 +552,6 @@ val create_context : unit -> llcontext
     [llvm::LLVMContext::~LLVMContext]. *)
 val dispose_context : llcontext -> unit
 
-(** See the function [LLVMGetGlobalContext]. *)
-val global_context : unit -> llcontext
-
 (** [mdkind_id context name] returns the MDKind ID that corresponds to the
     name [name] in the context [context].  See the function
     [llvm::LLVMContext::getMDKindID]. *)
@@ -514,14 +610,13 @@ val target_triple: llmodule -> string
     the string [triple]. See the method [llvm::Module::setTargetTriple]. *)
 val set_target_triple: string -> llmodule -> unit
 
-(** [data_layout m] is the data layout specifier for the module [m], something
-    like [e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-...-a0:0:64-f80:128:128]. See the
-    method [llvm::Module::getDataLayout]. *)
-val data_layout: llmodule -> string
+(** [data_layout m] is the data layout for the module [m].
+    See the method [llvm::Module::getDataLayout]. *)
+val data_layout: llmodule -> DataLayout.t
 
-(** [set_data_layout s m] changes the data layout specifier for the module [m]
-    to the string [s]. See the method [llvm::Module::setDataLayout]. *)
-val set_data_layout: string -> llmodule -> unit
+(** [set_data_layout dl m] changes the data layout specifier for the module [m]
+    to [dl]. See the method [llvm::Module::setDataLayout]. *)
+val set_data_layout: DataLayout.t -> llmodule -> unit
 
 (** [dump_module m] prints the .ll representation of the module [m] to standard
     error. See the method [llvm::Module::dump]. *)
@@ -549,7 +644,7 @@ val get_module_identifier : llmodule -> string
 
 (** [set_module_identifier m id] sets the module identifier of [m]
     to [id]. See the method [llvm::Module::setModuleIdentifier] *)
-val set_module_identifer : llmodule -> string -> unit
+val set_module_identifier : llmodule -> string -> unit
 
 (** [get_module_flag m k] Return the corresponding value if key [k] appears in
     the module flags of [m], otherwise return None
@@ -687,7 +782,7 @@ val named_struct_type : llcontext -> string -> lltype
 
 (** [struct_set_body ty elts ispacked] sets the body of the named struct [ty]
     to the [elts] elements.
-    See the moethd [llvm::StructType::setBody]. *)
+    See the method [llvm::StructType::setBody]. *)
 val struct_set_body : lltype -> lltype array -> bool -> unit
 
 (** [struct_element_types sty] returns the constituent types of the struct type
@@ -757,9 +852,17 @@ val void_type : llcontext -> lltype
     [llvm::Type::LabelTy]. *)
 val label_type : llcontext -> lltype
 
-(** [x86_mmx_type c] returns the x86 64-bit MMX register type in the
-    context [c]. See [llvm::Type::X86_MMXTy]. *)
-val x86_mmx_type : llcontext -> lltype
+(** [x86_amx_type c] creates an X86 AMX type in the context [c]. See
+    [llvm::Type::getX86_AMXTy]. *)
+val x86_amx_type : llcontext -> lltype
+
+(** [token_type c] creates a token type in the context [c]. See
+    [llvm::Type::getTokenTy]. *)
+val token_type : llcontext -> lltype
+
+(** [metadata_type c] creates a metadata type in the context [c]. See
+    [llvm::Type::getMetadataTy]. *)
+val metadata_type : llcontext -> lltype
 
 (** [type_by_name m name] returns the specified type from the current module
     if it exists.
@@ -792,6 +895,9 @@ val dump_value : llvalue -> unit
 
 (** [string_of_llvalue v] returns a string describing the value [v]. *)
 val string_of_llvalue : llvalue -> string
+
+(** [string_of_lldbgrecord r] returns a string describing the DbgRecord [r]. *)
+val string_of_lldbgrecord : lldbgrecord -> string
 
 (** [replace_all_uses_with old new] replaces all uses of the value [old]
     with the value [new]. See the method [llvm::Value::replaceAllUsesWith]. *)
@@ -1053,18 +1159,6 @@ val aggregate_element : llvalue -> int -> llvalue option
 
 (** {7 Constant expressions} *)
 
-(** [align_of ty] returns the alignof constant for the type [ty]. This is
-    equivalent to [const_ptrtoint (const_gep (const_null (pointer_type {i8,ty}))
-    (const_int i32_type 0) (const_int i32_type 1)) i32_type], but considerably
-    more readable.  See the method [llvm::ConstantExpr::getAlignOf]. *)
-val align_of : lltype -> llvalue
-
-(** [size_of ty] returns the sizeof constant for the type [ty]. This is
-    equivalent to [const_ptrtoint (const_gep (const_null (pointer_type ty))
-    (const_int i32_type 1)) i64_type], but considerably more readable.
-    See the method [llvm::ConstantExpr::getSizeOf]. *)
-val size_of : lltype -> llvalue
-
 (** [const_neg c] returns the arithmetic negation of the constant [c].
     See the method [llvm::ConstantExpr::getNeg]. *)
 val const_neg : llvalue -> llvalue
@@ -1073,11 +1167,6 @@ val const_neg : llvalue -> llvalue
     no signed wrapping. The result is undefined if the negation overflows.
     See the method [llvm::ConstantExpr::getNSWNeg]. *)
 val const_nsw_neg : llvalue -> llvalue
-
-(** [const_nuw_neg c] returns the arithmetic negation of the constant [c] with
-    no unsigned wrapping. The result is undefined if the negation overflows.
-    See the method [llvm::ConstantExpr::getNUWNeg]. *)
-val const_nuw_neg : llvalue -> llvalue
 
 (** [const_not c] returns the bitwise inverse of the constant [c].
     See the method [llvm::ConstantExpr::getNot]. *)
@@ -1111,115 +1200,31 @@ val const_nsw_sub : llvalue -> llvalue -> llvalue
     See the method [llvm::ConstantExpr::getNSWSub]. *)
 val const_nuw_sub : llvalue -> llvalue -> llvalue
 
-(** [const_mul c1 c2] returns the constant product of two constants.
-    See the method [llvm::ConstantExpr::getMul]. *)
-val const_mul : llvalue -> llvalue -> llvalue
-
-(** [const_nsw_mul c1 c2] returns the constant product of two constants with
-    no signed wrapping. The result is undefined if the sum overflows.
-    See the method [llvm::ConstantExpr::getNSWMul]. *)
-val const_nsw_mul : llvalue -> llvalue -> llvalue
-
-(** [const_nuw_mul c1 c2] returns the constant product of two constants with
-    no unsigned wrapping. The result is undefined if the sum overflows.
-    See the method [llvm::ConstantExpr::getNSWMul]. *)
-val const_nuw_mul : llvalue -> llvalue -> llvalue
-
-(** [const_and c1 c2] returns the constant bitwise [AND] of two integer
-    constants.
-    See the method [llvm::ConstantExpr::getAnd]. *)
-val const_and : llvalue -> llvalue -> llvalue
-
-(** [const_or c1 c2] returns the constant bitwise [OR] of two integer
-    constants.
-    See the method [llvm::ConstantExpr::getOr]. *)
-val const_or : llvalue -> llvalue -> llvalue
-
 (** [const_xor c1 c2] returns the constant bitwise [XOR] of two integer
     constants.
     See the method [llvm::ConstantExpr::getXor]. *)
 val const_xor : llvalue -> llvalue -> llvalue
 
-(** [const_icmp pred c1 c2] returns the constant comparison of two integer
-    constants, [c1 pred c2].
-    See the method [llvm::ConstantExpr::getICmp]. *)
-val const_icmp : Icmp.t -> llvalue -> llvalue -> llvalue
+(** [const_ptradd pc offset flags] returns the constant ptradd
+    (getelementptr i8) of [pc] with constant [offset] and the given
+    {!GEPNoWrapFlags} no-wrap flags (combined with [lor]).
+    See the method [llvm::ConstantExpr::getPtrAdd]. *)
+val const_ptradd : llvalue -> llvalue -> int -> llvalue
 
-(** [const_fcmp pred c1 c2] returns the constant comparison of two floating
-    point constants, [c1 pred c2].
-    See the method [llvm::ConstantExpr::getFCmp]. *)
-val const_fcmp : Fcmp.t -> llvalue -> llvalue -> llvalue
-
-(** [const_shl c1 c2] returns the constant integer [c1] left-shifted by the
-    constant integer [c2].
-    See the method [llvm::ConstantExpr::getShl]. *)
-val const_shl : llvalue -> llvalue -> llvalue
-
-(** [const_lshr c1 c2] returns the constant integer [c1] right-shifted by the
-    constant integer [c2] with zero extension.
-    See the method [llvm::ConstantExpr::getLShr]. *)
-val const_lshr : llvalue -> llvalue -> llvalue
-
-(** [const_ashr c1 c2] returns the constant integer [c1] right-shifted by the
-    constant integer [c2] with sign extension.
-    See the method [llvm::ConstantExpr::getAShr]. *)
-val const_ashr : llvalue -> llvalue -> llvalue
-
-(** [const_gep srcty pc indices] returns the constant [getElementPtr] of [pc]
-    with source element type [srcty] and the constant integers indices from the
-    array [indices].
+(** [const_ptradd_from_indices dl srcty pc indices flags] returns the constant
+    ptradd of [pc] with the offset derived from the data layout [dl], the
+    source element type [srcty] and the constant integers indices from the
+    array [indices]. The flags are {!GEPNoWrapFlags} (combined with [lor]).
+    The result may be [None] if the indices cannot be converted to ptradd
+    representation.
     See the method [llvm::ConstantExpr::getGetElementPtr]. *)
-val const_gep : lltype -> llvalue -> llvalue array -> llvalue
-
-(** [const_in_bounds_gep ty pc indices] returns the constant [getElementPtr] of
-    [pc] with the constant integers indices from the array [indices].
-    See the method [llvm::ConstantExpr::getInBoundsGetElementPtr]. *)
-val const_in_bounds_gep : lltype -> llvalue -> llvalue array -> llvalue
+val const_ptradd_from_indices : DataLayout.t -> lltype -> llvalue ->
+                                llvalue array -> int -> llvalue option
 
 (** [const_trunc c ty] returns the constant truncation of integer constant [c]
     to the smaller integer type [ty].
     See the method [llvm::ConstantExpr::getTrunc]. *)
 val const_trunc : llvalue -> lltype -> llvalue
-
-(** [const_sext c ty] returns the constant sign extension of integer constant
-    [c] to the larger integer type [ty].
-    See the method [llvm::ConstantExpr::getSExt]. *)
-val const_sext : llvalue -> lltype -> llvalue
-
-(** [const_zext c ty] returns the constant zero extension of integer constant
-    [c] to the larger integer type [ty].
-    See the method [llvm::ConstantExpr::getZExt]. *)
-val const_zext : llvalue -> lltype -> llvalue
-
-(** [const_fptrunc c ty] returns the constant truncation of floating point
-    constant [c] to the smaller floating point type [ty].
-    See the method [llvm::ConstantExpr::getFPTrunc]. *)
-val const_fptrunc : llvalue -> lltype -> llvalue
-
-(** [const_fpext c ty] returns the constant extension of floating point constant
-    [c] to the larger floating point type [ty].
-    See the method [llvm::ConstantExpr::getFPExt]. *)
-val const_fpext : llvalue -> lltype -> llvalue
-
-(** [const_uitofp c ty] returns the constant floating point conversion of
-    unsigned integer constant [c] to the floating point type [ty].
-    See the method [llvm::ConstantExpr::getUIToFP]. *)
-val const_uitofp : llvalue -> lltype -> llvalue
-
-(** [const_sitofp c ty] returns the constant floating point conversion of
-    signed integer constant [c] to the floating point type [ty].
-    See the method [llvm::ConstantExpr::getSIToFP]. *)
-val const_sitofp : llvalue -> lltype -> llvalue
-
-(** [const_fptoui c ty] returns the constant unsigned integer conversion of
-    floating point constant [c] to integer type [ty].
-    See the method [llvm::ConstantExpr::getFPToUI]. *)
-val const_fptoui : llvalue -> lltype -> llvalue
-
-(** [const_fptoui c ty] returns the constant unsigned integer conversion of
-    floating point constant [c] to integer type [ty].
-    See the method [llvm::ConstantExpr::getFPToSI]. *)
-val const_fptosi : llvalue -> lltype -> llvalue
 
 (** [const_ptrtoint c ty] returns the constant integer conversion of
     pointer constant [c] to integer type [ty].
@@ -1236,16 +1241,6 @@ val const_inttoptr : llvalue -> lltype -> llvalue
     See the method [llvm::ConstantExpr::getBitCast]. *)
 val const_bitcast : llvalue -> lltype -> llvalue
 
-(** [const_zext_or_bitcast c ty] returns a constant zext or bitwise cast
-    conversion of constant [c] to type [ty].
-    See the method [llvm::ConstantExpr::getZExtOrBitCast]. *)
-val const_zext_or_bitcast : llvalue -> lltype -> llvalue
-
-(** [const_sext_or_bitcast c ty] returns a constant sext or bitwise cast
-    conversion of constant [c] to type [ty].
-    See the method [llvm::ConstantExpr::getSExtOrBitCast]. *)
-val const_sext_or_bitcast : llvalue -> lltype -> llvalue
-
 (** [const_trunc_or_bitcast c ty] returns a constant trunc or bitwise cast
     conversion of constant [c] to type [ty].
     See the method [llvm::ConstantExpr::getTruncOrBitCast]. *)
@@ -1255,23 +1250,6 @@ val const_trunc_or_bitcast : llvalue -> lltype -> llvalue
     cast conversion of constant [c] to type [ty] of equal size.
     See the method [llvm::ConstantExpr::getPointerCast]. *)
 val const_pointercast : llvalue -> lltype -> llvalue
-
-(** [const_intcast c ty ~is_signed] returns a constant sext/zext, bitcast,
-    or trunc for integer -> integer casts of constant [c] to type [ty].
-    When converting a narrower value to a wider one, whether sext or zext
-    will be used is controlled by [is_signed].
-    See the method [llvm::ConstantExpr::getIntegerCast]. *)
-val const_intcast : llvalue -> lltype -> is_signed:bool -> llvalue
-
-(** [const_fpcast c ty] returns a constant fpext, bitcast, or fptrunc for fp ->
-    fp casts of constant [c] to type [ty].
-    See the method [llvm::ConstantExpr::getFPCast]. *)
-val const_fpcast : llvalue -> lltype -> llvalue
-
-(** [const_select cond t f] returns the constant conditional which returns value
-    [t] if the boolean constant [cond] is true and the value [f] otherwise.
-    See the method [llvm::ConstantExpr::getSelect]. *)
-val const_select : llvalue -> llvalue -> llvalue -> llvalue
 
 (** [const_extractelement vec i] returns the constant [i]th element of
     constant vector [vec]. [i] must be a constant [i32] value unsigned less than
@@ -1454,6 +1432,12 @@ val is_global_constant : llvalue -> bool
     See the method [llvm::GlobalVariable::setConstant]. *)
 val set_global_constant : bool -> llvalue -> unit
 
+(** [global_set_metadata g k md] sets the metadata attachment of the global
+    value [g] to the metadata [md] for the given kind [k], erasing the existing
+    metadata attachment if it already exists for the given kind.
+    See the method [llvm::GlobalObject::setMetadata]. *)
+val global_set_metadata : llvalue -> llmdkind -> llmetadata -> unit
+
 (** [global_initializer gv] If global variable [gv] has an initializer it is returned,
     otherwise returns [None]. See the method [llvm::GlobalVariable::getInitializer]. *)
 val global_initializer : llvalue -> llvalue option
@@ -1566,9 +1550,42 @@ val rev_iter_functions : (llvalue -> unit) -> llmodule -> unit
     [f1,...,fN] are the functions of module [m]. Tail recursive. *)
 val fold_right_functions : (llvalue -> 'a -> 'a) -> llmodule -> 'a -> 'a
 
+(** [lookup_intrinsic_id name] obtains the intrinsic ID number for the given
+    function name. See the method [llvm::Intrinsic::lookupIntrinsicID].*)
+val lookup_intrinsic_id : string -> int
+
+(** [intrinsic_id] returns the ID of intrinsic function [f]. If [f] is not
+    an intrinsic, returns [0]. See the method
+    [llvm::Function::getIntrinsicID]. *)
+val intrinsic_id : llvalue -> int
+
 (** [is_intrinsic f] returns true if the function [f] is an intrinsic.
     See the method [llvm::Function::isIntrinsic]. *)
 val is_intrinsic : llvalue -> bool
+
+(** [intrinsic_declaration m id overload_types] gets or inserts the
+    declaration of an intrinsic. For overloaded intrinsics, types must be
+    provided to uniquely identify an overload. See the method
+    [llvm::Intrinsic::getOrInsertDeclaration]. *)
+val intrinsic_declaration : llmodule -> int -> lltype array -> llvalue
+
+(** [intrinsic_type c id overload_types] returns the type of intrinsic [id] in
+    context [c]. For overloaded intrinsics, types must be provided to uniquely
+    identify an overload. See the method [llvm::Intrinsic::getType]. *)
+val intrinsic_type : llcontext -> int -> lltype array -> lltype
+
+(** [intrinsic_name id] returns the name of intrinsic [id]. See the method
+    [llvm::Intrinsic::getName()]. *)
+val intrinsic_name : int -> string
+
+(** [intrinsic_overloaded_name m id overload_types] returns the name of an
+    overloaded intrinsic [id] identified by the overload types
+    [overload_types]. See the method [llvm::Intrinsic::getName]. *)
+val intrinsic_overloaded_name : llmodule -> int -> lltype array -> string
+
+(** [intrinsic_is_overloaded id] returns if intrinsic [id] is overloaded. See
+    the method [llvm::Intrinsic::isOverloaded]. *)
+val intrinsic_is_overloaded : int -> bool
 
 (** [function_call_conv f] returns the calling convention of the function [f].
     See the method [llvm::Function::getCallingConv]. *)
@@ -1910,16 +1927,15 @@ val fold_successors : (llbasicblock -> 'a -> 'a) -> llvalue -> 'a -> 'a
 
 (** {7 Operations on branches} *)
 
-(** [is_conditional v] returns true if the branch instruction [v] is conditional.
-    See the method [llvm::BranchInst::isConditional]. *)
+(** [is_conditional v] returns true if the branch instruction [v] is conditional. *)
 val is_conditional : llvalue -> bool
 
 (** [condition v] return the condition of the branch instruction [v].
-    See the method [llvm::BranchInst::getCondition]. *)
+    See the method [llvm::CondBrInst::getCondition]. *)
 val condition : llvalue -> llvalue
 
 (** [set_condition v c] sets the condition of the branch instruction [v] to the value [c].
-    See the method [llvm::BranchInst::setCondition]. *)
+    See the method [llvm::CondBrInst::setCondition]. *)
 val set_condition : llvalue -> llvalue -> unit
 
 (** [get_branch c] returns a description of the branch instruction [c]. *)
@@ -1965,9 +1981,21 @@ val builder_at_end : llcontext -> llbasicblock -> llbuilder
     See the constructor for [llvm::LLVMBuilder]. *)
 val position_builder : (llbasicblock, llvalue) llpos -> llbuilder -> unit
 
+(** [position_builder_before_dbg_records ip bb before_dbg_records] moves the
+    instruction builder [bb] to the position [ip], before any debug records
+    there.
+    See the constructor for [llvm::LLVMBuilder]. *)
+val position_builder_before_dbg_records : (llbasicblock, llvalue) llpos ->
+                                          llbuilder -> unit
+
 (** [position_before ins b] moves the instruction builder [b] to before the
     instruction [isn]. See the method [llvm::LLVMBuilder::SetInsertPoint]. *)
 val position_before : llvalue -> llbuilder -> unit
+
+(** [position_before_dbg_records ins b] moves the instruction builder [b]
+    to before the instruction [isn] and any debug records attached to it.
+    See the method [llvm::LLVMBuilder::SetInsertPoint]. *)
+val position_before_dbg_records : llvalue -> llbuilder -> unit
 
 (** [position_at_end bb b] moves the instruction builder [b] to the end of the
     basic block [bb]. See the method [llvm::LLVMBuilder::SetInsertPoint]. *)
@@ -2049,7 +2077,7 @@ val build_switch : llvalue -> llbasicblock -> int -> llbuilder -> llvalue
 
 (** [build_malloc ty name b] creates an [malloc]
     instruction at the position specified by the instruction builder [b].
-    See the method [llvm::CallInst::CreateMalloc]. *)
+    See the method [llvm::IRBuilderBase::CreateMalloc]. *)
 val build_malloc : lltype -> string -> llbuilder -> llvalue
 
 (** [build_array_malloc ty val name b] creates an [array malloc]
@@ -2287,13 +2315,6 @@ val build_neg : llvalue -> string -> llbuilder -> llvalue
     [-0.0] is used for floating point types to compute the correct sign.
     See the method [llvm::LLVMBuilder::CreateNeg]. *)
 val build_nsw_neg : llvalue -> string -> llbuilder -> llvalue
-
-(** [build_nuw_neg x name b] creates a
-    [%name = nuw sub 0, %x]
-    instruction at the position specified by the instruction builder [b].
-    [-0.0] is used for floating point types to compute the correct sign.
-    See the method [llvm::LLVMBuilder::CreateNeg]. *)
-val build_nuw_neg : llvalue -> string -> llbuilder -> llvalue
 
 (** [build_fneg x name b] creates a
     [%name = fsub 0, %x]
@@ -2621,55 +2642,4 @@ module MemoryBuffer : sig
 
   (** Disposes of a memory buffer. *)
   val dispose : llmemorybuffer -> unit
-end
-
-
-(** {6 Pass Managers} *)
-
-module PassManager : sig
-  (**  *)
-  type 'a t
-  type any = [ `Module | `Function ]
-
-  (** [PassManager.create ()] constructs a new whole-module pass pipeline. This
-      type of pipeline is suitable for link-time optimization and whole-module
-      transformations.
-      See the constructor of [llvm::PassManager]. *)
-  val create : unit -> [ `Module ] t
-
-  (** [PassManager.create_function m] constructs a new function-by-function
-      pass pipeline over the module [m]. It does not take ownership of [m].
-      This type of pipeline is suitable for code generation and JIT compilation
-      tasks.
-      See the constructor of [llvm::FunctionPassManager]. *)
-  val create_function : llmodule -> [ `Function ] t
-
-  (** [run_module m pm] initializes, executes on the module [m], and finalizes
-      all of the passes scheduled in the pass manager [pm]. Returns [true] if
-      any of the passes modified the module, [false] otherwise.
-      See the [llvm::PassManager::run] method. *)
-  val run_module : llmodule -> [ `Module ] t -> bool
-
-  (** [initialize fpm] initializes all of the function passes scheduled in the
-      function pass manager [fpm]. Returns [true] if any of the passes modified
-      the module, [false] otherwise.
-      See the [llvm::FunctionPassManager::doInitialization] method. *)
-  val initialize : [ `Function ] t -> bool
-
-  (** [run_function f fpm] executes all of the function passes scheduled in the
-      function pass manager [fpm] over the function [f]. Returns [true] if any
-      of the passes modified [f], [false] otherwise.
-      See the [llvm::FunctionPassManager::run] method. *)
-  val run_function : llvalue -> [ `Function ] t -> bool
-
-  (** [finalize fpm] finalizes all of the function passes scheduled in the
-      function pass manager [fpm]. Returns [true] if any of the passes
-      modified the module, [false] otherwise.
-      See the [llvm::FunctionPassManager::doFinalization] method. *)
-  val finalize : [ `Function ] t -> bool
-
-  (** Frees the memory of a pass pipeline. For function pipelines, does not free
-      the module.
-      See the destructor of [llvm::BasePassManager]. *)
-  val dispose : [< any ] t -> unit
 end

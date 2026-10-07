@@ -6,66 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Format/Format.h"
-
-#include "../Tooling/ReplacementTest.h"
-#include "FormatTestUtils.h"
+#include "FormatTestBase.h"
 
 #define DEBUG_TYPE "integer-literal-separator-test"
 
 namespace clang {
 namespace format {
+namespace test {
 namespace {
 
-// TODO:
-// Refactor the class declaration, which is copied from BracesInserterTest.cpp.
-class IntegerLiteralSeparatorTest : public ::testing::Test {
-protected:
-  std::string format(llvm::StringRef Code, const FormatStyle &Style,
-                     const std::vector<tooling::Range> &Ranges) {
-    LLVM_DEBUG(llvm::errs() << "---\n");
-    LLVM_DEBUG(llvm::errs() << Code << "\n\n");
-    auto NonEmptyRanges = Ranges;
-    if (Ranges.empty())
-      NonEmptyRanges = {1, tooling::Range(0, Code.size())};
-    FormattingAttemptStatus Status;
-    tooling::Replacements Replaces =
-        reformat(Style, Code, NonEmptyRanges, "<stdin>", &Status);
-    EXPECT_EQ(true, Status.FormatComplete) << Code << "\n\n";
-    ReplacementCount = Replaces.size();
-    auto Result = applyAllReplacements(Code, Replaces);
-    EXPECT_TRUE(static_cast<bool>(Result));
-    LLVM_DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
-    return *Result;
-  }
-
-  void _verifyFormat(const char *File, int Line, llvm::StringRef Expected,
-                     llvm::StringRef Code,
-                     const FormatStyle &Style = getLLVMStyle(),
-                     const std::vector<tooling::Range> &Ranges = {}) {
-    testing::ScopedTrace t(File, Line, ::testing::Message() << Code.str());
-    EXPECT_EQ(Expected.str(), format(Expected, Style, Ranges))
-        << "Expected code is not stable";
-    EXPECT_EQ(Expected.str(), format(Code, Style, Ranges));
-    if (Style.Language == FormatStyle::LK_Cpp && Ranges.empty()) {
-      // Objective-C++ is a superset of C++, so everything checked for C++
-      // needs to be checked for Objective-C++ as well.
-      FormatStyle ObjCStyle = Style;
-      ObjCStyle.Language = FormatStyle::LK_ObjC;
-      EXPECT_EQ(Expected.str(), format(test::messUp(Code), ObjCStyle, Ranges));
-    }
-  }
-
-  void _verifyFormat(const char *File, int Line, llvm::StringRef Code,
-                     const FormatStyle &Style = getLLVMStyle(),
-                     const std::vector<tooling::Range> &Ranges = {}) {
-    _verifyFormat(File, Line, Code, Code, Style, Ranges);
-  }
-
-  int ReplacementCount;
-};
-
-#define verifyFormat(...) _verifyFormat(__FILE__, __LINE__, __VA_ARGS__)
+class IntegerLiteralSeparatorTest : public FormatTestBase {};
 
 TEST_F(IntegerLiteralSeparatorTest, SingleQuoteAsSeparator) {
   FormatStyle Style = getLLVMStyle();
@@ -74,7 +24,7 @@ TEST_F(IntegerLiteralSeparatorTest, SingleQuoteAsSeparator) {
   EXPECT_EQ(Style.IntegerLiteralSeparator.Decimal, 0);
   EXPECT_EQ(Style.IntegerLiteralSeparator.Hex, 0);
 
-  const StringRef Binary("b = 0b10011'11'0110'1u;");
+  constexpr StringRef Binary("b = 0b10011'11'0110'1u;");
   verifyFormat(Binary, Style);
   Style.IntegerLiteralSeparator.Binary = -1;
   verifyFormat("b = 0b100111101101u;", Binary, Style);
@@ -83,14 +33,14 @@ TEST_F(IntegerLiteralSeparatorTest, SingleQuoteAsSeparator) {
   Style.IntegerLiteralSeparator.Binary = 4;
   verifyFormat("b = 0b1001'1110'1101u;", Binary, Style);
 
-  const StringRef Decimal("d = 184467'440737'0'95505'92Ull;");
+  constexpr StringRef Decimal("d = 184467'440737'0'95505'92Ull;");
   verifyFormat(Decimal, Style);
   Style.IntegerLiteralSeparator.Decimal = -1;
   verifyFormat("d = 18446744073709550592Ull;", Decimal, Style);
   Style.IntegerLiteralSeparator.Decimal = 3;
   verifyFormat("d = 18'446'744'073'709'550'592Ull;", Decimal, Style);
 
-  const StringRef Hex("h = 0xDEAD'BEEF'DE'AD'BEE'Fuz;");
+  constexpr StringRef Hex("h = 0xDEAD'BEEF'DE'AD'BEE'Fuz;");
   verifyFormat(Hex, Style);
   Style.IntegerLiteralSeparator.Hex = -1;
   verifyFormat("h = 0xDEADBEEFDEADBEEFuz;", Hex, Style);
@@ -99,15 +49,50 @@ TEST_F(IntegerLiteralSeparatorTest, SingleQuoteAsSeparator) {
 
   verifyFormat("o0 = 0;\n"
                "o1 = 07;\n"
-               "o5 = 012345",
+               "o5 = 012345;",
                Style);
+
+  verifyFormat("bi = 0b1'0000i;\n"
+               "dif = 1'234if;\n"
+               "hil = 0xA'BCil;",
+               "bi = 0b10000i;\n"
+               "dif = 1234if;\n"
+               "hil = 0xABCil;",
+               Style);
+
+  verifyFormat("bd = 0b1'0000d;\n"
+               "dh = 1'234h;\n"
+               "dmin = 1'234min;\n"
+               "dns = 1'234ns;\n"
+               "ds = 1'234s;\n"
+               "dus = 1'234us;\n"
+               "hy = 0xA'BCy;",
+               "bd = 0b10000d;\n"
+               "dh = 1234h;\n"
+               "dmin = 1234min;\n"
+               "dns = 1234ns;\n"
+               "ds = 1234s;\n"
+               "dus = 1234us;\n"
+               "hy = 0xABCy;",
+               Style);
+
+  verifyFormat("hd = 0xAB'Cd;", "hd = 0xABCd;", Style);
+
+  verifyFormat("d = 5'678_km;\n"
+               "h = 0xD'EF_u16;",
+               "d = 5678_km;\n"
+               "h = 0xDEF_u16;",
+               Style);
+
+  Style.Standard = FormatStyle::LS_Cpp11;
+  verifyFormat("ld = 1234L;", Style);
 }
 
 TEST_F(IntegerLiteralSeparatorTest, UnderscoreAsSeparator) {
   FormatStyle Style = getLLVMStyle();
-  const StringRef Binary("B = 0B10011_11_0110_1;");
-  const StringRef Decimal("d = 184467_440737_0_95505_92;");
-  const StringRef Hex("H = 0XDEAD_BEEF_DE_AD_BEE_F;");
+  constexpr StringRef Binary("B = 0B10011_11_0110_1;");
+  constexpr StringRef Decimal("d = 184467_440737_0_95505_92;");
+  constexpr StringRef Hex("H = 0XDEAD_BEEF_DE_AD_BEE_F;");
 
   auto TestUnderscore = [&](auto Language) {
     Style.Language = Language;
@@ -152,20 +137,55 @@ TEST_F(IntegerLiteralSeparatorTest, UnderscoreAsSeparator) {
   verifyFormat("o = 0o400000000000000003n;", Style);
 }
 
+TEST_F(IntegerLiteralSeparatorTest, MinDigitsInsert) {
+  FormatStyle Style = getLLVMStyle();
+  Style.IntegerLiteralSeparator.Binary = 3;
+  Style.IntegerLiteralSeparator.Decimal = 3;
+  Style.IntegerLiteralSeparator.Hex = 2;
+
+  Style.IntegerLiteralSeparator.BinaryMinDigitsInsert = 7;
+  verifyFormat("b1 = 0b101101;\n"
+               "b2 = 0b1'101'101;",
+               "b1 = 0b101'101;\n"
+               "b2 = 0b1101101;",
+               Style);
+
+  Style.IntegerLiteralSeparator.DecimalMinDigitsInsert = 5;
+  verifyFormat("d1 = 2023;\n"
+               "d2 = 10'000;",
+               "d1 = 2'023;\n"
+               "d2 = 100'00;",
+               Style);
+
+  Style.IntegerLiteralSeparator.DecimalMinDigitsInsert = 3;
+  verifyFormat("d1 = 123;\n"
+               "d2 = 1'234;",
+               "d1 = 12'3;\n"
+               "d2 = 12'34;",
+               Style);
+
+  Style.IntegerLiteralSeparator.HexMinDigitsInsert = 6;
+  verifyFormat("h1 = 0xABCDE;\n"
+               "h2 = 0xAB'CD'EF;",
+               "h1 = 0xA'BC'DE;\n"
+               "h2 = 0xABC'DEF;",
+               Style);
+}
+
 TEST_F(IntegerLiteralSeparatorTest, FixRanges) {
   FormatStyle Style = getLLVMStyle();
   Style.IntegerLiteralSeparator.Decimal = 3;
 
-  const StringRef Code("i = -12'34;\n"
-                       "// clang-format off\n"
-                       "j = 123'4;\n"
-                       "// clang-format on\n"
-                       "k = +1'23'4;");
-  const StringRef Expected("i = -1'234;\n"
+  constexpr StringRef Code("i = -12'34;\n"
                            "// clang-format off\n"
                            "j = 123'4;\n"
                            "// clang-format on\n"
-                           "k = +1'234;");
+                           "k = +1'23'4;");
+  constexpr StringRef Expected("i = -1'234;\n"
+                               "// clang-format off\n"
+                               "j = 123'4;\n"
+                               "// clang-format on\n"
+                               "k = +1'234;");
 
   verifyFormat(Expected, Code, Style);
 
@@ -176,7 +196,7 @@ TEST_F(IntegerLiteralSeparatorTest, FixRanges) {
                "k = +1'23'4;",
                Code, Style, {tooling::Range(0, 11)}); // line 1
 
-  verifyFormat(Code, Style, {tooling::Range(32, 10)}); // line 3
+  verifyFormat(Code, Code, Style, {tooling::Range(32, 10)}); // line 3
 
   verifyFormat("i = -12'34;\n"
                "// clang-format off\n"
@@ -223,6 +243,24 @@ TEST_F(IntegerLiteralSeparatorTest, FloatingPoint) {
                Style);
 }
 
+TEST_F(IntegerLiteralSeparatorTest, MaxDigitsRemove) {
+  auto Style = getLLVMStyle();
+  Style.IntegerLiteralSeparator.Decimal = 3;
+  Style.IntegerLiteralSeparator.DecimalMaxDigitsRemove = 4;
+  Style.IntegerLiteralSeparator.DecimalMinDigitsInsert = 7;
+
+  verifyFormat("d1 = 123456;\n"
+               "d2 = 1234'56;",
+               Style);
+
+  verifyFormat("d0 = 2023;\n"
+               "d3 = 5'000'000;",
+               "d0 = 20'2'3;\n"
+               "d3 = 5000000;",
+               Style);
+}
+
 } // namespace
+} // namespace test
 } // namespace format
 } // namespace clang

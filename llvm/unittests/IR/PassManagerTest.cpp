@@ -28,6 +28,11 @@ class TestFunctionAnalysis : public AnalysisInfoMixin<TestFunctionAnalysis> {
 public:
   struct Result {
     Result(int Count) : InstructionCount(Count) {}
+
+    // Test that analysis results can be immovable.
+    Result(const Result &) = delete;
+    Result &operator=(const Result &) = delete;
+
     int InstructionCount;
     bool invalidate(Function &, const PreservedAnalyses &PA,
                     FunctionAnalysisManager::Invalidator &) {
@@ -93,7 +98,7 @@ private:
 
 AnalysisKey TestModuleAnalysis::Key;
 
-struct TestModulePass : PassInfoMixin<TestModulePass> {
+struct TestModulePass : OptionalPassInfoMixin<TestModulePass> {
   TestModulePass(int &RunCount) : RunCount(RunCount) {}
 
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
@@ -104,13 +109,14 @@ struct TestModulePass : PassInfoMixin<TestModulePass> {
   int &RunCount;
 };
 
-struct TestPreservingModulePass : PassInfoMixin<TestPreservingModulePass> {
+struct TestPreservingModulePass
+    : OptionalPassInfoMixin<TestPreservingModulePass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
     return PreservedAnalyses::all();
   }
 };
 
-struct TestFunctionPass : PassInfoMixin<TestFunctionPass> {
+struct TestFunctionPass : OptionalPassInfoMixin<TestFunctionPass> {
   TestFunctionPass(int &RunCount, int &AnalyzedInstrCount,
                    int &AnalyzedFunctionCount, ModuleAnalysisManager &MAM,
                    bool OnlyUseCachedResults = false)
@@ -154,7 +160,7 @@ struct TestFunctionPass : PassInfoMixin<TestFunctionPass> {
 // A test function pass that invalidates all function analyses for a function
 // with a specific name.
 struct TestInvalidationFunctionPass
-    : PassInfoMixin<TestInvalidationFunctionPass> {
+    : OptionalPassInfoMixin<TestInvalidationFunctionPass> {
   TestInvalidationFunctionPass(StringRef FunctionName) : Name(FunctionName) {}
 
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
@@ -567,7 +573,7 @@ private:
 
 AnalysisKey CustomizedAnalysis::Key;
 
-struct CustomizedPass : PassInfoMixin<CustomizedPass> {
+struct CustomizedPass : OptionalPassInfoMixin<CustomizedPass> {
   std::function<void(CustomizedAnalysis::Result &, int &)> Callback;
 
   template <typename CallbackT>
@@ -691,7 +697,7 @@ private:
 
 AnalysisKey TestDoublyIndirectFunctionAnalysis::Key;
 
-struct LambdaPass : public PassInfoMixin<LambdaPass> {
+struct LambdaPass : public OptionalPassInfoMixin<LambdaPass> {
   using FuncT = std::function<PreservedAnalyses(Function &, FunctionAnalysisManager &)>;
 
   LambdaPass(FuncT Func) : Func(std::move(Func)) {}
@@ -824,10 +830,13 @@ TEST_F(PassManagerTest, FunctionPassCFGChecker) {
 
   auto *F = M->getFunction("foo");
   FunctionAnalysisManager FAM;
+  ModuleAnalysisManager MAM;
   FunctionPassManager FPM;
   PassInstrumentationCallbacks PIC;
   StandardInstrumentations SI(M->getContext(), /*DebugLogging*/ true);
-  SI.registerCallbacks(PIC, &FAM);
+  SI.registerCallbacks(PIC, &MAM);
+  MAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
   FAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
   FAM.registerPass([&] { return DominatorTreeAnalysis(); });
   FAM.registerPass([&] { return AssumptionAnalysis(); });
@@ -840,7 +849,7 @@ TEST_F(PassManagerTest, FunctionPassCFGChecker) {
 // FunctionPass that manually invalidates analyses and always returns
 // PreservedAnalyses::all().
 struct TestSimplifyCFGInvalidatingAnalysisPass
-    : PassInfoMixin<TestSimplifyCFGInvalidatingAnalysisPass> {
+    : OptionalPassInfoMixin<TestSimplifyCFGInvalidatingAnalysisPass> {
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
     // Run SimplifyCFG and if it changes CFG then invalidate the CFG analysis.
     // This allows to return PreserveAnalysis::all().
@@ -870,10 +879,13 @@ TEST_F(PassManagerTest, FunctionPassCFGCheckerInvalidateAnalysis) {
 
   auto *F = M->getFunction("foo");
   FunctionAnalysisManager FAM;
+  ModuleAnalysisManager MAM;
   FunctionPassManager FPM;
   PassInstrumentationCallbacks PIC;
   StandardInstrumentations SI(M->getContext(), /*DebugLogging*/ true);
-  SI.registerCallbacks(PIC, &FAM);
+  SI.registerCallbacks(PIC, &MAM);
+  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
+  MAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
   FAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
   FAM.registerPass([&] { return DominatorTreeAnalysis(); });
   FAM.registerPass([&] { return AssumptionAnalysis(); });
@@ -885,7 +897,8 @@ TEST_F(PassManagerTest, FunctionPassCFGCheckerInvalidateAnalysis) {
 
 // Wrap a FunctionPassManager running SimplifyCFG pass with another
 // FunctionPassManager.
-struct TestSimplifyCFGWrapperPass : PassInfoMixin<TestSimplifyCFGWrapperPass> {
+struct TestSimplifyCFGWrapperPass
+    : OptionalPassInfoMixin<TestSimplifyCFGWrapperPass> {
   TestSimplifyCFGWrapperPass(FunctionPassManager &InnerPM) : InnerPM(InnerPM) {}
 
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
@@ -935,10 +948,13 @@ TEST_F(PassManagerTest, FunctionPassCFGCheckerWrapped) {
 
   auto *F = M->getFunction("foo");
   FunctionAnalysisManager FAM;
+  ModuleAnalysisManager MAM;
   FunctionPassManager FPM;
   PassInstrumentationCallbacks PIC;
   StandardInstrumentations SI(M->getContext(), /*DebugLogging*/ true);
-  SI.registerCallbacks(PIC, &FAM);
+  SI.registerCallbacks(PIC, &MAM);
+  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
+  MAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
   FAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
   FAM.registerPass([&] { return DominatorTreeAnalysis(); });
   FAM.registerPass([&] { return AssumptionAnalysis(); });
@@ -950,4 +966,116 @@ TEST_F(PassManagerTest, FunctionPassCFGCheckerWrapped) {
   FPM.addPass(TestSimplifyCFGWrapperPass(InnerFPM));
   FPM.run(*F, FAM);
 }
+
+#ifdef EXPENSIVE_CHECKS
+
+struct WrongFunctionPass : OptionalPassInfoMixin<WrongFunctionPass> {
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
+    F.getEntryBlock().begin()->eraseFromParent();
+    return PreservedAnalyses::all();
+  }
+  static StringRef name() { return "WrongFunctionPass"; }
+};
+
+TEST_F(PassManagerTest, FunctionPassMissedFunctionAnalysisInvalidation) {
+  LLVMContext Context;
+  auto M = parseIR(Context, "define void @foo() {\n"
+                            "  %a = add i32 0, 0\n"
+                            "  ret void\n"
+                            "}\n");
+
+  FunctionAnalysisManager FAM;
+  ModuleAnalysisManager MAM;
+  PassInstrumentationCallbacks PIC;
+  StandardInstrumentations SI(M->getContext(), /*DebugLogging*/ false);
+  SI.registerCallbacks(PIC, &MAM);
+  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
+  MAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  FAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  FAM.registerPass([&] { return ModuleAnalysisManagerFunctionProxy(MAM); });
+
+  FunctionPassManager FPM;
+  FPM.addPass(WrongFunctionPass());
+
+  auto *F = M->getFunction("foo");
+  EXPECT_DEATH(FPM.run(*F, FAM), "Function @foo changed by WrongFunctionPass without invalidating analyses");
+}
+
+struct WrongModulePass : OptionalPassInfoMixin<WrongModulePass> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+    for (Function &F : M)
+      F.getEntryBlock().begin()->eraseFromParent();
+
+    PreservedAnalyses PA;
+    PA.preserveSet<AllAnalysesOn<Function>>();
+    PA.preserve<FunctionAnalysisManagerModuleProxy>();
+    return PA;
+  }
+  static StringRef name() { return "WrongModulePass"; }
+};
+
+TEST_F(PassManagerTest, ModulePassMissedFunctionAnalysisInvalidation) {
+  LLVMContext Context;
+  auto M = parseIR(Context, "define void @foo() {\n"
+                            "  %a = add i32 0, 0\n"
+                            "  ret void\n"
+                            "}\n");
+
+  FunctionAnalysisManager FAM;
+  ModuleAnalysisManager MAM;
+  PassInstrumentationCallbacks PIC;
+  StandardInstrumentations SI(M->getContext(), /*DebugLogging*/ false);
+  SI.registerCallbacks(PIC, &MAM);
+  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
+  MAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  FAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  FAM.registerPass([&] { return ModuleAnalysisManagerFunctionProxy(MAM); });
+
+  ModulePassManager MPM;
+  MPM.addPass(WrongModulePass());
+
+  EXPECT_DEATH(
+      MPM.run(*M, MAM),
+      "Function @foo changed by WrongModulePass without invalidating analyses");
+}
+
+struct WrongModulePass2 : OptionalPassInfoMixin<WrongModulePass2> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM) {
+    for (Function &F : M)
+      F.getEntryBlock().begin()->eraseFromParent();
+
+    PreservedAnalyses PA;
+    PA.preserveSet<AllAnalysesOn<Module>>();
+    PA.abandon<FunctionAnalysisManagerModuleProxy>();
+    return PA;
+  }
+  static StringRef name() { return "WrongModulePass2"; }
+};
+
+TEST_F(PassManagerTest, ModulePassMissedModuleAnalysisInvalidation) {
+  LLVMContext Context;
+  auto M = parseIR(Context, "define void @foo() {\n"
+                            "  %a = add i32 0, 0\n"
+                            "  ret void\n"
+                            "}\n");
+
+  FunctionAnalysisManager FAM;
+  ModuleAnalysisManager MAM;
+  PassInstrumentationCallbacks PIC;
+  StandardInstrumentations SI(M->getContext(), /*DebugLogging*/ false);
+  SI.registerCallbacks(PIC, &MAM);
+  MAM.registerPass([&] { return FunctionAnalysisManagerModuleProxy(FAM); });
+  MAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  FAM.registerPass([&] { return PassInstrumentationAnalysis(&PIC); });
+  FAM.registerPass([&] { return ModuleAnalysisManagerFunctionProxy(MAM); });
+
+  ModulePassManager MPM;
+  MPM.addPass(WrongModulePass2());
+
+  EXPECT_DEATH(
+      MPM.run(*M, MAM),
+      "Module changed by WrongModulePass2 without invalidating analyses");
+}
+
+#endif
 }

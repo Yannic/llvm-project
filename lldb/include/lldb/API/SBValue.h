@@ -13,8 +13,13 @@
 #include "lldb/API/SBDefines.h"
 #include "lldb/API/SBType.h"
 
+namespace lldb_private {
 class ValueImpl;
 class ValueLocker;
+namespace python {
+class SWIGBridge;
+}
+} // namespace lldb_private
 
 namespace lldb {
 
@@ -62,6 +67,8 @@ public:
 
   uint64_t GetValueAsUnsigned(uint64_t fail_value = 0);
 
+  lldb::addr_t GetValueAsAddress();
+
   ValueType GetValueType();
 
   // If you call this on a newly created ValueObject, it will always return
@@ -75,11 +82,15 @@ public:
 
   const char *GetObjectDescription();
 
+  lldb::SBValue GetParent();
+
   lldb::SBValue GetDynamicValue(lldb::DynamicValueType use_dynamic);
 
   lldb::SBValue GetStaticValue();
 
   lldb::SBValue GetNonSyntheticValue();
+
+  lldb::SBValue GetSyntheticValue();
 
   lldb::DynamicValueType GetPreferDynamicValue();
 
@@ -99,10 +110,28 @@ public:
 
   const char *GetLocation();
 
-  // Deprecated - use the one that takes SBError&
+  LLDB_DEPRECATED_FIXME("Use the variant that takes an SBError &",
+                        "SetValueFromCString(const char *, SBError &)")
   bool SetValueFromCString(const char *value_str);
 
   bool SetValueFromCString(const char *value_str, lldb::SBError &error);
+
+  /// Returns false if this value cannot be modified through
+  /// SetValueFromCString() or SetData(), for instance because it
+  /// exists in the target, but has no writable storage (for example a
+  /// constant or variable value that was reconstructed from debug
+  /// info as the result of a computation). A true result does not
+  /// guarantee a write will succeed.
+  LLDB_DEPRECATED_FIXME("Use variant that reports the reason", "CanSet()")
+  bool CanSetValue();
+
+  /// Returns an error describing why this value cannot be modified
+  /// through SetValueFromCString() or SetData(), for instance because
+  /// it exists in the target, but has no writable storage (for example
+  /// a constant or variable value that was reconstructed from debug
+  /// info as the result of a computation). A success result does not
+  /// guarantee a write will succeed.
+  lldb::SBError CanSet();
 
   lldb::SBTypeFormat GetTypeFormat();
 
@@ -112,14 +141,36 @@ public:
 
   lldb::SBTypeSynthetic GetTypeSynthetic();
 
+  /// Override the `SBTypeSynthetic` chosen by the DataFormatter system for this
+  /// instance.
+  ///
+  /// This can be used to great effect in scripted synthetic children providers
+  /// where a child's underlying type can only be figured out by inspecting the
+  /// containing object's other members.
+  void SetTypeSynthetic(lldb::SBTypeSynthetic &synthetic);
+
+  /// This function's primary use is to ease inspecting the internal state of
+  /// scripted synthetic children providers for debugging purposes.
+  ///
+  /// An other alternative usecase is for parent synthetic children providers to
+  /// imbue their children's synthetic children providers with additional
+  /// context after creation.
+  lldb::SBScriptObject GetTypeSyntheticImplementation();
+
   lldb::SBValue GetChildAtIndex(uint32_t idx);
 
   lldb::SBValue CreateChildAtOffset(const char *name, uint32_t offset,
                                     lldb::SBType type);
 
-  // Deprecated - use the expression evaluator to perform type casting
+  LLDB_DEPRECATED("Use the expression evaluator to perform type casting")
   lldb::SBValue Cast(lldb::SBType type);
 
+  /// Create an SBValue with the given name by evaluating the expression, with
+  /// the execution context inherited from the current SBValue.
+  /// Data Inspection Language (DIL) attempts to evaluate the expression first
+  /// (can be disabled by target.experimental.use-DIL-for-creating-values)
+  /// If DIL is not called or fails, the evaluation falls back to
+  /// UserExpression.
   lldb::SBValue CreateValueFromExpression(const char *name,
                                           const char *expression);
 
@@ -134,6 +185,8 @@ public:
   // AddressOf() on the return of this call all return invalid
   lldb::SBValue CreateValueFromData(const char *name, lldb::SBData data,
                                     lldb::SBType type);
+  // Returned value has no address.
+  lldb::SBValue CreateBoolValue(const char *name, bool value);
 
   /// Get a child value by index from a value.
   ///
@@ -147,30 +200,25 @@ public:
   /// members (empty base classes are omitted), and all members of the
   /// current class will then follow the base classes.
   ///
-  /// Pointers differ depending on what they point to. If the pointer
-  /// points to a simple type, the child at index zero
-  /// is the only child value available, unless \a synthetic_allowed
-  /// is \b true, in which case the pointer will be used as an array
-  /// and can create 'synthetic' child values using positive or
-  /// negative indexes. If the pointer points to an aggregate type
-  /// (an array, class, union, struct), then the pointee is
-  /// transparently skipped and any children are going to be the indexes
-  /// of the child values within the aggregate type. For example if
-  /// we have a 'Point' type and we have a SBValue that contains a
-  /// pointer to a 'Point' type, then the child at index zero will be
-  /// the 'x' member, and the child at index 1 will be the 'y' member
-  /// (the child at index zero won't be a 'Point' instance).
+  /// For array and pointers the behavior of the function depends on the value
+  /// of the \a treat_as_array argument. If \b false, the function returns
+  /// members of the array as given by the array bounds. If the value is a
+  /// pointer to a simple type, the child at index zero is the only child
+  /// value available. If the pointer points to an aggregate type (an array,
+  /// class, union, etc.), then the pointee is transparently skipped and any
+  /// children are going to be the indexes of the child values within the
+  /// aggregate type. For example if we have a 'Point' type and we have a
+  /// SBValue that contains a pointer to a 'Point' type, then the child at
+  /// index zero will be the 'x' member, and the child at index 1 will be the
+  /// 'y' member (the child at index zero won't be a 'Point' instance). If \a
+  /// treat_as_array is \b true, pointer values will be used as a (C) array and
+  /// and the function will create 'synthetic' child values using positive or
+  /// negative indexes. In case of arrays, the function will return values
+  /// which are outside of the array bounds.
   ///
   /// If you actually need an SBValue that represents the type pointed
   /// to by a SBValue for which GetType().IsPointeeType() returns true,
   /// regardless of the pointee type, you can do that with SBValue::Dereference.
-  ///
-  /// Arrays have a preset number of children that can be accessed by
-  /// index and will returns invalid child values for indexes that are
-  /// out of bounds unless the \a synthetic_allowed is \b true. In this
-  /// case the array can create 'synthetic' child values for indexes
-  /// that aren't in the array bounds using positive or negative
-  /// indexes.
   ///
   /// \param[in] idx
   ///     The index of the child value to get
@@ -180,7 +228,7 @@ public:
   ///     and also if the target can be run to figure out the dynamic
   ///     type of the child value.
   ///
-  /// \param[in] can_create_synthetic
+  /// \param[in] treat_as_array
   ///     If \b true, then allow child values to be created by index
   ///     for pointers and arrays for indexes that normally wouldn't
   ///     be allowed.
@@ -189,7 +237,7 @@ public:
   ///     A new SBValue object that represents the child member value.
   lldb::SBValue GetChildAtIndex(uint32_t idx,
                                 lldb::DynamicValueType use_dynamic,
-                                bool can_create_synthetic);
+                                bool treat_as_array);
 
   // Matches children of this object only and will match base classes and
   // member names if this is a clang typed object.
@@ -272,10 +320,25 @@ public:
 
   bool IsRuntimeSupportValue();
 
+  /// Return the number of children of this variable. Note that for some
+  /// variables this operation can be expensive. If possible, prefer calling
+  /// GetNumChildren(max) with the maximum number of children you are interested
+  /// in.
   uint32_t GetNumChildren();
 
+  /// Return the numer of children of this variable, with a hint that the
+  /// caller is interested in at most \a max children. Use this function to
+  /// avoid expensive child computations in some cases. For example, if you know
+  /// you will only ever display 100 elements, calling GetNumChildren(100) can
+  /// avoid enumerating all the other children. If the returned value is smaller
+  /// than \a max, then it represents the true number of children, otherwise it
+  /// indicates that their number is at least \a max. Do not assume the returned
+  /// number will always be less than or equal to \a max, as the implementation
+  /// may choose to return a larger (but still smaller than the actual number of
+  /// children) value.
   uint32_t GetNumChildren(uint32_t max);
 
+  LLDB_DEPRECATED("SBValue::GetOpaqueType() is deprecated.")
   void *GetOpaqueType();
 
   lldb::SBTarget GetTarget();
@@ -288,7 +351,7 @@ public:
 
   lldb::SBValue Dereference();
 
-  // Deprecated - please use GetType().IsPointerType() instead.
+  LLDB_DEPRECATED("Use GetType().IsPointerType() instead")
   bool TypeIsPointerType();
 
   lldb::SBType GetType();
@@ -296,6 +359,9 @@ public:
   lldb::SBValue Persist();
 
   bool GetDescription(lldb::SBStream &description);
+
+  bool GetDescription(lldb::SBStream &description,
+                      lldb::DescriptionLevel description_level);
 
   bool GetExpressionPath(lldb::SBStream &description);
 
@@ -308,8 +374,6 @@ public:
   lldb::SBValue EvaluateExpression(const char *expr,
                                    const SBExpressionOptions &options,
                                    const char *name) const;
-
-  SBValue(const lldb::ValueObjectSP &value_sp);
 
   /// Watch this value if it resides in memory.
   ///
@@ -368,6 +432,68 @@ public:
   lldb::SBWatchpoint WatchPointee(bool resolve_location, bool read, bool write,
                                   SBError &error);
 
+  /// If this value represents a C++ class that has a vtable, return an value
+  /// that represents the virtual function table.
+  ///
+  /// SBValue::GetError() will be in the success state if this value represents
+  /// a C++ class with a vtable, or an appropriate error describing that the
+  /// object isn't a C++ class with a vtable or not a C++ class.
+  ///
+  /// SBValue::GetName() will be the demangled symbol name for the virtual
+  /// function table like "vtable for <classname>".
+  ///
+  /// SBValue::GetValue() will be the address of the first vtable entry if the
+  /// current SBValue is a class with a vtable, or nothing the current SBValue
+  /// is not a C++ class or not a C++ class that has a vtable.
+  ///
+  /// SBValue::GetValueAtUnsigned(...) will return the address of the first
+  /// vtable entry.
+  ///
+  /// SBValue::GetLoadAddress() will return the address of the vtable pointer
+  /// found in the parent SBValue.
+  ///
+  /// SBValue::GetNumChildren() will return the number of virtual function
+  /// pointers in the vtable, or zero on error.
+  ///
+  /// SBValue::GetChildAtIndex(...) will return each virtual function pointer
+  /// as a SBValue object.
+  ///
+  /// The child SBValue objects will have the following values:
+  ///
+  /// SBValue::GetError() will indicate success if the vtable entry was
+  /// successfully read from memory, or an error if not.
+  ///
+  /// SBValue::GetName() will be the vtable function index in the form "[%u]"
+  /// where %u is the index.
+  ///
+  /// SBValue::GetValue() will be the virtual function pointer value as a
+  /// string.
+  ///
+  /// SBValue::GetValueAtUnsigned(...) will return the virtual function
+  /// pointer value.
+  ///
+  /// SBValue::GetLoadAddress() will return the address of the virtual function
+  /// pointer.
+  ///
+  /// SBValue::GetNumChildren() returns 0
+  lldb::SBValue GetVTable();
+
+protected:
+  friend class SBBlock;
+  friend class SBCommandReturnObject;
+  friend class SBFrame;
+  friend class SBModule;
+  friend class SBTarget;
+  friend class SBThread;
+  friend class SBType;
+  friend class SBTypeStaticField;
+  friend class SBTypeSummary;
+  friend class SBValueList;
+
+  friend class lldb_private::python::SWIGBridge;
+
+  SBValue(const lldb::ValueObjectSP &value_sp);
+
   /// Same as the protected version of GetSP that takes a locker, except that we
   /// make the
   /// locker locally in the function.  Since the Target API mutex is recursive,
@@ -380,13 +506,6 @@ public:
   ///     A ValueObjectSP of the best kind (static, dynamic or synthetic) we
   ///     can cons up, in accordance with the SBValue's settings.
   lldb::ValueObjectSP GetSP() const;
-
-protected:
-  friend class SBBlock;
-  friend class SBFrame;
-  friend class SBTarget;
-  friend class SBThread;
-  friend class SBValueList;
 
   /// Get the appropriate ValueObjectSP from this SBValue, consulting the
   /// use_dynamic and use_synthetic options passed in to SetSP when the
@@ -411,7 +530,7 @@ protected:
   /// \return
   ///     A ValueObjectSP of the best kind (static, dynamic or synthetic) we
   ///     can cons up, in accordance with the SBValue's settings.
-  lldb::ValueObjectSP GetSP(ValueLocker &value_locker) const;
+  lldb::ValueObjectSP GetSP(lldb_private::ValueLocker &value_locker) const;
 
   // these calls do the right thing WRT adjusting their settings according to
   // the target's preferences
@@ -427,8 +546,11 @@ protected:
   void SetSP(const lldb::ValueObjectSP &sp, lldb::DynamicValueType use_dynamic,
              bool use_synthetic, const char *name);
 
+protected:
+  friend class lldb_private::ScriptInterpreterBridge;
+
 private:
-  typedef std::shared_ptr<ValueImpl> ValueImplSP;
+  typedef std::shared_ptr<lldb_private::ValueImpl> ValueImplSP;
   ValueImplSP m_opaque_sp;
 
   void SetSP(ValueImplSP impl_sp);

@@ -16,6 +16,7 @@
 
 #include "hwasan_flags.h"
 #include "hwasan_interface_internal.h"
+#include "hwasan_mapping.h"
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_flags.h"
 #include "sanitizer_common/sanitizer_internal_defs.h"
@@ -56,11 +57,18 @@ constexpr unsigned kTaggableRegionCheckShift =
 // Tags are done in upper bits using Intel LAM.
 constexpr unsigned kAddressTagShift = 57;
 constexpr unsigned kTagBits = 6;
-#else
+#elif defined(__aarch64__)
 // TBI (Top Byte Ignore) feature of AArch64: bits [63:56] are ignored in address
 // translation and can be used to store a tag.
 constexpr unsigned kAddressTagShift = 56;
 constexpr unsigned kTagBits = 8;
+#elif SANITIZER_RISCV64
+// Pointer Masking extension for RISC-V: Top PMLEN (16 or 7) bits are ignored in
+// address translation and can be used to store a tag.
+constexpr unsigned kAddressTagShift = 56;
+constexpr unsigned kTagBits = 8;
+#else
+#  error Architecture not supported
 #endif  // defined(HWASAN_ALIASING_MODE)
 
 // Mask for extracting tag bits from the lower 8 bits.
@@ -78,12 +86,23 @@ const unsigned kRecordFPShift = 48;
 const unsigned kRecordFPLShift = 4;
 const unsigned kRecordFPModulus = 1 << (64 - kRecordFPShift + kRecordFPLShift);
 
+static inline bool InTaggableRegion(uptr addr) {
+#if defined(HWASAN_ALIASING_MODE)
+  // Aliases are mapped next to shadow so that the upper bits match the shadow
+  // base.
+  return (addr >> kTaggableRegionCheckShift) ==
+         (__hwasan::GetShadowOffset() >> kTaggableRegionCheckShift);
+#endif
+  return true;
+}
+
 static inline tag_t GetTagFromPointer(uptr p) {
-  return (p >> kAddressTagShift) & kTagMask;
+  return InTaggableRegion(p) ? ((p >> kAddressTagShift) & kTagMask) : 0;
 }
 
 static inline uptr UntagAddr(uptr tagged_addr) {
-  return tagged_addr & ~kAddressTagMask;
+  return InTaggableRegion(tagged_addr) ? (tagged_addr & ~kAddressTagMask)
+                                       : tagged_addr;
 }
 
 static inline void *UntagPtr(const void *tagged_ptr) {
@@ -92,7 +111,9 @@ static inline void *UntagPtr(const void *tagged_ptr) {
 }
 
 static inline uptr AddTagToPointer(uptr p, tag_t tag) {
-  return (p & ~kAddressTagMask) | ((uptr)tag << kAddressTagShift);
+  return InTaggableRegion(p) ? ((p & ~kAddressTagMask) |
+                                ((uptr)(tag & kTagMask) << kAddressTagShift))
+                             : p;
 }
 
 namespace __hwasan {
@@ -125,14 +146,14 @@ void hwasan_free(void *ptr, StackTrace *stack);
 void InstallAtExitHandler();
 
 #define GET_MALLOC_STACK_TRACE                                            \
-  BufferedStackTrace stack;                                               \
+  UNINITIALIZED BufferedStackTrace stack;                                 \
   if (hwasan_inited)                                                      \
     stack.Unwind(StackTrace::GetCurrentPc(), GET_CURRENT_FRAME(),         \
                  nullptr, common_flags()->fast_unwind_on_malloc,          \
                  common_flags()->malloc_context_size)
 
 #define GET_FATAL_STACK_TRACE_PC_BP(pc, bp)              \
-  BufferedStackTrace stack;                              \
+  UNINITIALIZED BufferedStackTrace stack;                \
   if (hwasan_inited)                                     \
     stack.Unwind(pc, bp, nullptr, common_flags()->fast_unwind_on_fatal)
 

@@ -9,12 +9,13 @@
 #ifndef LLVM_LIBC_SRC_SIGNAL_KILL_H
 #define LLVM_LIBC_SRC_SIGNAL_KILL_H
 
-#include <signal.h>
+#include "hdr/types/pid_t.h"
+#include "src/__support/macros/config.h"
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 int kill(pid_t pid, int sig);
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL
 
 #endif // LLVM_LIBC_SRC_SIGNAL_KILL_H

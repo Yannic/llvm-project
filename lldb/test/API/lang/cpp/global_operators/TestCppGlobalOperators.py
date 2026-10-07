@@ -7,43 +7,14 @@ from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbutil
 
 
+@requireExpressionEvaluation
 class TestCppGlobalOperators(TestBase):
-
     def prepare_executable_and_get_frame(self):
         self.build()
 
-        # Get main source file
-        src_file = "main.cpp"
-        src_file_spec = lldb.SBFileSpec(src_file)
-        self.assertTrue(src_file_spec.IsValid(), "Main source file")
-
-        # Get the path of the executable
-        exe_path = self.getBuildArtifact("a.out")
-
-        # Load the executable
-        target = self.dbg.CreateTarget(exe_path)
-        self.assertTrue(target.IsValid(), VALID_TARGET)
-
-        # Break on main function
-        main_breakpoint = target.BreakpointCreateBySourceRegex(
-            "// break here", src_file_spec)
-        self.assertTrue(
-            main_breakpoint.IsValid() and main_breakpoint.GetNumLocations() >= 1,
-            VALID_BREAKPOINT)
-
-        # Launch the process
-        args = None
-        env = None
-        process = target.LaunchSimple(
-            args, env, self.get_process_working_directory())
-        self.assertTrue(process.IsValid(), PROCESS_IS_VALID)
-
-        # Get the thread of the process
-        self.assertEqual(
-            process.GetState(), lldb.eStateStopped,
-            PROCESS_STOPPED)
-        thread = lldbutil.get_stopped_thread(
-            process, lldb.eStopReasonBreakpoint)
+        _, _, thread, _ = lldbutil.run_to_source_breakpoint(
+            self, "// break here", lldb.SBFileSpec("main.cpp")
+        )
 
         return thread.GetSelectedFrame()
 
@@ -53,23 +24,27 @@ class TestCppGlobalOperators(TestBase):
         test_result = frame.EvaluateExpression("operator==(s1, s2)")
         self.assertTrue(
             test_result.IsValid() and test_result.GetValue() == "false",
-            "operator==(s1, s2) = false")
+            "operator==(s1, s2) = false",
+        )
 
         test_result = frame.EvaluateExpression("operator==(s1, s3)")
         self.assertTrue(
             test_result.IsValid() and test_result.GetValue() == "true",
-            "operator==(s1, s3) = true")
+            "operator==(s1, s3) = true",
+        )
 
         test_result = frame.EvaluateExpression("operator==(s2, s3)")
         self.assertTrue(
             test_result.IsValid() and test_result.GetValue() == "false",
-            "operator==(s2, s3) = false")
+            "operator==(s2, s3) = false",
+        )
 
     def do_new_test(self, frame, expr, expected_value_name):
         """Evaluate a new expression, and check its result"""
 
         expected_value = frame.FindValue(
-            expected_value_name, lldb.eValueTypeVariableGlobal)
+            expected_value_name, lldb.eValueTypeVariableGlobal
+        )
         self.assertTrue(expected_value.IsValid())
 
         expected_value_addr = expected_value.AddressOf()
@@ -78,12 +53,13 @@ class TestCppGlobalOperators(TestBase):
         got = frame.EvaluateExpression(expr)
         self.assertTrue(got.IsValid())
         self.assertEqual(
-            got.GetValueAsUnsigned(),
-            expected_value_addr.GetValueAsUnsigned())
+            got.GetValueAsUnsigned(), expected_value_addr.GetValueAsUnsigned()
+        )
         got_type = got.GetType()
         self.assertTrue(got_type.IsPointerType())
         self.assertEqual(got_type.GetPointeeType().GetName(), "Struct")
 
+    @skipIfMTE  # Expression evaluation of overridden operator new fails under MTE.
     def test_operator_new(self):
         frame = self.prepare_executable_and_get_frame()
 

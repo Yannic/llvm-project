@@ -23,7 +23,6 @@
 #include "llvm/CodeGen/GlobalISel/RegBankSelect.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/PassRegistry.h"
@@ -38,55 +37,24 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeM68kTarget() {
   RegisterTargetMachine<M68kTargetMachine> X(getTheM68kTarget());
   auto *PR = PassRegistry::getPassRegistry();
   initializeGlobalISel(*PR);
-  initializeM68kDAGToDAGISelPass(*PR);
+  initializeM68kAsmPrinterPass(*PR);
+  initializeM68kDAGToDAGISelLegacyPass(*PR);
+  initializeM68kExpandPseudoPass(*PR);
+  initializeM68kGlobalBaseRegPass(*PR);
+  initializeM68kCollapseMOVEMPass(*PR);
 }
 
 namespace {
 
-std::string computeDataLayout(const Triple &TT, StringRef CPU,
-                              const TargetOptions &Options) {
-  std::string Ret = "";
-  // M68k is Big Endian
-  Ret += "E";
-
-  // FIXME how to wire it with the used object format?
-  Ret += "-m:e";
-
-  // M68k pointers are always 32 bit wide even for 16-bit CPUs.
-  // The ABI only specifies 16-bit alignment.
-  // On at least the 68020+ with a 32-bit bus, there is a performance benefit
-  // to having 32-bit alignment.
-  Ret += "-p:32:16:32";
-
-  // Bytes do not require special alignment, words are word aligned and
-  // long words are word aligned at minimum.
-  Ret += "-i8:8:8-i16:16:16-i32:16:32";
-
-  // FIXME no floats at the moment
-
-  // The registers can hold 8, 16, 32 bits
-  Ret += "-n8:16:32";
-
-  Ret += "-a:0:16-S16";
-
-  return Ret;
-}
-
-Reloc::Model getEffectiveRelocModel(const Triple &TT,
-                                    std::optional<Reloc::Model> RM) {
+Reloc::Model getEffectiveRelocModel(std::optional<Reloc::Model> RM) {
   // If not defined we default to static
-  if (!RM.has_value())
-    return Reloc::Static;
-
-  return *RM;
+  return RM.value_or(Reloc::Static);
 }
 
 CodeModel::Model getEffectiveCodeModel(std::optional<CodeModel::Model> CM,
                                        bool JIT) {
   if (!CM) {
     return CodeModel::Small;
-  } else if (CM == CodeModel::Large) {
-    llvm_unreachable("Large code model is not supported");
   } else if (CM == CodeModel::Kernel) {
     llvm_unreachable("Kernel code model is not implemented yet");
   }
@@ -99,10 +67,10 @@ M68kTargetMachine::M68kTargetMachine(const Target &T, const Triple &TT,
                                      const TargetOptions &Options,
                                      std::optional<Reloc::Model> RM,
                                      std::optional<CodeModel::Model> CM,
-                                     CodeGenOpt::Level OL, bool JIT)
-    : LLVMTargetMachine(T, computeDataLayout(TT, CPU, Options), TT, CPU, FS,
-                        Options, getEffectiveRelocModel(TT, RM),
-                        ::getEffectiveCodeModel(CM, JIT), OL),
+                                     CodeGenOptLevel OL, bool JIT)
+    : CodeGenTargetMachineImpl(T, TT, CPU, FS, Options,
+                               getEffectiveRelocModel(RM),
+                               ::getEffectiveCodeModel(CM, JIT), OL),
       TLOF(std::make_unique<M68kELFTargetObjectFile>()),
       Subtarget(TT, CPU, FS, *this) {
   initAsmInfo();
@@ -119,13 +87,8 @@ M68kTargetMachine::getSubtargetImpl(const Function &F) const {
   auto FS = FSAttr.isValid() ? FSAttr.getValueAsString().str() : TargetFS;
 
   auto &I = SubtargetMap[CPU + FS];
-  if (!I) {
-    // This needs to be done before we create a new subtarget since any
-    // creation will depend on the TM and the code generation flags on the
-    // function that reside in TargetOptions.
-    resetTargetOptions(F);
+  if (!I)
     I = std::make_unique<M68kSubtarget>(TargetTriple, CPU, FS, *this);
-  }
   return I.get();
 }
 
@@ -169,7 +132,7 @@ TargetPassConfig *M68kTargetMachine::createPassConfig(PassManagerBase &PM) {
 }
 
 void M68kPassConfig::addIRPasses() {
-  addPass(createAtomicExpandPass());
+  addPass(createAtomicExpandLegacyPass());
   TargetPassConfig::addIRPasses();
 }
 
@@ -181,22 +144,22 @@ bool M68kPassConfig::addInstSelector() {
 }
 
 bool M68kPassConfig::addIRTranslator() {
-  addPass(new IRTranslator());
+  addPass(new IRTranslatorLegacy());
   return false;
 }
 
 bool M68kPassConfig::addLegalizeMachineIR() {
-  addPass(new Legalizer());
+  addPass(new LegalizerLegacy());
   return false;
 }
 
 bool M68kPassConfig::addRegBankSelect() {
-  addPass(new RegBankSelect());
+  addPass(new RegBankSelectLegacy());
   return false;
 }
 
 bool M68kPassConfig::addGlobalInstructionSelect() {
-  addPass(new InstructionSelect());
+  addPass(new InstructionSelectLegacy(getOptLevel()));
   return false;
 }
 

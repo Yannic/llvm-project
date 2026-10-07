@@ -5,10 +5,12 @@
 ; https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=24278
 
 ; Make sure we do not crash when dealing with a vector constant expression.
-define <4 x ptr> @test(ptr %ptr) {
+define <4 x ptr> @test(ptr %ptr) null_pointer_is_valid {
 ; CHECK-LABEL: @test(
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    ret <4 x ptr> getelementptr (i64, ptr null, <4 x i64> <i64 0, i64 0, i64 0, i64 -128>)
+; CHECK-NEXT:    [[L3:%.*]] = load i64, ptr [[PTR:%.*]], align 4
+; CHECK-NEXT:    [[I6:%.*]] = insertelement <4 x ptr> getelementptr inbounds (i8, ptr null, <4 x i64> <i64 0, i64 0, i64 0, i64 -1024>), ptr undef, i64 [[L3]]
+; CHECK-NEXT:    ret <4 x ptr> [[I6]]
 ;
 entry:
   %B9 = sdiv i16 -32768, 256

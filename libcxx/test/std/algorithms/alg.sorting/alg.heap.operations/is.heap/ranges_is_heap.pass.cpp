@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <concepts>
 #include <functional>
 #include <ranges>
@@ -72,7 +73,7 @@ static_assert(!HasIsHeapRange<RandomAccessRangeBadIndex>);
 // !indirect_strict_weak_order<Comp, projected<iterator_t<R>, Proj>>
 static_assert(!HasIsHeapRange<R<NoComparator*>>);
 
-template <class Iter, class Sent, size_t N>
+template <class Iter, class Sent, std::size_t N>
 constexpr void test_one(std::array<int, N> input, bool expected) {
   auto begin = Iter(input.data());
   auto end = Sent(Iter(input.data() + input.size()));

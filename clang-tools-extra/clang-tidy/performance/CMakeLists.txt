@@ -3,8 +3,10 @@ set(LLVM_LINK_COMPONENTS
   Support
   )
 
-add_clang_library(clangTidyPerformanceModule
-  FasterStringFindCheck.cpp
+add_clang_library(clangTidyPerformanceModule STATIC
+  AvoidEndlCheck.cpp
+  EnumSizeCheck.cpp
+  ExpensiveValueOrCheck.cpp
   ForRangeCopyCheck.cpp
   ImplicitConversionInLoopCheck.cpp
   InefficientAlgorithmCheck.cpp
@@ -14,12 +16,18 @@ add_clang_library(clangTidyPerformanceModule
   MoveConstructorInitCheck.cpp
   NoAutomaticMoveCheck.cpp
   NoIntToPtrCheck.cpp
+  NoexceptDestructorCheck.cpp
+  NoexceptFunctionBaseCheck.cpp
   NoexceptMoveConstructorCheck.cpp
+  NoexceptSwapCheck.cpp
   PerformanceTidyModule.cpp
+  PreferSingleCharOverloadsCheck.cpp
+  StringViewConversionsCheck.cpp
   TriviallyDestructibleCheck.cpp
   TypePromotionInMathFnCheck.cpp
-  UnnecessaryCopyInitialization.cpp
+  UnnecessaryCopyInitializationCheck.cpp
   UnnecessaryValueParamCheck.cpp
+  UseStdMoveCheck.cpp
 
   LINK_LIBS
   clangTidy
@@ -27,6 +35,7 @@ add_clang_library(clangTidyPerformanceModule
 
   DEPENDS
   omp_gen
+  ClangDriverOptions
   )
 
 clang_target_link_libraries(clangTidyPerformanceModule
@@ -36,4 +45,5 @@ clang_target_link_libraries(clangTidyPerformanceModule
   clangAnalysis
   clangBasic
   clangLex
+  clangTooling
   )

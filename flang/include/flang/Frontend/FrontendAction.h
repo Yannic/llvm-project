@@ -110,9 +110,11 @@ protected:
   // Prescan the current input file. Return False if fatal errors are reported,
   // True otherwise.
   bool runPrescan();
+  // Write the dependency (.d) file if -dependency-file was given.
+  void writeDependencyFile();
   // Parse the current input file. Return False if fatal errors are reported,
   // True otherwise.
-  bool runParse();
+  bool runParse(bool emitMessages);
   // Run semantic checks for the current input file. Return False if fatal
   // errors are reported, True otherwise.
   bool runSemanticChecks();

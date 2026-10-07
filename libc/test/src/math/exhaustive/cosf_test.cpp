@@ -7,70 +7,46 @@
 //===----------------------------------------------------------------------===//
 
 #include "exhaustive_test.h"
-#include "src/__support/FPUtil/FPBits.h"
+#include "src/__support/math/cosf_float_eval.h"
 #include "src/math/cosf.h"
 #include "utils/MPFRWrapper/MPFRUtils.h"
-#include "utils/UnitTest/FPMatcher.h"
 
-#include <thread>
+namespace mpfr = LIBC_NAMESPACE::testing::mpfr;
 
-using FPBits = __llvm_libc::fputil::FPBits<float>;
+using LlvmLibcCosfExhaustiveTest =
+    LlvmLibcUnaryOpExhaustiveMathTest<float, mpfr::Operation::Cos,
+                                      LIBC_NAMESPACE::cosf>;
 
-namespace mpfr = __llvm_libc::testing::mpfr;
-
-struct LlvmLibcCosfExhaustiveTest : public LlvmLibcExhaustiveTest<uint32_t> {
-  bool check(uint32_t start, uint32_t stop,
-             mpfr::RoundingMode rounding) override {
-    mpfr::ForceRoundingMode r(rounding);
-    uint32_t bits = start;
-    bool result = true;
-    do {
-      FPBits xbits(bits);
-      float x = float(xbits);
-      bool r = EXPECT_MPFR_MATCH(mpfr::Operation::Cos, x, __llvm_libc::cosf(x),
-                                 0.5, rounding);
-      result &= r;
-    } while (++bits < stop);
-    return result;
-  }
-};
-
-// Range: [0, +Inf);
+// Range: [0, Inf];
 static constexpr uint32_t POS_START = 0x0000'0000U;
 static constexpr uint32_t POS_STOP = 0x7f80'0000U;
 
-TEST_F(LlvmLibcCosfExhaustiveTest, PostiveRangeRoundNearestTieToEven) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Nearest);
+TEST_F(LlvmLibcCosfExhaustiveTest, PositiveRange) {
+  test_full_range_all_roundings(POS_START, POS_STOP);
 }
 
-TEST_F(LlvmLibcCosfExhaustiveTest, PostiveRangeRoundUp) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Upward);
-}
-
-TEST_F(LlvmLibcCosfExhaustiveTest, PostiveRangeRoundDown) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Downward);
-}
-
-TEST_F(LlvmLibcCosfExhaustiveTest, PostiveRangeRoundTowardZero) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::TowardZero);
-}
-
-// Range: (-Inf, 0];
-static constexpr uint32_t NEG_START = 0x8000'0000U;
+// Range: [-Inf, 0];
+static constexpr uint32_t NEG_START = 0xb000'0000U;
 static constexpr uint32_t NEG_STOP = 0xff80'0000U;
 
-TEST_F(LlvmLibcCosfExhaustiveTest, NegativeRangeRoundNearestTieToEven) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Nearest);
+TEST_F(LlvmLibcCosfExhaustiveTest, NegativeRange) {
+  test_full_range_all_roundings(NEG_START, NEG_STOP);
 }
 
-TEST_F(LlvmLibcCosfExhaustiveTest, NegativeRangeRoundUp) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Upward);
+// Preserve the float implementation's 3.5 ULP MPFR bound in
+// round-to-nearest mode.
+static float cosf_float_eval(float x) {
+  return LIBC_NAMESPACE::math::float_eval::cosf(x);
 }
 
-TEST_F(LlvmLibcCosfExhaustiveTest, NegativeRangeRoundDown) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Downward);
+using LlvmLibcCosfFloatExhaustiveTest =
+    LlvmLibcUnaryOpExhaustiveMathTest<float, mpfr::Operation::Cos,
+                                      cosf_float_eval, 3>;
+
+TEST_F(LlvmLibcCosfFloatExhaustiveTest, PositiveRange) {
+  test_full_range(mpfr::RoundingMode::Nearest, POS_START, POS_STOP);
 }
 
-TEST_F(LlvmLibcCosfExhaustiveTest, NegativeRangeRoundTowardZero) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::TowardZero);
+TEST_F(LlvmLibcCosfFloatExhaustiveTest, NegativeRange) {
+  test_full_range(mpfr::RoundingMode::Nearest, 0x8000'0000U, NEG_STOP);
 }

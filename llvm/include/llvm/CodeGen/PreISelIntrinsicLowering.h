@@ -18,10 +18,14 @@
 namespace llvm {
 
 class Module;
+class TargetMachine;
 
 struct PreISelIntrinsicLoweringPass
-    : PassInfoMixin<PreISelIntrinsicLoweringPass> {
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+    : RequiredPassInfoMixin<PreISelIntrinsicLoweringPass> {
+  const TargetMachine *TM;
+
+  PreISelIntrinsicLoweringPass(const TargetMachine *TM) : TM(TM) {}
+  LLVM_ABI PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 };
 
 } // end namespace llvm

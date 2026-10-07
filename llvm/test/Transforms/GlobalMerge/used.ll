@@ -1,4 +1,5 @@
 ; RUN: opt -global-merge -global-merge-max-offset=100 -S -o - %s | FileCheck %s
+; RUN: opt -passes='global-merge<max-offset=100>' -S -o - %s | FileCheck %s
 
 target datalayout = "e-p:64:64"
 target triple = "x86_64-unknown-linux-gnu"
@@ -23,7 +24,7 @@ define void @use() {
   %y = load i32, ptr @b
   ; CHECK: load i32, ptr @_MergedGlobals
   %z1 = load i32, ptr @c
-  ; CHECK: load i32, ptr getelementptr inbounds (<{ i32, i32 }>, ptr @_MergedGlobals, i32 0, i32 1)
+  ; CHECK: load i32, ptr getelementptr inbounds (i8, ptr @_MergedGlobals, i64 4)
   %z2 = load i32, ptr @d
   ret void
 }

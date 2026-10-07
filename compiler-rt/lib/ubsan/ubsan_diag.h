@@ -18,32 +18,18 @@
 
 namespace __ubsan {
 
-class SymbolizedStackHolder {
-  SymbolizedStack *Stack;
-
-  void clear() {
-    if (Stack)
-      Stack->ClearAll();
-  }
-
-public:
-  explicit SymbolizedStackHolder(SymbolizedStack *Stack = nullptr)
-      : Stack(Stack) {}
-  ~SymbolizedStackHolder() { clear(); }
-  void reset(SymbolizedStack *S) {
-    if (Stack != S)
-      clear();
-    Stack = S;
-  }
-  const SymbolizedStack *get() const { return Stack; }
-};
-
 SymbolizedStack *getSymbolizedLocation(uptr PC);
 
 inline SymbolizedStack *getCallerLocation(uptr CallerPC) {
   CHECK(CallerPC);
   uptr PC = StackTrace::GetPreviousInstructionPc(CallerPC);
   return getSymbolizedLocation(PC);
+}
+
+inline SymbolizedStack *getReportLocation(uptr PC, bool FromOffload) {
+  if (FromOffload)
+    return getSymbolizedLocation(PC);
+  return getCallerLocation(PC);
 }
 
 /// A location of some data within the program's address space.
@@ -57,10 +43,11 @@ public:
 
 private:
   LocationKind Kind;
-  // FIXME: In C++11, wrap these in an anonymous union.
-  SourceLocation SourceLoc;
-  MemoryLocation MemoryLoc;
-  const SymbolizedStack *SymbolizedLoc;  // Not owned.
+  union {
+    SourceLocation SourceLoc;
+    MemoryLocation MemoryLoc;
+    const SymbolizedStack *SymbolizedLoc; // Not owned.
+  };
 
 public:
   Location() : Kind(LK_Null) {}
@@ -226,13 +213,22 @@ struct ReportOptions {
   /// pc/bp are used to unwind the stack trace.
   uptr pc;
   uptr bp;
+  /// Device only replay options.
+  bool FromOffload;
 };
 
 bool ignoreReport(SourceLocation SLoc, ReportOptions Opts, ErrorType ET);
 
-#define GET_REPORT_OPTIONS(unrecoverable_handler) \
-    GET_CALLER_PC_BP; \
-    ReportOptions Opts = {unrecoverable_handler, pc, bp}
+#define GET_REPORT_OPTIONS(unrecoverable_handler)                              \
+  GET_CALLER_PC_BP;                                                            \
+  ReportOptions Opts = {};                                                     \
+  Opts.FromUnrecoverableHandler = unrecoverable_handler;                       \
+  Opts.pc = pc;                                                                \
+  Opts.bp = bp
+
+/// Optional hook from the offload interceptor to symbolize a device PC.
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__ubsan_set_offload_symbolize(SymbolizedStack *(*Fn)(uptr PC));
 
 /// \brief Instantiate this class before printing diagnostics in the error
 /// report. This class ensures that reports from different threads and from

@@ -17,7 +17,7 @@ public:
       for (U count = n.count_; count; --count)
         x += a;
       return x;
-    } 
+    }
   };
 
   friend Num operator+(const Num &a, const Num &b) {
@@ -145,7 +145,7 @@ namespace test5 {
 
 namespace Dependent {
   template<typename T, typename Traits> class X;
-  template<typename T, typename Traits> 
+  template<typename T, typename Traits>
   X<T, Traits> operator+(const X<T, Traits>&, const T*);
 
   template<typename T, typename Traits> class X {
@@ -174,7 +174,7 @@ namespace test7 {
 
   // This shouldn't crash.
   template <class T> class D {
-    friend class A; // expected-error {{template 'A' cannot be referenced with a class specifier}}
+    friend class A; // expected-error {{template 'A' cannot be referenced with the 'class' specifier}}
   };
   template class D<int>;
 }
@@ -249,7 +249,7 @@ namespace test11 {
   };
 
   template struct Foo::IteratorImpl<int>;
-  template struct Foo::IteratorImpl<long>;  
+  template struct Foo::IteratorImpl<long>;
 }
 
 // PR6827
@@ -386,4 +386,30 @@ using ns2::foo; // expected-note {{found by name lookup}}
 template <class T> class A {
   friend void foo<T>() {} // expected-error {{ambiguous}} expected-error{{no candidate function template was found for dependent friend function template specialization}}
 };
+}
+
+namespace test19 {
+template <class V> class B;
+
+template <class T> struct A {
+  template <class U> static void f(B<T> &);
+};
+
+template <class V> class B {
+  int n; // #test19-B-n
+  friend void A<V>::template f<int>(B<V> &);
+};
+
+template <class T>
+template <class U>
+void A<T>::f(B<T> &x) {
+  x.n = 0;
+  // expected-error@-1 {{'n' is a private member of 'test19::B<long>'}}
+  //   expected-note@#test19-B-n {{implicitly declared private here}}
+}
+
+template class B<long>;
+template void A<long>::f<int>(B<long> &);
+template void A<long>::f<double>(B<long> &);
+// expected-note@-1 {{in instantiation of function template specialization 'test19::A<long>::f<double>' requested here}}
 }

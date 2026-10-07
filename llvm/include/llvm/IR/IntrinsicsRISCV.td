@@ -15,8 +15,7 @@
 
 // Atomic Intrinsics have multiple versions for different access widths, which
 // all follow one of the following signatures (depending on how many arguments
-// they require). We carefully instantiate only specific versions of these for
-// specific integer widths, rather than using `llvm_anyint_ty`.
+// they require).
 //
 // In fact, as these intrinsics take `llvm_anyptr_ty`, the given names are the
 // canonical names, and the intrinsics used in the code will have a name
@@ -25,52 +24,39 @@
 
 let TargetPrefix = "riscv" in {
 
-  // T @llvm.<name>.T.<p>(any*, T, T, T imm);
-  class MaskedAtomicRMWFourArg<LLVMType itype>
-      : Intrinsic<[itype], [llvm_anyptr_ty, itype, itype, itype],
+  // T @llvm.<name>.<i>.<p>(any*, T, T, T imm);
+  class RISCVMaskedAtomicRMWFourArg
+      : Intrinsic<[llvm_anyint_ty], [llvm_anyptr_ty, LLVMMatchType<0>,
+                                     LLVMMatchType<0>, LLVMMatchType<0>],
                   [IntrArgMemOnly, NoCapture<ArgIndex<0>>, ImmArg<ArgIndex<3>>]>;
-  // T @llvm.<name>.T.<p>(any*, T, T, T, T imm);
-  class MaskedAtomicRMWFiveArg<LLVMType itype>
-      : Intrinsic<[itype], [llvm_anyptr_ty, itype, itype, itype, itype],
+  // T @llvm.<name>.<i>.<p>(any*, T, T, T, T imm);
+  class RISCVMaskedAtomicRMWFiveArg
+      : Intrinsic<[llvm_anyint_ty], [llvm_anyptr_ty, LLVMMatchType<0>,
+                                     LLVMMatchType<0>, LLVMMatchType<0>,
+                                     LLVMMatchType<0>],
                   [IntrArgMemOnly, NoCapture<ArgIndex<0>>, ImmArg<ArgIndex<4>>]>;
-
-  // We define 32-bit and 64-bit variants of the above, where T stands for i32
-  // or i64 respectively:
-  multiclass MaskedAtomicRMWFourArgIntrinsics {
-    // i32 @llvm.<name>.i32.<p>(any*, i32, i32, i32 imm);
-    def _i32 : MaskedAtomicRMWFourArg<llvm_i32_ty>;
-    // i64 @llvm.<name>.i32.<p>(any*, i64, i64, i64 imm);
-    def _i64 : MaskedAtomicRMWFourArg<llvm_i64_ty>;
-  }
-
-  multiclass MaskedAtomicRMWFiveArgIntrinsics {
-    // i32 @llvm.<name>.i32.<p>(any*, i32, i32, i32, i32 imm);
-    def _i32 : MaskedAtomicRMWFiveArg<llvm_i32_ty>;
-    // i64 @llvm.<name>.i64.<p>(any*, i64, i64, i64, i64 imm);
-    def _i64 : MaskedAtomicRMWFiveArg<llvm_i64_ty>;
-  }
 
   // These intrinsics are intended only for internal compiler use (i.e. as
   // part of AtomicExpandpass via the emitMaskedAtomic*Intrinsic hooks). Their
   // names and semantics could change in the future.
 
-  // @llvm.riscv.masked.atomicrmw.*.{i32,i64}.<p>(
+  // @llvm.riscv.masked.atomicrmw.*.<i>.<p>(
   //   ptr addr, ixlen oparg, ixlen mask, ixlenimm ordering)
-  defm int_riscv_masked_atomicrmw_xchg : MaskedAtomicRMWFourArgIntrinsics;
-  defm int_riscv_masked_atomicrmw_add : MaskedAtomicRMWFourArgIntrinsics;
-  defm int_riscv_masked_atomicrmw_sub : MaskedAtomicRMWFourArgIntrinsics;
-  defm int_riscv_masked_atomicrmw_nand : MaskedAtomicRMWFourArgIntrinsics;
-  defm int_riscv_masked_atomicrmw_umax : MaskedAtomicRMWFourArgIntrinsics;
-  defm int_riscv_masked_atomicrmw_umin : MaskedAtomicRMWFourArgIntrinsics;
+  def int_riscv_masked_atomicrmw_xchg : RISCVMaskedAtomicRMWFourArg;
+  def int_riscv_masked_atomicrmw_add : RISCVMaskedAtomicRMWFourArg;
+  def int_riscv_masked_atomicrmw_sub : RISCVMaskedAtomicRMWFourArg;
+  def int_riscv_masked_atomicrmw_nand : RISCVMaskedAtomicRMWFourArg;
+  def int_riscv_masked_atomicrmw_umax : RISCVMaskedAtomicRMWFourArg;
+  def int_riscv_masked_atomicrmw_umin : RISCVMaskedAtomicRMWFourArg;
   // Signed min and max need an extra operand to do sign extension with.
-  // @llvm.riscv.masked.atomicrmw.{max,min}.{i32,i64}.<p>(
+  // @llvm.riscv.masked.atomicrmw.{max,min}.<i>.<p>(
   //   ptr addr, ixlen oparg, ixlen mask, ixlen shamt, ixlenimm ordering)
-  defm int_riscv_masked_atomicrmw_max : MaskedAtomicRMWFiveArgIntrinsics;
-  defm int_riscv_masked_atomicrmw_min : MaskedAtomicRMWFiveArgIntrinsics;
+  def int_riscv_masked_atomicrmw_max : RISCVMaskedAtomicRMWFiveArg;
+  def int_riscv_masked_atomicrmw_min : RISCVMaskedAtomicRMWFiveArg;
 
-  // @llvm.riscv.masked.cmpxchg.{i32,i64}.<p>(
+  // @llvm.riscv.masked.cmpxchg.<i>.<p>(
   //   ptr addr, ixlen cmpval, ixlen newval, ixlen mask, ixlenimm ordering)
-  defm int_riscv_masked_cmpxchg : MaskedAtomicRMWFiveArgIntrinsics;
+  def int_riscv_masked_cmpxchg : RISCVMaskedAtomicRMWFiveArg;
 
 } // TargetPrefix = "riscv"
 
@@ -79,33 +65,48 @@ let TargetPrefix = "riscv" in {
 
 let TargetPrefix = "riscv" in {
 
-  class BitManipGPRIntrinsics
-      : DefaultAttrsIntrinsic<[llvm_any_ty],
+  class RISCVBitManipGPRIntrinsics
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
                               [LLVMMatchType<0>],
                               [IntrNoMem, IntrSpeculatable]>;
-  class BitManipGPRGPRIntrinsics
-      : DefaultAttrsIntrinsic<[llvm_any_ty],
+  class RISCVBitManipGPRGPRIntrinsics
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
                               [LLVMMatchType<0>, LLVMMatchType<0>],
                               [IntrNoMem, IntrSpeculatable]>;
 
   // Zbb
-  def int_riscv_orc_b : BitManipGPRIntrinsics;
+  def int_riscv_orc_b : RISCVBitManipGPRIntrinsics;
 
   // Zbc or Zbkc
-  def int_riscv_clmul  : BitManipGPRGPRIntrinsics;
-  def int_riscv_clmulh : BitManipGPRGPRIntrinsics;
+  def int_riscv_clmulh : RISCVBitManipGPRGPRIntrinsics;
 
   // Zbc
-  def int_riscv_clmulr : BitManipGPRGPRIntrinsics;
+  def int_riscv_clmulr : RISCVBitManipGPRGPRIntrinsics;
 
   // Zbkb
-  def int_riscv_brev8 : BitManipGPRIntrinsics;
-  def int_riscv_zip   : BitManipGPRIntrinsics;
-  def int_riscv_unzip : BitManipGPRIntrinsics;
+  def int_riscv_brev8 : RISCVBitManipGPRIntrinsics;
+  def int_riscv_zip   : RISCVBitManipGPRIntrinsics;
+  def int_riscv_unzip : RISCVBitManipGPRIntrinsics;
 
   // Zbkx
-  def int_riscv_xperm4  : BitManipGPRGPRIntrinsics;
-  def int_riscv_xperm8  : BitManipGPRGPRIntrinsics;
+  def int_riscv_xperm4  : RISCVBitManipGPRGPRIntrinsics;
+  def int_riscv_xperm8  : RISCVBitManipGPRGPRIntrinsics;
+} // TargetPrefix = "riscv"
+
+//===----------------------------------------------------------------------===//
+// May-Be-Operations
+
+let TargetPrefix = "riscv" in {
+
+  // Zimop
+  def int_riscv_mopr
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>],
+                              [IntrNoMem, IntrSpeculatable, ImmArg<ArgIndex<1>>]>;
+  def int_riscv_moprr
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>, LLVMMatchType<0>],
+                              [IntrNoMem, IntrSpeculatable, ImmArg<ArgIndex<2>>]>;
 } // TargetPrefix = "riscv"
 
 //===----------------------------------------------------------------------===//
@@ -119,62 +120,46 @@ defvar NoScalarOperand = 0xF;
 defvar NoVLOperand = 0x1F;
 
 class RISCVVIntrinsic {
-  // These intrinsics may accept illegal integer values in their llvm_any_ty
+  // These intrinsics may accept illegal integer values in their llvm_anyint_ty
   // operand, so they have to be extended.
   Intrinsic IntrinsicID = !cast<Intrinsic>(NAME);
   bits<4> ScalarOperand = NoScalarOperand;
   bits<5> VLOperand = NoVLOperand;
+  bit IsFPIntrinsic = 0;
 }
 
 let TargetPrefix = "riscv" in {
   // We use anyint here but we only support XLen.
-  def int_riscv_vsetvli   : Intrinsic<[llvm_anyint_ty],
+  def int_riscv_vsetvli   : DefaultAttrsIntrinsic<[llvm_anyint_ty],
                            /* AVL */  [LLVMMatchType<0>,
                            /* VSEW */  LLVMMatchType<0>,
                            /* VLMUL */ LLVMMatchType<0>],
-                                      [IntrNoMem, IntrHasSideEffects,
+                                      [IntrNoMem,
                                        ImmArg<ArgIndex<1>>,
                                        ImmArg<ArgIndex<2>>]>;
-  def int_riscv_vsetvlimax : Intrinsic<[llvm_anyint_ty],
+  def int_riscv_vsetvlimax : DefaultAttrsIntrinsic<[llvm_anyint_ty],
                             /* VSEW */ [LLVMMatchType<0>,
                             /* VLMUL */ LLVMMatchType<0>],
-                                      [IntrNoMem, IntrHasSideEffects,
+                                      [IntrNoMem,
                                        ImmArg<ArgIndex<0>>,
                                        ImmArg<ArgIndex<1>>]>;
-
-  // Versions without side effects: better optimizable and usable if only the
-  // returned vector length is important.
-  def int_riscv_vsetvli_opt   : Intrinsic<[llvm_anyint_ty],
-                               /* AVL */  [LLVMMatchType<0>,
-                               /* VSEW */  LLVMMatchType<0>,
-                               /* VLMUL */ LLVMMatchType<0>],
-                                          [IntrNoMem,
-                                           ImmArg<ArgIndex<1>>,
-                                           ImmArg<ArgIndex<2>>]>;
-  def int_riscv_vsetvlimax_opt : Intrinsic<[llvm_anyint_ty],
-                                /* VSEW */ [LLVMMatchType<0>,
-                                /* VLMUL */ LLVMMatchType<0>],
-                                          [IntrNoMem,
-                                           ImmArg<ArgIndex<0>>,
-                                           ImmArg<ArgIndex<1>>]>;
 
   // For unit stride mask load
   // Input: (pointer, vl)
   class RISCVUSMLoad
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
-                    [LLVMPointerType<LLVMMatchType<0>>,
-                     llvm_anyint_ty],
-                    [NoCapture<ArgIndex<0>>, IntrReadMem]>, RISCVVIntrinsic {
+                    [llvm_anyptr_ty, llvm_anyint_ty],
+                    [NoCapture<ArgIndex<0>>, IntrReadMem, IntrArgMemOnly]>,
+          RISCVVIntrinsic {
     let VLOperand = 1;
   }
   // For unit stride load
   // Input: (passthru, pointer, vl)
   class RISCVUSLoad
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>,
-                     llvm_anyint_ty],
-                    [NoCapture<ArgIndex<1>>, IntrReadMem]>, RISCVVIntrinsic {
+                    [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyint_ty],
+                    [NoCapture<ArgIndex<1>>, IntrReadMem, IntrArgMemOnly]>,
+          RISCVVIntrinsic {
     let VLOperand = 2;
   }
   // For unit stride fault-only-first load
@@ -184,8 +169,7 @@ let TargetPrefix = "riscv" in {
   // VL as a side effect. IntrReadMem, IntrHasSideEffects does not work.
   class RISCVUSLoadFF
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty, llvm_anyint_ty],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>, LLVMMatchType<1>],
+                    [LLVMMatchType<0>, llvm_anyptr_ty, LLVMMatchType<1>],
                     [NoCapture<ArgIndex<1>>]>,
                     RISCVVIntrinsic {
     let VLOperand = 2;
@@ -194,11 +178,11 @@ let TargetPrefix = "riscv" in {
   // Input: (maskedoff, pointer, mask, vl, policy)
   class RISCVUSLoadMasked
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty ],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>,
+                    [LLVMMatchType<0>, llvm_anyptr_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                     llvm_anyint_ty, LLVMMatchType<1>],
-                    [NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<4>>, IntrReadMem]>,
+                     llvm_anyint_ty, LLVMMatchType<2>],
+                    [NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<4>>, IntrReadMem,
+                     IntrArgMemOnly]>,
                     RISCVVIntrinsic {
     let VLOperand = 3;
   }
@@ -209,8 +193,7 @@ let TargetPrefix = "riscv" in {
   // VL as a side effect. IntrReadMem, IntrHasSideEffects does not work.
   class RISCVUSLoadFFMasked
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty, llvm_anyint_ty],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>,
+                    [LLVMMatchType<0>, llvm_anyptr_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
                      LLVMMatchType<1>, LLVMMatchType<1>],
                     [NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<4>>]>, RISCVVIntrinsic {
@@ -220,9 +203,8 @@ let TargetPrefix = "riscv" in {
   // Input: (passthru, pointer, stride, vl)
   class RISCVSLoad
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>,
-                     llvm_anyint_ty, LLVMMatchType<1>],
+                    [LLVMMatchType<0>, llvm_anyptr_ty,
+                     llvm_anyint_ty, LLVMMatchType<2>],
                     [NoCapture<ArgIndex<1>>, IntrReadMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
   }
@@ -230,10 +212,9 @@ let TargetPrefix = "riscv" in {
   // Input: (maskedoff, pointer, stride, mask, vl, policy)
   class RISCVSLoadMasked
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty ],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>, llvm_anyint_ty,
-                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, LLVMMatchType<1>,
-                     LLVMMatchType<1>],
+                    [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyint_ty,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, LLVMMatchType<2>,
+                     LLVMMatchType<2>],
                     [NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<5>>, IntrReadMem]>,
                     RISCVVIntrinsic {
     let VLOperand = 4;
@@ -242,8 +223,7 @@ let TargetPrefix = "riscv" in {
   // Input: (passthru, pointer, index, vl)
   class RISCVILoad
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>,
+                    [LLVMMatchType<0>, llvm_anyptr_ty,
                      llvm_anyvector_ty, llvm_anyint_ty],
                     [NoCapture<ArgIndex<1>>, IntrReadMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
@@ -252,10 +232,9 @@ let TargetPrefix = "riscv" in {
   // Input: (maskedoff, pointer, index, mask, vl, policy)
   class RISCVILoadMasked
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty ],
-                    [LLVMMatchType<0>,
-                     LLVMPointerType<LLVMMatchType<0>>, llvm_anyvector_ty,
+                    [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyvector_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
-                     LLVMMatchType<2>],
+                     LLVMMatchType<3>],
                     [NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<5>>, IntrReadMem]>,
                     RISCVVIntrinsic {
     let VLOperand = 4;
@@ -264,30 +243,28 @@ let TargetPrefix = "riscv" in {
   // Input: (vector_in, pointer, vl)
   class RISCVUSStore
         : DefaultAttrsIntrinsic<[],
-                    [llvm_anyvector_ty,
-                     LLVMPointerType<LLVMMatchType<0>>,
-                     llvm_anyint_ty],
-                    [NoCapture<ArgIndex<1>>, IntrWriteMem]>, RISCVVIntrinsic {
+                    [llvm_anyvector_ty, llvm_anyptr_ty, llvm_anyint_ty],
+                    [NoCapture<ArgIndex<1>>, IntrWriteMem, IntrArgMemOnly]>,
+          RISCVVIntrinsic {
     let VLOperand = 2;
   }
   // For unit stride store with mask
   // Input: (vector_in, pointer, mask, vl)
   class RISCVUSStoreMasked
         : DefaultAttrsIntrinsic<[],
-                    [llvm_anyvector_ty,
-                     LLVMPointerType<LLVMMatchType<0>>,
+                    [llvm_anyvector_ty, llvm_anyptr_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
                      llvm_anyint_ty],
-                    [NoCapture<ArgIndex<1>>, IntrWriteMem]>, RISCVVIntrinsic {
+                    [NoCapture<ArgIndex<1>>, IntrWriteMem, IntrArgMemOnly]>,
+          RISCVVIntrinsic {
     let VLOperand = 3;
   }
   // For strided store
   // Input: (vector_in, pointer, stride, vl)
   class RISCVSStore
         : DefaultAttrsIntrinsic<[],
-                    [llvm_anyvector_ty,
-                     LLVMPointerType<LLVMMatchType<0>>,
-                     llvm_anyint_ty, LLVMMatchType<1>],
+                    [llvm_anyvector_ty, llvm_anyptr_ty,
+                     llvm_anyint_ty, LLVMMatchType<2>],
                     [NoCapture<ArgIndex<1>>, IntrWriteMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
   }
@@ -295,9 +272,8 @@ let TargetPrefix = "riscv" in {
   // Input: (vector_in, pointer, stirde, mask, vl)
   class RISCVSStoreMasked
         : DefaultAttrsIntrinsic<[],
-                    [llvm_anyvector_ty,
-                     LLVMPointerType<LLVMMatchType<0>>, llvm_anyint_ty,
-                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, LLVMMatchType<1>],
+                    [llvm_anyvector_ty, llvm_anyptr_ty, llvm_anyint_ty,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, LLVMMatchType<2>],
                     [NoCapture<ArgIndex<1>>, IntrWriteMem]>, RISCVVIntrinsic {
     let VLOperand = 4;
   }
@@ -305,8 +281,7 @@ let TargetPrefix = "riscv" in {
   // Input: (vector_in, pointer, index, vl)
   class RISCVIStore
         : DefaultAttrsIntrinsic<[],
-                    [llvm_anyvector_ty,
-                     LLVMPointerType<LLVMMatchType<0>>,
+                    [llvm_anyvector_ty, llvm_anyptr_ty,
                      llvm_anyint_ty, llvm_anyint_ty],
                     [NoCapture<ArgIndex<1>>, IntrWriteMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
@@ -315,8 +290,7 @@ let TargetPrefix = "riscv" in {
   // Input: (vector_in, pointer, index, mask, vl)
   class RISCVIStoreMasked
         : DefaultAttrsIntrinsic<[],
-                    [llvm_anyvector_ty,
-                     LLVMPointerType<LLVMMatchType<0>>, llvm_anyvector_ty,
+                    [llvm_anyvector_ty, llvm_anyptr_ty, llvm_anyvector_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty],
                     [NoCapture<ArgIndex<1>>, IntrWriteMem]>, RISCVVIntrinsic {
     let VLOperand = 4;
@@ -329,6 +303,23 @@ let TargetPrefix = "riscv" in {
                     [IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 2;
   }
+  // For destination vector type is the same as the source vector type
+  // Input: (passthru, vector_in, vl, policy)
+  class RISCVUnaryAAUnMaskedZvk<bit IsVS>
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, !if(IsVS, llvm_anyvector_ty, LLVMMatchType<0>),
+                     llvm_anyint_ty, !if(IsVS, LLVMMatchType<2>, LLVMMatchType<1>)],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 2;
+  }
+
+  multiclass RISCVUnaryAAUnMaskedZvk<bit HasVV = 1, bit HasVS = 1> {
+    if HasVV then
+      def "int_riscv_" # NAME # "_vv" : RISCVUnaryAAUnMaskedZvk<IsVS=0>;
+
+    if HasVS then
+      def "int_riscv_" # NAME # "_vs" : RISCVUnaryAAUnMaskedZvk<IsVS=1>;
+  }
   // For destination vector type is the same as first source vector (with mask).
   // Input: (vector_in, vector_in, mask, vl, policy)
   class RISCVUnaryAAMasked
@@ -339,7 +330,25 @@ let TargetPrefix = "riscv" in {
                     [ImmArg<ArgIndex<4>>, IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
   }
-  // Input: (passthru, vector_in, vector_in, mask, vl)
+  // For destination vector type is the same as source vector.
+  // Input: (passthru, vector_in, frm, vl)
+  class RISCVUnaryAAUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, LLVMMatchType<0>, llvm_anyint_ty, LLVMMatchType<1>],
+                    [ImmArg<ArgIndex<2>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 3;
+  }
+  // For destination vector type is the same as first source vector (with mask).
+  // Input: (vector_in, vector_in, mask, frm, vl, policy)
+  class RISCVUnaryAAMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, LLVMMatchType<0>,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
+                     LLVMMatchType<1>, LLVMMatchType<1>],
+                    [ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 4;
+  }
+  // Input: (passthru, vector_in, mask, vl)
   class RISCVCompress
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, LLVMMatchType<0>,
@@ -347,13 +356,32 @@ let TargetPrefix = "riscv" in {
                     [IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
   }
-  // For destination vector type is the same as first and second source vector.
+  // For mask logical operations without passthru operand.
   // Input: (vector_in, vector_in, vl)
-  class RISCVBinaryAAAUnMasked
+  class RISCVMaskLogical
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, LLVMMatchType<0>, llvm_anyint_ty],
                     [IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 2;
+  }
+  // For destination vector type is the same as first and second source vector.
+  // Input: (passthru, vector_in, vector_in, vl)
+  class RISCVBinaryAAAUnMasked
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, LLVMMatchType<0>,
+                     LLVMMatchType<0>, llvm_anyint_ty],
+                    [IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 3;
+  }
+  // For destination vector type is the same as first and second source vector (with mask).
+  // Input: (passthru, vector_in, vector_in, mask, vl, policy)
+  class RISCVBinaryAAAMasked
+       : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                   [LLVMMatchType<0>, LLVMMatchType<0>, LLVMMatchType<0>,
+                    LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
+                    LLVMMatchType<1>],
+                   [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 4;
   }
   // For destination vector type is the same as first and second source vector.
   // Input: (passthru, vector_in, int_vector_in, vl)
@@ -417,11 +445,25 @@ let TargetPrefix = "riscv" in {
   }
   // For destination vector type is the same as first source vector.
   // Input: (passthru, vector_in, vector_in/scalar_in, vl)
-  class RISCVBinaryAAXUnMasked
+  class RISCVBinaryAAXUnMasked<bit IsVI = 0>
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
                      llvm_anyint_ty],
-                    [IntrNoMem]>, RISCVVIntrinsic {
+                    !listconcat([IntrNoMem],
+                                !if(IsVI, [ImmArg<ArgIndex<2>>], []))>,
+                    RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 3;
+  }
+  // For destination vector type is the same as the source vector type.
+  // Input: (passthru, vector_in, vector_in/scalar_in, vl, policy)
+  class RISCVBinaryAAXUnMaskedZvk<bit IsVI = 0>
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                                [LLVMMatchType<0>, LLVMMatchType<0>,
+                                 llvm_any_ty, llvm_anyint_ty, LLVMMatchType<2>],
+                                !listconcat([ImmArg<ArgIndex<4>>, IntrNoMem],
+                                            !if(IsVI, [ImmArg<ArgIndex<2>>], []))>,
+                                RISCVVIntrinsic {
     let ScalarOperand = 2;
     let VLOperand = 3;
   }
@@ -435,6 +477,27 @@ let TargetPrefix = "riscv" in {
                    [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
     let ScalarOperand = 2;
     let VLOperand = 4;
+  }
+  // For destination vector type is the same as first source vector.
+  // Input: (passthru, vector_in, vector_in/scalar_in, frm, vl)
+  class RISCVBinaryAAXUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
+                     llvm_anyint_ty, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 4;
+  }
+  // For destination vector type is the same as first source vector (with mask).
+  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, frm, vl, policy)
+  class RISCVBinaryAAXMaskedRoundingMode
+       : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                   [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
+                    LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
+                    LLVMMatchType<2>, LLVMMatchType<2>],
+                   [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<6>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 5;
   }
   // For destination vector type is the same as first source vector. The
   // second source operand must match the destination type or be an XLen scalar.
@@ -477,6 +540,27 @@ let TargetPrefix = "riscv" in {
                     [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
     let ScalarOperand = 2;
     let VLOperand = 4;
+  }
+  // For destination vector type is NOT the same as first source vector.
+  // Input: (passthru, vector_in, vector_in/scalar_in, frm, vl)
+  class RISCVBinaryABXUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, llvm_any_ty,
+                     llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 4;
+  }
+  // For destination vector type is NOT the same as first source vector (with mask).
+  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, frm, vl, policy)
+  class RISCVBinaryABXMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, llvm_any_ty,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
+                     LLVMMatchType<3>, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<6>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 5;
   }
   // For destination vector type is NOT the same as first source vector. The
   // second source operand must match the destination type or be an XLen scalar.
@@ -582,9 +666,20 @@ let TargetPrefix = "riscv" in {
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
                      llvm_anyint_ty],
-                    [IntrNoMem, IntrHasSideEffects]>, RISCVVIntrinsic {
+                    [IntrNoMem]>, RISCVVIntrinsic {
     let ScalarOperand = 2;
     let VLOperand = 3;
+  }
+  // For Saturating binary operations with rounding-mode operand
+  // The destination vector type is the same as first source vector.
+  // Input: (passthru, vector_in, vector_in/scalar_in, vxrm, vl)
+  class RISCVSaturatingBinaryAAXUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
+                     llvm_anyint_ty, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 4;
   }
   // For Saturating binary operations with mask.
   // The destination vector type is the same as first source vector.
@@ -594,55 +689,70 @@ let TargetPrefix = "riscv" in {
                     [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
                      LLVMMatchType<2>],
-                    [ImmArg<ArgIndex<5>>, IntrNoMem, IntrHasSideEffects]>, RISCVVIntrinsic {
+                    [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
     let ScalarOperand = 2;
     let VLOperand = 4;
+  }
+  // For Saturating binary operations with mask and rounding-mode operand
+  // The destination vector type is the same as first source vector.
+  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, vxrm, vl, policy)
+  class RISCVSaturatingBinaryAAXMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
+                     LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<6>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 5;
   }
   // For Saturating binary operations.
   // The destination vector type is the same as first source vector.
   // The second source operand matches the destination type or is an XLen scalar.
-  // Input: (passthru, vector_in, vector_in/scalar_in, vl)
-  class RISCVSaturatingBinaryAAShiftUnMasked
+  // Input: (passthru, vector_in, vector_in/scalar_in, vxrm, vl)
+  class RISCVSaturatingBinaryAAShiftUnMaskedRoundingMode
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
-                     llvm_anyint_ty],
-                    [IntrNoMem, IntrHasSideEffects]>, RISCVVIntrinsic {
-    let VLOperand = 3;
+                     llvm_anyint_ty, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>,
+                    RISCVVIntrinsic {
+    let VLOperand = 4;
   }
   // For Saturating binary operations with mask.
   // The destination vector type is the same as first source vector.
   // The second source operand matches the destination type or is an XLen scalar.
-  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, vl, policy)
-  class RISCVSaturatingBinaryAAShiftMasked
+  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, vxrm, vl, policy)
+  class RISCVSaturatingBinaryAAShiftMaskedRoundingMode
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, LLVMMatchType<0>, llvm_any_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
-                     LLVMMatchType<2>],
-                    [ImmArg<ArgIndex<5>>, IntrNoMem, IntrHasSideEffects]>, RISCVVIntrinsic {
-    let VLOperand = 4;
+                     LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<4>>,ImmArg<ArgIndex<6>>, IntrNoMem]>,
+                    RISCVVIntrinsic {
+    let VLOperand = 5;
   }
   // For Saturating binary operations.
   // The destination vector type is NOT the same as first source vector.
   // The second source operand matches the destination type or is an XLen scalar.
-  // Input: (passthru, vector_in, vector_in/scalar_in, vl)
-  class RISCVSaturatingBinaryABShiftUnMasked
+  // Input: (passthru, vector_in, vector_in/scalar_in, vxrm, vl)
+  class RISCVSaturatingBinaryABShiftUnMaskedRoundingMode
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, llvm_anyvector_ty, llvm_any_ty,
-                     llvm_anyint_ty],
-                    [IntrNoMem, IntrHasSideEffects]>, RISCVVIntrinsic {
-    let VLOperand = 3;
+                     llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>,
+                    RISCVVIntrinsic {
+    let VLOperand = 4;
   }
   // For Saturating binary operations with mask.
   // The destination vector type is NOT the same as first source vector (with mask).
   // The second source operand matches the destination type or is an XLen scalar.
-  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, vl, policy)
-  class RISCVSaturatingBinaryABShiftMasked
+  // Input: (maskedoff, vector_in, vector_in/scalar_in, mask, vxrm, vl, policy)
+  class RISCVSaturatingBinaryABShiftMaskedRoundingMode
         : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
                     [LLVMMatchType<0>, llvm_anyvector_ty, llvm_any_ty,
                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
-                     LLVMMatchType<3>],
-                    [ImmArg<ArgIndex<5>>, IntrNoMem, IntrHasSideEffects]>, RISCVVIntrinsic {
-    let VLOperand = 4;
+                     LLVMMatchType<3>, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<6>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 5;
   }
   // Input: (vector_in, vector_in, scalar_in, vl, policy)
   class RVVSlideUnMasked
@@ -682,6 +792,29 @@ let TargetPrefix = "riscv" in {
     let ScalarOperand = 1;
     let VLOperand = 4;
   }
+  // UnMasked Vector Multiply-Add operations, its first operand can not be undef.
+  // Input: (vector_in, vector_in/scalar, vector_in, frm, vl, policy)
+  class RISCVTernaryAAXAUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_any_ty, LLVMMatchType<0>,
+                     llvm_anyint_ty, LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<5>>, IntrNoMem]>,
+                    RISCVVIntrinsic {
+    let ScalarOperand = 1;
+    let VLOperand = 4;
+  }
+  // Masked Vector Multiply-Add operations, its first operand can not be undef.
+  // Input: (vector_in, vector_in/scalar, vector_in, mask, frm, vl, policy
+  class RISCVTernaryAAXAMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_any_ty, LLVMMatchType<0>,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                     llvm_anyint_ty, LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<6>>, IntrNoMem]>,
+                    RISCVVIntrinsic {
+    let ScalarOperand = 1;
+    let VLOperand = 5;
+  }
   // UnMasked Widening Vector Multiply-Add operations, its first operand can not be undef.
   // Input: (vector_in, vector_in/scalar, vector_in, vl, policy)
   class RISCVTernaryWideUnMasked
@@ -703,6 +836,58 @@ let TargetPrefix = "riscv" in {
     let ScalarOperand = 1;
     let VLOperand = 4;
   }
+  // UnMasked ternary operations whose first vector source precedes the
+  // vector/scalar source. The first operand can not be undef.
+  // Input: (vector_in, vector_in, vector_in/scalar, vl, policy)
+  class RISCVTernaryVS2FirstUnMasked<
+      LLVMType VS2Type = LLVMMatchType<0>, int VLTypeIndex = 2,
+      bit HasVV = 1>
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                     [LLVMMatchType<0>, VS2Type,
+                      !if(HasVV, llvm_any_ty, llvm_anyint_ty),
+                      llvm_anyint_ty, LLVMMatchType<VLTypeIndex>],
+                     [ImmArg<ArgIndex<4>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 3;
+  }
+  // Masked ternary operations whose first vector source precedes the
+  // vector/scalar source. The first operand can not be undef.
+  // Input: (vector_in, vector_in, vector_in/scalar, mask, vl, policy)
+  class RISCVTernaryVS2FirstMasked<
+      LLVMType VS2Type = LLVMMatchType<0>, int VLTypeIndex = 2,
+      bit HasVV = 1>
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                     [LLVMMatchType<0>, VS2Type,
+                      !if(HasVV, llvm_any_ty, llvm_anyint_ty),
+                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                      llvm_anyint_ty, LLVMMatchType<VLTypeIndex>],
+                     [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
+    let ScalarOperand = 2;
+    let VLOperand = 4;
+  }
+  // UnMasked Widening Vector Multiply-Add operations, its first operand can not be undef.
+  // Input: (vector_in, vector_in/scalar, vector_in, frm, vl, policy)
+  class RISCVTernaryWideUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic< [llvm_anyvector_ty],
+                     [LLVMMatchType<0>, llvm_any_ty, llvm_anyvector_ty,
+                      llvm_anyint_ty, LLVMMatchType<3>, LLVMMatchType<3>],
+                     [ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<5>>, IntrNoMem] >,
+                     RISCVVIntrinsic {
+    let ScalarOperand = 1;
+    let VLOperand = 4;
+  }
+  // Masked Widening Vector Multiply-Add operations, its first operand can not be undef.
+  // Input: (vector_in, vector_in/scalar, vector_in, mask, frm, vl, policy
+  class RISCVTernaryWideMaskedRoundingMode
+        : DefaultAttrsIntrinsic< [llvm_anyvector_ty],
+                     [LLVMMatchType<0>, llvm_any_ty, llvm_anyvector_ty,
+                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                      llvm_anyint_ty, LLVMMatchType<3>, LLVMMatchType<3>],
+                     [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<6>>, IntrNoMem]>,
+                     RISCVVIntrinsic {
+    let ScalarOperand = 1;
+    let VLOperand = 5;
+  }
   // For Reduction ternary operations.
   // For destination vector type is the same as first and third source vector.
   // Input: (vector_in, vector_in, vector_in, vl)
@@ -723,6 +908,28 @@ let TargetPrefix = "riscv" in {
                      LLVMScalarOrSameVectorWidth<1, llvm_i1_ty>, llvm_anyint_ty],
                     [IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 4;
+  }
+  // For Reduction ternary operations.
+  // For destination vector type is the same as first and third source vector.
+  // Input: (vector_in, vector_in, vector_in, frm, vl)
+  class RISCVReductionUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, LLVMMatchType<0>,
+                     llvm_anyint_ty, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 4;
+  }
+  // For Reduction ternary operations with mask.
+  // For destination vector type is the same as first and third source vector.
+  // The mask type come from second source vector.
+  // Input: (vector_in, vector_in, vector_in, mask, frm, vl)
+  class RISCVReductionMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, LLVMMatchType<0>,
+                     LLVMScalarOrSameVectorWidth<1, llvm_i1_ty>, llvm_anyint_ty,
+                     LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<4>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 5;
   }
   // For unary operations with scalar type output without mask
   // Output: (scalar type)
@@ -812,180 +1019,185 @@ let TargetPrefix = "riscv" in {
                     [ImmArg<ArgIndex<4>>, IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 3;
   }
+  // For Conversion unary operations.
+  // Input: (passthru, vector_in, frm, vl)
+  class RISCVConversionUnMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty, llvm_anyint_ty,
+                     LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<2>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 3;
+  }
+  // For Conversion unary operations with mask.
+  // Input: (maskedoff, vector_in, mask, frm, vl, policy)
+  class RISCVConversionMaskedRoundingMode
+        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                    [LLVMMatchType<0>, llvm_anyvector_ty,
+                     LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>, llvm_anyint_ty,
+                     LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
+    let VLOperand = 4;
+  }
 
   // For unit stride segment load
-  // Input: (passthru, pointer, vl)
-  class RISCVUSSegLoad<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1))),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                                [LLVMPointerToElt<0>, llvm_anyint_ty]),
-                    [NoCapture<ArgIndex<nf>>, IntrReadMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 1);
+  // Input: (passthru, pointer, vl, sew)
+  class RISCVUSSegLoad
+        : DefaultAttrsIntrinsic<[llvm_any_ty],
+                                [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyint_ty,
+                                 LLVMMatchType<2>],
+                    [NoCapture<ArgIndex<1>>, ImmArg<ArgIndex<3>>, IntrReadMem,
+                     IntrArgMemOnly]>,
+          RISCVVIntrinsic {
+    let VLOperand = 2;
   }
   // For unit stride segment load with mask
-  // Input: (maskedoff, pointer, mask, vl, policy)
-  class RISCVUSSegLoadMasked<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1))),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                                [LLVMPointerToElt<0>,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                                 llvm_anyint_ty, LLVMMatchType<1>]),
-                    [ImmArg<ArgIndex<!add(nf, 3)>>, NoCapture<ArgIndex<nf>>, IntrReadMem]>,
-                    RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+  // Input: (maskedoff, pointer, mask, vl, policy, sew)
+  class RISCVUSSegLoadMasked
+        : DefaultAttrsIntrinsic<[llvm_any_ty],
+                                [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyvector_ty,
+                                 llvm_anyint_ty, LLVMMatchType<3>, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<5>>,
+                     NoCapture<ArgIndex<1>>, IntrReadMem, IntrArgMemOnly]>,
+          RISCVVIntrinsic {
+    let VLOperand = 3;
   }
 
   // For unit stride fault-only-first segment load
-  // Input: (passthru, pointer, vl)
+  // Input: (passthru, pointer, vl, sew)
   // Output: (data, vl)
   // NOTE: We model this with default memory properties since we model writing
   // VL as a side effect. IntrReadMem, IntrHasSideEffects does not work.
-  class RISCVUSSegLoadFF<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1)), [llvm_anyint_ty]),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                    [LLVMPointerToElt<0>, LLVMMatchType<1>]),
-                    [NoCapture<ArgIndex<nf>>]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 1);
+  class RISCVUSSegLoadFF
+        : DefaultAttrsIntrinsic<[llvm_any_ty, llvm_anyint_ty],
+                    [LLVMMatchType<0>, llvm_anyptr_ty, LLVMMatchType<1>, LLVMMatchType<1>],
+                    [ImmArg<ArgIndex<3>>, NoCapture<ArgIndex<1>>]>, RISCVVIntrinsic {
+    let VLOperand = 2;
   }
   // For unit stride fault-only-first segment load with mask
-  // Input: (maskedoff, pointer, mask, vl, policy)
+  // Input: (maskedoff, pointer, mask, vl, policy, sew)
   // Output: (data, vl)
   // NOTE: We model this with default memory properties since we model writing
   // VL as a side effect. IntrReadMem, IntrHasSideEffects does not work.
-  class RISCVUSSegLoadFFMasked<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1)), [llvm_anyint_ty]),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                     [LLVMPointerToElt<0>,
-                      LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                      LLVMMatchType<1>, LLVMMatchType<1>]),
-                    [ImmArg<ArgIndex<!add(nf, 3)>>, NoCapture<ArgIndex<nf>>]>,
+  class RISCVUSSegLoadFFMasked
+        : DefaultAttrsIntrinsic<[llvm_any_ty, llvm_anyint_ty],
+                     [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyvector_ty,
+                      LLVMMatchType<1>, LLVMMatchType<1>, LLVMMatchType<1>],
+                    [ImmArg<ArgIndex<4>>, ImmArg<ArgIndex<5>>, NoCapture<ArgIndex<1>>]>,
                     RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+    let VLOperand = 3;
   }
 
   // For stride segment load
-  // Input: (passthru, pointer, offset, vl)
-  class RISCVSSegLoad<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1))),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                    [LLVMPointerToElt<0>, llvm_anyint_ty, LLVMMatchType<1>]),
-                    [NoCapture<ArgIndex<nf>>, IntrReadMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+  // Input: (passthru, pointer, offset, vl, sew)
+  class RISCVSSegLoad
+        : DefaultAttrsIntrinsic<[llvm_any_ty],
+                    [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyint_ty,
+                     LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<4>>, NoCapture<ArgIndex<1>>, IntrReadMem]>,
+          RISCVVIntrinsic {
+    let VLOperand = 3;
   }
   // For stride segment load with mask
-  // Input: (maskedoff, pointer, offset, mask, vl, policy)
-  class RISCVSSegLoadMasked<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1))),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                                [LLVMPointerToElt<0>,
-                                 llvm_anyint_ty,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                                 LLVMMatchType<1>, LLVMMatchType<1>]),
-                    [ImmArg<ArgIndex<!add(nf, 4)>>, NoCapture<ArgIndex<nf>>, IntrReadMem]>,
+  // Input: (maskedoff, pointer, offset, mask, vl, policy, sew)
+  class RISCVSSegLoadMasked
+        : DefaultAttrsIntrinsic<[llvm_any_ty],
+                                [LLVMMatchType<0>, llvm_anyptr_ty,
+                                 llvm_anyint_ty, llvm_anyvector_ty,
+                                 LLVMMatchType<2>, LLVMMatchType<2>,
+                                 LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<5>>, ImmArg<ArgIndex<6>>,
+                     NoCapture<ArgIndex<1>>, IntrReadMem]>,
                     RISCVVIntrinsic {
-    let VLOperand = !add(nf, 3);
+    let VLOperand = 4;
   }
 
   // For indexed segment load
-  // Input: (passthru, pointer, index, vl)
-  class RISCVISegLoad<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1))),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                    [LLVMPointerToElt<0>, llvm_anyvector_ty, llvm_anyint_ty]),
-                    [NoCapture<ArgIndex<nf>>, IntrReadMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+  // Input: (passthru, pointer, index, vl, sew)
+  class RISCVISegLoad
+        : DefaultAttrsIntrinsic<[llvm_any_ty],
+                    [LLVMMatchType<0>, llvm_anyptr_ty, llvm_anyvector_ty,
+                     llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, NoCapture<ArgIndex<1>>, IntrReadMem]>,
+          RISCVVIntrinsic {
+    let VLOperand = 3;
   }
   // For indexed segment load with mask
-  // Input: (maskedoff, pointer, index, mask, vl, policy)
-  class RISCVISegLoadMasked<int nf>
-        : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty], !listsplat(LLVMMatchType<0>,
-                                !add(nf, -1))),
-                    !listconcat(!listsplat(LLVMMatchType<0>, nf),
-                                [LLVMPointerToElt<0>,
-                                 llvm_anyvector_ty,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                                 llvm_anyint_ty, LLVMMatchType<2>]),
-                    [ImmArg<ArgIndex<!add(nf, 4)>>, NoCapture<ArgIndex<nf>>, IntrReadMem]>,
-                    RISCVVIntrinsic {
-    let VLOperand = !add(nf, 3);
+  // Input: (maskedoff, pointer, index, mask, vl, policy, sew)
+  class RISCVISegLoadMasked
+        : DefaultAttrsIntrinsic<[llvm_any_ty],
+                                [LLVMMatchType<0>, llvm_anyptr_ty,
+                                 llvm_anyvector_ty, llvm_anyvector_ty,
+                                 llvm_anyint_ty, LLVMMatchType<4>, LLVMMatchType<4>],
+                    [ImmArg<ArgIndex<5>>, ImmArg<ArgIndex<6>>,
+                     NoCapture<ArgIndex<1>>, IntrReadMem]>, RISCVVIntrinsic {
+    let VLOperand = 4;
   }
 
   // For unit stride segment store
-  // Input: (value, pointer, vl)
-  class RISCVUSSegStore<int nf>
+  // Input: (value, pointer, vl, sew)
+  class RISCVUSSegStore
         : DefaultAttrsIntrinsic<[],
-                    !listconcat([llvm_anyvector_ty],
-                                !listsplat(LLVMMatchType<0>, !add(nf, -1)),
-                                [LLVMPointerToElt<0>, llvm_anyint_ty]),
-                    [NoCapture<ArgIndex<nf>>, IntrWriteMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 1);
+                                [llvm_any_ty, llvm_anyptr_ty, llvm_anyint_ty,
+                                 LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<3>>, NoCapture<ArgIndex<1>>, IntrWriteMem,
+                     IntrArgMemOnly]>,
+          RISCVVIntrinsic {
+    let VLOperand = 2;
   }
   // For unit stride segment store with mask
-  // Input: (value, pointer, mask, vl)
-  class RISCVUSSegStoreMasked<int nf>
+  // Input: (value, pointer, mask, vl, sew)
+  class RISCVUSSegStoreMasked
         : DefaultAttrsIntrinsic<[],
-                    !listconcat([llvm_anyvector_ty],
-                                !listsplat(LLVMMatchType<0>, !add(nf, -1)),
-                                [LLVMPointerToElt<0>,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                                 llvm_anyint_ty]),
-                    [NoCapture<ArgIndex<nf>>, IntrWriteMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+                                [llvm_any_ty, llvm_anyptr_ty,
+                                 llvm_anyvector_ty, llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, NoCapture<ArgIndex<1>>, IntrWriteMem,
+                     IntrArgMemOnly]>,
+          RISCVVIntrinsic {
+    let VLOperand = 3;
   }
 
   // For stride segment store
-  // Input: (value, pointer, offset, vl)
-  class RISCVSSegStore<int nf>
+  // Input: (value, pointer, offset, vl, sew)
+  class RISCVSSegStore
         : DefaultAttrsIntrinsic<[],
-                    !listconcat([llvm_anyvector_ty],
-                                !listsplat(LLVMMatchType<0>, !add(nf, -1)),
-                                [LLVMPointerToElt<0>, llvm_anyint_ty,
-                                 LLVMMatchType<1>]),
-                    [NoCapture<ArgIndex<nf>>, IntrWriteMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+                                [llvm_any_ty, llvm_anyptr_ty, llvm_anyint_ty,
+                                 LLVMMatchType<2>, LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<4>>, NoCapture<ArgIndex<1>>, IntrWriteMem]>,
+          RISCVVIntrinsic {
+    let VLOperand = 3;
   }
   // For stride segment store with mask
-  // Input: (value, pointer, offset, mask, vl)
-  class RISCVSSegStoreMasked<int nf>
+  // Input: (value, pointer, offset, mask, vl, sew)
+  class RISCVSSegStoreMasked
         : DefaultAttrsIntrinsic<[],
-                    !listconcat([llvm_anyvector_ty],
-                                !listsplat(LLVMMatchType<0>, !add(nf, -1)),
-                                [LLVMPointerToElt<0>, llvm_anyint_ty,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                                 LLVMMatchType<1>]),
-                    [NoCapture<ArgIndex<nf>>, IntrWriteMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 3);
+                                [llvm_any_ty, llvm_anyptr_ty, llvm_anyint_ty,
+                                 llvm_anyvector_ty, LLVMMatchType<2>,
+                                 LLVMMatchType<2>],
+                    [ImmArg<ArgIndex<5>>, NoCapture<ArgIndex<1>>, IntrWriteMem]>,
+          RISCVVIntrinsic {
+    let VLOperand = 4;
   }
 
   // For indexed segment store
-  // Input: (value, pointer, offset, vl)
-  class RISCVISegStore<int nf>
+  // Input: (value, pointer, offset, vl, sew)
+  class RISCVISegStore
         : DefaultAttrsIntrinsic<[],
-                    !listconcat([llvm_anyvector_ty],
-                                !listsplat(LLVMMatchType<0>, !add(nf, -1)),
-                                [LLVMPointerToElt<0>, llvm_anyvector_ty,
-                                 llvm_anyint_ty]),
-                    [NoCapture<ArgIndex<nf>>, IntrWriteMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 2);
+                                [llvm_any_ty, llvm_anyptr_ty, llvm_anyvector_ty,
+                                 llvm_anyint_ty, LLVMMatchType<3>],
+                    [ImmArg<ArgIndex<4>>, NoCapture<ArgIndex<1>>, IntrWriteMem]>,
+          RISCVVIntrinsic {
+    let VLOperand = 3;
   }
   // For indexed segment store with mask
-  // Input: (value, pointer, offset, mask, vl)
-  class RISCVISegStoreMasked<int nf>
+  // Input: (value, pointer, offset, mask, vl, sew)
+  class RISCVISegStoreMasked
         : DefaultAttrsIntrinsic<[],
-                    !listconcat([llvm_anyvector_ty],
-                                !listsplat(LLVMMatchType<0>, !add(nf, -1)),
-                                [LLVMPointerToElt<0>, llvm_anyvector_ty,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
-                                 llvm_anyint_ty]),
-                    [NoCapture<ArgIndex<nf>>, IntrWriteMem]>, RISCVVIntrinsic {
-    let VLOperand = !add(nf, 3);
+                                [llvm_any_ty, llvm_anyptr_ty, llvm_anyvector_ty,
+                                 llvm_anyvector_ty, llvm_anyint_ty,
+                                 LLVMMatchType<4>],
+                    [ImmArg<ArgIndex<5>>, NoCapture<ArgIndex<1>>, IntrWriteMem]>,
+          RISCVVIntrinsic {
+    let VLOperand = 4;
   }
 
   multiclass RISCVUSLoad {
@@ -1021,6 +1233,10 @@ let TargetPrefix = "riscv" in {
     def "int_riscv_" # NAME : RISCVUnaryAAUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVUnaryAAMasked;
   }
+  multiclass RISCVUnaryAARoundingMode {
+    def "int_riscv_" # NAME : RISCVUnaryAAUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVUnaryAAMaskedRoundingMode;
+  }
   multiclass RISCVUnaryAB {
     def "int_riscv_" # NAME : RISCVUnaryABUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVUnaryABMasked;
@@ -1030,6 +1246,14 @@ let TargetPrefix = "riscv" in {
   multiclass RISCVBinaryAAX {
     def "int_riscv_" # NAME : RISCVBinaryAAXUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVBinaryAAXMasked;
+  }
+  multiclass RISCVBinaryAAXRoundingMode {
+    def "int_riscv_" # NAME : RISCVBinaryAAXUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVBinaryAAXMaskedRoundingMode;
+  }
+  multiclass RISCVBinaryAAA {
+    def "int_riscv_" # NAME : RISCVBinaryAAAUnMasked;
+    def "int_riscv_" # NAME # "_mask" : RISCVBinaryAAAMasked;
   }
   // Like RISCVBinaryAAX, but the second operand is used a shift amount so it
   // must be a vector or an XLen scalar.
@@ -1055,6 +1279,10 @@ let TargetPrefix = "riscv" in {
     def "int_riscv_" # NAME : RISCVBinaryABXUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVBinaryABXMasked;
   }
+  multiclass RISCVBinaryABXRoundingMode {
+    def "int_riscv_" # NAME : RISCVBinaryABXUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVBinaryABXMaskedRoundingMode;
+  }
   // Like RISCVBinaryABX, but the second operand is used a shift amount so it
   // must be a vector or an XLen scalar.
   multiclass RISCVBinaryABShift {
@@ -1074,13 +1302,17 @@ let TargetPrefix = "riscv" in {
     def "int_riscv_" # NAME : RISCVSaturatingBinaryAAXUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVSaturatingBinaryAAXMasked;
   }
-  multiclass RISCVSaturatingBinaryAAShift {
-    def "int_riscv_" # NAME : RISCVSaturatingBinaryAAShiftUnMasked;
-    def "int_riscv_" # NAME # "_mask" : RISCVSaturatingBinaryAAShiftMasked;
+  multiclass RISCVSaturatingBinaryAAXRoundingMode {
+    def "int_riscv_" # NAME : RISCVSaturatingBinaryAAXUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVSaturatingBinaryAAXMaskedRoundingMode;
   }
-  multiclass RISCVSaturatingBinaryABShift {
-    def "int_riscv_" # NAME : RISCVSaturatingBinaryABShiftUnMasked;
-    def "int_riscv_" # NAME # "_mask" : RISCVSaturatingBinaryABShiftMasked;
+  multiclass RISCVSaturatingBinaryAAShiftRoundingMode {
+    def "int_riscv_" # NAME : RISCVSaturatingBinaryAAShiftUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVSaturatingBinaryAAShiftMaskedRoundingMode;
+  }
+  multiclass RISCVSaturatingBinaryABShiftRoundingMode {
+    def "int_riscv_" # NAME : RISCVSaturatingBinaryABShiftUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVSaturatingBinaryABShiftMaskedRoundingMode;
   }
   multiclass RVVSlide {
     def "int_riscv_" # NAME : RVVSlideUnMasked;
@@ -1089,6 +1321,10 @@ let TargetPrefix = "riscv" in {
   multiclass RISCVTernaryAAXA {
     def "int_riscv_" # NAME : RISCVTernaryAAXAUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVTernaryAAXAMasked;
+  }
+  multiclass RISCVTernaryAAXARoundingMode {
+    def "int_riscv_" # NAME : RISCVTernaryAAXAUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVTernaryAAXAMaskedRoundingMode;
   }
   multiclass RISCVCompare {
     def "int_riscv_" # NAME : RISCVCompareUnMasked;
@@ -1102,9 +1338,23 @@ let TargetPrefix = "riscv" in {
     def "int_riscv_" # NAME : RISCVTernaryWideUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVTernaryWideMasked;
   }
+  multiclass RISCVTernaryWideVS2First {
+    def "int_riscv_" # NAME :
+        RISCVTernaryVS2FirstUnMasked<llvm_anyvector_ty, 3>;
+    def "int_riscv_" # NAME # "_mask" :
+        RISCVTernaryVS2FirstMasked<llvm_anyvector_ty, 3>;
+  }
+  multiclass RISCVTernaryWideRoundingMode {
+    def "int_riscv_" # NAME : RISCVTernaryWideUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVTernaryWideMaskedRoundingMode;
+  }
   multiclass RISCVReduction {
     def "int_riscv_" # NAME : RISCVReductionUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVReductionMasked;
+  }
+  multiclass RISCVReductionRoundingMode {
+    def "int_riscv_" # NAME : RISCVReductionUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVReductionMaskedRoundingMode;
   }
   multiclass RISCVMaskedUnarySOut {
     def "int_riscv_" # NAME : RISCVMaskedUnarySOutUnMasked;
@@ -1118,34 +1368,49 @@ let TargetPrefix = "riscv" in {
     def "int_riscv_" #NAME :RISCVConversionUnMasked;
     def "int_riscv_" # NAME # "_mask" : RISCVConversionMasked;
   }
-  multiclass RISCVUSSegLoad<int nf> {
-    def "int_riscv_" # NAME : RISCVUSSegLoad<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVUSSegLoadMasked<nf>;
+  multiclass RISCVConversionRoundingMode {
+    def "int_riscv_" #NAME :RISCVConversionUnMaskedRoundingMode;
+    def "int_riscv_" # NAME # "_mask" : RISCVConversionMaskedRoundingMode;
   }
-  multiclass RISCVUSSegLoadFF<int nf> {
-    def "int_riscv_" # NAME : RISCVUSSegLoadFF<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVUSSegLoadFFMasked<nf>;
+  multiclass RISCVUSSegLoad {
+    def "int_riscv_" # NAME : RISCVUSSegLoad;
+    def "int_riscv_" # NAME # "_mask" : RISCVUSSegLoadMasked;
   }
-  multiclass RISCVSSegLoad<int nf> {
-    def "int_riscv_" # NAME : RISCVSSegLoad<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVSSegLoadMasked<nf>;
+  multiclass RISCVUSSegLoadFF {
+    def "int_riscv_" # NAME : RISCVUSSegLoadFF;
+    def "int_riscv_" # NAME # "_mask" : RISCVUSSegLoadFFMasked;
   }
-  multiclass RISCVISegLoad<int nf> {
-    def "int_riscv_" # NAME : RISCVISegLoad<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVISegLoadMasked<nf>;
+  multiclass RISCVSSegLoad {
+    def "int_riscv_" # NAME : RISCVSSegLoad;
+    def "int_riscv_" # NAME # "_mask" : RISCVSSegLoadMasked;
   }
-  multiclass RISCVUSSegStore<int nf> {
-    def "int_riscv_" # NAME : RISCVUSSegStore<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVUSSegStoreMasked<nf>;
+  multiclass RISCVISegLoad {
+    def "int_riscv_" # NAME : RISCVISegLoad;
+    def "int_riscv_" # NAME # "_mask" : RISCVISegLoadMasked;
   }
-  multiclass RISCVSSegStore<int nf> {
-    def "int_riscv_" # NAME : RISCVSSegStore<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVSSegStoreMasked<nf>;
+  multiclass RISCVUSSegStore {
+    def "int_riscv_" # NAME : RISCVUSSegStore;
+    def "int_riscv_" # NAME # "_mask" : RISCVUSSegStoreMasked;
   }
-  multiclass RISCVISegStore<int nf> {
-    def "int_riscv_" # NAME : RISCVISegStore<nf>;
-    def "int_riscv_" # NAME # "_mask" : RISCVISegStoreMasked<nf>;
+  multiclass RISCVSSegStore {
+    def "int_riscv_" # NAME : RISCVSSegStore;
+    def "int_riscv_" # NAME # "_mask" : RISCVSSegStoreMasked;
   }
+  multiclass RISCVISegStore {
+    def "int_riscv_" # NAME : RISCVISegStore;
+    def "int_riscv_" # NAME # "_mask" : RISCVISegStoreMasked;
+  }
+
+  //==-- Intrinsics to perform vector tuple subvector insertion/extraction --=//
+  def int_riscv_tuple_insert
+      : DefaultAttrsIntrinsic<[llvm_any_ty],
+                              [LLVMMatchType<0>, llvm_anyvector_ty, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable, ImmArg<ArgIndex<2>>]>;
+
+  def int_riscv_tuple_extract
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [llvm_any_ty, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable, ImmArg<ArgIndex<1>>]>;
 
   defm vle : RISCVUSLoad;
   defm vleff : RISCVUSLoadFF;
@@ -1235,14 +1500,15 @@ let TargetPrefix = "riscv" in {
   defm vwmaccus : RISCVTernaryWide;
   defm vwmaccsu : RISCVTernaryWide;
 
-  defm vfadd : RISCVBinaryAAX;
-  defm vfsub : RISCVBinaryAAX;
-  defm vfrsub : RISCVBinaryAAX;
-
-  defm vfwadd : RISCVBinaryABX;
-  defm vfwsub : RISCVBinaryABX;
-  defm vfwadd_w : RISCVBinaryAAX;
-  defm vfwsub_w : RISCVBinaryAAX;
+  let IsFPIntrinsic = 1 in {
+    defm vfadd : RISCVBinaryAAXRoundingMode;
+    defm vfsub : RISCVBinaryAAXRoundingMode;
+    defm vfrsub : RISCVBinaryAAXRoundingMode;
+    defm vfwadd : RISCVBinaryABXRoundingMode;
+    defm vfwsub : RISCVBinaryABXRoundingMode;
+    defm vfwadd_w : RISCVBinaryAAXRoundingMode;
+    defm vfwsub_w : RISCVBinaryAAXRoundingMode;
+  }
 
   defm vsaddu : RISCVSaturatingBinaryAAX;
   defm vsadd : RISCVSaturatingBinaryAAX;
@@ -1277,6 +1543,7 @@ let TargetPrefix = "riscv" in {
                                                   llvm_anyint_ty],
                                                  [IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 2;
+    let IsFPIntrinsic = 1;
   }
 
   def int_riscv_vmv_x_s : DefaultAttrsIntrinsic<[LLVMVectorElementType<0>],
@@ -1299,76 +1566,85 @@ let TargetPrefix = "riscv" in {
                                                   llvm_anyint_ty],
                                                  [IntrNoMem]>, RISCVVIntrinsic {
     let VLOperand = 2;
+    let IsFPIntrinsic = 1;
   }
 
-  defm vfmul : RISCVBinaryAAX;
-  defm vfdiv : RISCVBinaryAAX;
-  defm vfrdiv : RISCVBinaryAAX;
+  let IsFPIntrinsic = 1 in {
+    defm vfmul : RISCVBinaryAAXRoundingMode;
+    defm vfdiv : RISCVBinaryAAXRoundingMode;
+    defm vfrdiv : RISCVBinaryAAXRoundingMode;
 
-  defm vfwmul : RISCVBinaryABX;
+    defm vfwmul : RISCVBinaryABXRoundingMode;
 
-  defm vfmacc : RISCVTernaryAAXA;
-  defm vfnmacc : RISCVTernaryAAXA;
-  defm vfmsac : RISCVTernaryAAXA;
-  defm vfnmsac : RISCVTernaryAAXA;
-  defm vfmadd : RISCVTernaryAAXA;
-  defm vfnmadd : RISCVTernaryAAXA;
-  defm vfmsub : RISCVTernaryAAXA;
-  defm vfnmsub : RISCVTernaryAAXA;
+    defm vfmacc : RISCVTernaryAAXARoundingMode;
+    defm vfnmacc : RISCVTernaryAAXARoundingMode;
+    defm vfmsac : RISCVTernaryAAXARoundingMode;
+    defm vfnmsac : RISCVTernaryAAXARoundingMode;
+    defm vfmadd : RISCVTernaryAAXARoundingMode;
+    defm vfnmadd : RISCVTernaryAAXARoundingMode;
+    defm vfmsub : RISCVTernaryAAXARoundingMode;
+    defm vfnmsub : RISCVTernaryAAXARoundingMode;
 
-  defm vfwmacc : RISCVTernaryWide;
-  defm vfwnmacc : RISCVTernaryWide;
-  defm vfwmsac : RISCVTernaryWide;
-  defm vfwnmsac : RISCVTernaryWide;
+    defm vfwmacc : RISCVTernaryWideRoundingMode;
+    defm vfwmaccbf16 : RISCVTernaryWideRoundingMode;
+    defm vfwnmacc : RISCVTernaryWideRoundingMode;
+    defm vfwmsac : RISCVTernaryWideRoundingMode;
+    defm vfwnmsac : RISCVTernaryWideRoundingMode;
 
-  defm vfsqrt : RISCVUnaryAA;
-  defm vfrsqrt7 : RISCVUnaryAA;
-  defm vfrec7 : RISCVUnaryAA;
+    defm vfsqrt : RISCVUnaryAARoundingMode;
+    defm vfrsqrt7 : RISCVUnaryAA;
+    defm vfrec7 : RISCVUnaryAARoundingMode;
 
-  defm vfmin : RISCVBinaryAAX;
-  defm vfmax : RISCVBinaryAAX;
+    defm vfmin : RISCVBinaryAAX;
+    defm vfmax : RISCVBinaryAAX;
 
-  defm vfsgnj : RISCVBinaryAAX;
-  defm vfsgnjn : RISCVBinaryAAX;
-  defm vfsgnjx : RISCVBinaryAAX;
+    defm vfsgnj : RISCVBinaryAAX;
+    defm vfsgnjn : RISCVBinaryAAX;
+    defm vfsgnjx : RISCVBinaryAAX;
 
-  defm vfclass : RISCVClassify;
+    defm vfclass : RISCVClassify;
 
-  defm vfmerge : RISCVBinaryWithV0;
+    defm vfmerge : RISCVBinaryWithV0;
+  }
 
   defm vslideup : RVVSlide;
   defm vslidedown : RVVSlide;
 
   defm vslide1up : RISCVBinaryAAX;
   defm vslide1down : RISCVBinaryAAX;
-  defm vfslide1up : RISCVBinaryAAX;
-  defm vfslide1down : RISCVBinaryAAX;
+
+  let IsFPIntrinsic = 1 in {
+    defm vfslide1up : RISCVBinaryAAX;
+    defm vfslide1down : RISCVBinaryAAX;
+  }
 
   defm vrgather_vv : RISCVRGatherVV;
   defm vrgather_vx : RISCVRGatherVX;
   defm vrgatherei16_vv : RISCVRGatherEI16VV;
 
-  def "int_riscv_vcompress" : RISCVCompress;
+  def int_riscv_vcompress : RISCVCompress;
 
-  defm vaaddu : RISCVSaturatingBinaryAAX;
-  defm vaadd : RISCVSaturatingBinaryAAX;
-  defm vasubu : RISCVSaturatingBinaryAAX;
-  defm vasub : RISCVSaturatingBinaryAAX;
+  defm vaaddu : RISCVSaturatingBinaryAAXRoundingMode;
+  defm vaadd : RISCVSaturatingBinaryAAXRoundingMode;
+  defm vasubu : RISCVSaturatingBinaryAAXRoundingMode;
+  defm vasub : RISCVSaturatingBinaryAAXRoundingMode;
 
-  defm vsmul : RISCVSaturatingBinaryAAX;
+  defm vsmul : RISCVSaturatingBinaryAAXRoundingMode;
 
-  defm vssrl : RISCVSaturatingBinaryAAShift;
-  defm vssra : RISCVSaturatingBinaryAAShift;
+  defm vssrl : RISCVSaturatingBinaryAAShiftRoundingMode;
+  defm vssra : RISCVSaturatingBinaryAAShiftRoundingMode;
 
-  defm vnclipu : RISCVSaturatingBinaryABShift;
-  defm vnclip : RISCVSaturatingBinaryABShift;
+  defm vnclipu : RISCVSaturatingBinaryABShiftRoundingMode;
+  defm vnclip : RISCVSaturatingBinaryABShiftRoundingMode;
 
-  defm vmfeq : RISCVCompare;
-  defm vmfne : RISCVCompare;
-  defm vmflt : RISCVCompare;
-  defm vmfle : RISCVCompare;
-  defm vmfgt : RISCVCompare;
-  defm vmfge : RISCVCompare;
+  let IsFPIntrinsic = 1 in {
+    defm vmfeq : RISCVCompare;
+    defm vmfne : RISCVCompare;
+    defm vmflt : RISCVCompare;
+    defm vmfle : RISCVCompare;
+    defm vmfgt : RISCVCompare;
+    defm vmfge : RISCVCompare;
+  }
 
   defm vredsum : RISCVReduction;
   defm vredand : RISCVReduction;
@@ -1382,22 +1658,24 @@ let TargetPrefix = "riscv" in {
   defm vwredsumu : RISCVReduction;
   defm vwredsum : RISCVReduction;
 
-  defm vfredosum : RISCVReduction;
-  defm vfredusum : RISCVReduction;
-  defm vfredmin : RISCVReduction;
-  defm vfredmax : RISCVReduction;
+  let IsFPIntrinsic = 1 in {
+    defm vfredosum : RISCVReductionRoundingMode;
+    defm vfredusum : RISCVReductionRoundingMode;
+    defm vfredmin : RISCVReduction;
+    defm vfredmax : RISCVReduction;
 
-  defm vfwredusum : RISCVReduction;
-  defm vfwredosum : RISCVReduction;
+    defm vfwredusum : RISCVReductionRoundingMode;
+    defm vfwredosum : RISCVReductionRoundingMode;
+  }
 
-  def int_riscv_vmand: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmnand: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmandn: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmxor: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmor: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmnor: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmorn: RISCVBinaryAAAUnMasked;
-  def int_riscv_vmxnor: RISCVBinaryAAAUnMasked;
+  def int_riscv_vmand: RISCVMaskLogical;
+  def int_riscv_vmnand: RISCVMaskLogical;
+  def int_riscv_vmandn: RISCVMaskLogical;
+  def int_riscv_vmxor: RISCVMaskLogical;
+  def int_riscv_vmor: RISCVMaskLogical;
+  def int_riscv_vmnor: RISCVMaskLogical;
+  def int_riscv_vmorn: RISCVMaskLogical;
+  def int_riscv_vmxnor: RISCVMaskLogical;
   def int_riscv_vmclr : RISCVNullaryIntrinsic;
   def int_riscv_vmset : RISCVNullaryIntrinsic;
 
@@ -1407,29 +1685,33 @@ let TargetPrefix = "riscv" in {
   defm vmsof : RISCVMaskedUnaryMOut;
   defm vmsif : RISCVMaskedUnaryMOut;
 
-  defm vfcvt_xu_f_v : RISCVConversion;
-  defm vfcvt_x_f_v : RISCVConversion;
-  defm vfcvt_rtz_xu_f_v : RISCVConversion;
-  defm vfcvt_rtz_x_f_v : RISCVConversion;
-  defm vfcvt_f_xu_v : RISCVConversion;
-  defm vfcvt_f_x_v : RISCVConversion;
+  let IsFPIntrinsic = 1 in {
+    defm vfcvt_xu_f_v : RISCVConversionRoundingMode;
+    defm vfcvt_x_f_v : RISCVConversionRoundingMode;
+    defm vfcvt_rtz_xu_f_v : RISCVConversion;
+    defm vfcvt_rtz_x_f_v : RISCVConversion;
+    defm vfcvt_f_xu_v : RISCVConversionRoundingMode;
+    defm vfcvt_f_x_v : RISCVConversionRoundingMode;
 
-  defm vfwcvt_f_xu_v : RISCVConversion;
-  defm vfwcvt_f_x_v : RISCVConversion;
-  defm vfwcvt_xu_f_v : RISCVConversion;
-  defm vfwcvt_x_f_v : RISCVConversion;
-  defm vfwcvt_rtz_xu_f_v : RISCVConversion;
-  defm vfwcvt_rtz_x_f_v : RISCVConversion;
-  defm vfwcvt_f_f_v : RISCVConversion;
+    defm vfwcvt_f_xu_v : RISCVConversion;
+    defm vfwcvt_f_x_v : RISCVConversion;
+    defm vfwcvt_xu_f_v : RISCVConversionRoundingMode;
+    defm vfwcvt_x_f_v : RISCVConversionRoundingMode;
+    defm vfwcvt_rtz_xu_f_v : RISCVConversion;
+    defm vfwcvt_rtz_x_f_v : RISCVConversion;
+    defm vfwcvt_f_f_v : RISCVConversion;
+    defm vfwcvtbf16_f_f_v : RISCVConversion;
 
-  defm vfncvt_f_xu_w : RISCVConversion;
-  defm vfncvt_f_x_w : RISCVConversion;
-  defm vfncvt_xu_f_w : RISCVConversion;
-  defm vfncvt_x_f_w : RISCVConversion;
-  defm vfncvt_rtz_xu_f_w : RISCVConversion;
-  defm vfncvt_rtz_x_f_w : RISCVConversion;
-  defm vfncvt_f_f_w : RISCVConversion;
-  defm vfncvt_rod_f_f_w : RISCVConversion;
+    defm vfncvt_f_xu_w : RISCVConversionRoundingMode;
+    defm vfncvt_f_x_w : RISCVConversionRoundingMode;
+    defm vfncvt_xu_f_w : RISCVConversionRoundingMode;
+    defm vfncvt_x_f_w : RISCVConversionRoundingMode;
+    defm vfncvt_rtz_xu_f_w : RISCVConversion;
+    defm vfncvt_rtz_x_f_w : RISCVConversion;
+    defm vfncvt_f_f_w : RISCVConversionRoundingMode;
+    defm vfncvtbf16_f_f_w : RISCVConversionRoundingMode;
+    defm vfncvt_rod_f_f_w : RISCVConversion;
+  }
 
   // Output: (vector)
   // Input: (passthru, mask type input, vl)
@@ -1468,39 +1750,61 @@ let TargetPrefix = "riscv" in {
   }
 
   foreach nf = [2, 3, 4, 5, 6, 7, 8] in {
-    defm vlseg # nf : RISCVUSSegLoad<nf>;
-    defm vlseg # nf # ff : RISCVUSSegLoadFF<nf>;
-    defm vlsseg # nf : RISCVSSegLoad<nf>;
-    defm vloxseg # nf : RISCVISegLoad<nf>;
-    defm vluxseg # nf : RISCVISegLoad<nf>;
-    defm vsseg # nf : RISCVUSSegStore<nf>;
-    defm vssseg # nf : RISCVSSegStore<nf>;
-    defm vsoxseg # nf : RISCVISegStore<nf>;
-    defm vsuxseg # nf : RISCVISegStore<nf>;
+    defm vlseg # nf : RISCVUSSegLoad;
+    defm vlseg # nf # ff : RISCVUSSegLoadFF;
+    defm vlsseg # nf : RISCVSSegLoad;
+    defm vloxseg # nf : RISCVISegLoad;
+    defm vluxseg # nf : RISCVISegLoad;
+    defm vsseg # nf : RISCVUSSegStore;
+    defm vssseg # nf : RISCVSSegStore;
+    defm vsoxseg # nf : RISCVISegStore;
+    defm vsuxseg # nf : RISCVISegStore;
   }
 
-  // Strided loads/stores for fixed vectors.
-  def int_riscv_masked_strided_load
-        : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
-                                [LLVMMatchType<0>, llvm_anyptr_ty,
-                                 llvm_anyint_ty,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>],
-                                [NoCapture<ArgIndex<1>>, IntrReadMem]>;
-  def int_riscv_masked_strided_store
-        : DefaultAttrsIntrinsic<[],
-                                [llvm_anyvector_ty, llvm_anyptr_ty,
-                                 llvm_anyint_ty,
-                                 LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>],
-                                [NoCapture<ArgIndex<1>>, IntrWriteMem]>;
-
-  // Segment loads for fixed vectors.
+  // Segment loads/stores for fixed vectors.
+  // Note: we only have the masked variants because RISCVVectorPeephole
+  // would lower any instructions with all-ones mask into unmasked version
+  // anyway.
   foreach nf = [2, 3, 4, 5, 6, 7, 8] in {
-    def int_riscv_seg # nf # _load
+    // Input: (pointer, mask, vl)
+    def int_riscv_seg # nf # _load_mask
           : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty],
                                               !listsplat(LLVMMatchType<0>,
                                               !add(nf, -1))),
-                                  [llvm_anyptr_ty, llvm_anyint_ty],
+                                  [llvm_anyptr_ty, LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                                   llvm_anyint_ty],
                                   [NoCapture<ArgIndex<0>>, IntrReadMem]>;
+
+    // Input: (pointer, stride, mask, vl)
+    def int_riscv_sseg # nf # _load_mask
+          : DefaultAttrsIntrinsic<!listconcat([llvm_anyvector_ty],
+                                              !listsplat(LLVMMatchType<0>,
+                                              !add(nf, -1))),
+                                  [llvm_anyptr_ty, llvm_anyint_ty,
+                                   LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                                   llvm_anyint_ty],
+                                  [NoCapture<ArgIndex<0>>, IntrReadMem]>;
+
+    // Input: (<stored values>..., pointer, mask, vl)
+    def int_riscv_seg # nf # _store_mask
+          : DefaultAttrsIntrinsic<[],
+                                  !listconcat([llvm_anyvector_ty],
+                                              !listsplat(LLVMMatchType<0>,
+                                                          !add(nf, -1)),
+                                              [llvm_anyptr_ty, LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                                               llvm_anyint_ty]),
+                                  [NoCapture<ArgIndex<nf>>, IntrWriteMem]>;
+
+    // Input: (<stored values>..., pointer, stride, mask, vl)
+    def int_riscv_sseg # nf # _store_mask
+          : DefaultAttrsIntrinsic<[],
+                                  !listconcat([llvm_anyvector_ty],
+                                              !listsplat(LLVMMatchType<0>,
+                                                          !add(nf, -1)),
+                                              [llvm_anyptr_ty, llvm_anyint_ty,
+                                               LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                                               llvm_anyint_ty]),
+                                  [NoCapture<ArgIndex<nf>>, IntrWriteMem]>;
   }
 
 } // TargetPrefix = "riscv"
@@ -1513,14 +1817,9 @@ let TargetPrefix = "riscv" in {
 
 let TargetPrefix = "riscv" in {
 
-class ScalarCryptoGprIntrinsicAny
-    : DefaultAttrsIntrinsic<[llvm_anyint_ty],
-                [LLVMMatchType<0>],
-                [IntrNoMem, IntrSpeculatable]>;
-
 class ScalarCryptoByteSelect32
     : DefaultAttrsIntrinsic<[llvm_i32_ty],
-                            [llvm_i32_ty, llvm_i32_ty, llvm_i8_ty],
+                            [llvm_i32_ty, llvm_i32_ty, llvm_i32_ty],
                             [IntrNoMem, IntrSpeculatable,
                              ImmArg<ArgIndex<2>>]>;
 
@@ -1534,67 +1833,567 @@ class ScalarCryptoGprGprIntrinsic64
                             [llvm_i64_ty, llvm_i64_ty],
                             [IntrNoMem, IntrSpeculatable]>;
 
+class ScalarCryptoGprIntrinsic32
+    : DefaultAttrsIntrinsic<[llvm_i32_ty],
+                            [llvm_i32_ty],
+                            [IntrNoMem, IntrSpeculatable]>;
+
 class ScalarCryptoGprIntrinsic64
     : DefaultAttrsIntrinsic<[llvm_i64_ty],
                             [llvm_i64_ty],
                             [IntrNoMem, IntrSpeculatable]>;
 
-class ScalarCryptoByteSelectAny
-    : DefaultAttrsIntrinsic<[llvm_anyint_ty],
-                            [LLVMMatchType<0>, LLVMMatchType<0>, llvm_i8_ty],
-                            [IntrNoMem, IntrSpeculatable, ImmArg<ArgIndex<2>>]>;
-
 // Zknd
-def int_riscv_aes32dsi  : ScalarCryptoByteSelect32;
-def int_riscv_aes32dsmi : ScalarCryptoByteSelect32;
+def int_riscv_aes32dsi  : ScalarCryptoByteSelect32,
+                          ClangBuiltin<"__builtin_riscv_aes32dsi">;
+def int_riscv_aes32dsmi : ScalarCryptoByteSelect32,
+                          ClangBuiltin<"__builtin_riscv_aes32dsmi">;
 
-def int_riscv_aes64ds   : ScalarCryptoGprGprIntrinsic64;
-def int_riscv_aes64dsm  : ScalarCryptoGprGprIntrinsic64;
+def int_riscv_aes64ds   : ScalarCryptoGprGprIntrinsic64,
+                          ClangBuiltin<"__builtin_riscv_aes64ds">;
+def int_riscv_aes64dsm  : ScalarCryptoGprGprIntrinsic64,
+                          ClangBuiltin<"__builtin_riscv_aes64dsm">;
 
-def int_riscv_aes64im   : ScalarCryptoGprIntrinsic64;
+def int_riscv_aes64im   : ScalarCryptoGprIntrinsic64,
+                          ClangBuiltin<"__builtin_riscv_aes64im">;
 
 // Zkne
-def int_riscv_aes32esi  : ScalarCryptoByteSelect32;
-def int_riscv_aes32esmi : ScalarCryptoByteSelect32;
+def int_riscv_aes32esi  : ScalarCryptoByteSelect32,
+                          ClangBuiltin<"__builtin_riscv_aes32esi">;
+def int_riscv_aes32esmi : ScalarCryptoByteSelect32,
+                          ClangBuiltin<"__builtin_riscv_aes32esmi">;
 
-def int_riscv_aes64es   : ScalarCryptoGprGprIntrinsic64;
-def int_riscv_aes64esm  : ScalarCryptoGprGprIntrinsic64;
+def int_riscv_aes64es   : ScalarCryptoGprGprIntrinsic64,
+                          ClangBuiltin<"__builtin_riscv_aes64es">;
+def int_riscv_aes64esm  : ScalarCryptoGprGprIntrinsic64,
+                          ClangBuiltin<"__builtin_riscv_aes64esm">;
 
 // Zknd & Zkne
-def int_riscv_aes64ks2  : ScalarCryptoGprGprIntrinsic64;
+def int_riscv_aes64ks2  : ScalarCryptoGprGprIntrinsic64,
+                          ClangBuiltin<"__builtin_riscv_aes64ks2">;
 def int_riscv_aes64ks1i : DefaultAttrsIntrinsic<[llvm_i64_ty],
                                                 [llvm_i64_ty, llvm_i32_ty],
                                                 [IntrNoMem, IntrSpeculatable,
-                                                 ImmArg<ArgIndex<1>>]>;
+                                                 ImmArg<ArgIndex<1>>]>,
+                          ClangBuiltin<"__builtin_riscv_aes64ks1i">;
 
 // Zknh
-def int_riscv_sha256sig0 : ScalarCryptoGprIntrinsicAny;
-def int_riscv_sha256sig1 : ScalarCryptoGprIntrinsicAny;
-def int_riscv_sha256sum0 : ScalarCryptoGprIntrinsicAny;
-def int_riscv_sha256sum1 : ScalarCryptoGprIntrinsicAny;
+def int_riscv_sha256sig0 : ScalarCryptoGprIntrinsic32;
+def int_riscv_sha256sig1 : ScalarCryptoGprIntrinsic32;
+def int_riscv_sha256sum0 : ScalarCryptoGprIntrinsic32;
+def int_riscv_sha256sum1 : ScalarCryptoGprIntrinsic32;
 
-def int_riscv_sha512sig0l : ScalarCryptoGprGprIntrinsic32;
-def int_riscv_sha512sig0h : ScalarCryptoGprGprIntrinsic32;
-def int_riscv_sha512sig1l : ScalarCryptoGprGprIntrinsic32;
-def int_riscv_sha512sig1h : ScalarCryptoGprGprIntrinsic32;
-def int_riscv_sha512sum0r : ScalarCryptoGprGprIntrinsic32;
-def int_riscv_sha512sum1r : ScalarCryptoGprGprIntrinsic32;
+def int_riscv_sha512sig0l : ScalarCryptoGprGprIntrinsic32,
+                            ClangBuiltin<"__builtin_riscv_sha512sig0l">;
+def int_riscv_sha512sig0h : ScalarCryptoGprGprIntrinsic32,
+                            ClangBuiltin<"__builtin_riscv_sha512sig0h">;
+def int_riscv_sha512sig1l : ScalarCryptoGprGprIntrinsic32,
+                            ClangBuiltin<"__builtin_riscv_sha512sig1l">;
+def int_riscv_sha512sig1h : ScalarCryptoGprGprIntrinsic32,
+                            ClangBuiltin<"__builtin_riscv_sha512sig1h">;
+def int_riscv_sha512sum0r : ScalarCryptoGprGprIntrinsic32,
+                            ClangBuiltin<"__builtin_riscv_sha512sum0r">;
+def int_riscv_sha512sum1r : ScalarCryptoGprGprIntrinsic32,
+                            ClangBuiltin<"__builtin_riscv_sha512sum1r">;
 
-def int_riscv_sha512sig0 : ScalarCryptoGprIntrinsic64;
-def int_riscv_sha512sig1 : ScalarCryptoGprIntrinsic64;
-def int_riscv_sha512sum0 : ScalarCryptoGprIntrinsic64;
-def int_riscv_sha512sum1 : ScalarCryptoGprIntrinsic64;
+def int_riscv_sha512sig0 : ScalarCryptoGprIntrinsic64,
+                           ClangBuiltin<"__builtin_riscv_sha512sig0">;
+def int_riscv_sha512sig1 : ScalarCryptoGprIntrinsic64,
+                           ClangBuiltin<"__builtin_riscv_sha512sig1">;
+def int_riscv_sha512sum0 : ScalarCryptoGprIntrinsic64,
+                           ClangBuiltin<"__builtin_riscv_sha512sum0">;
+def int_riscv_sha512sum1 : ScalarCryptoGprIntrinsic64,
+                           ClangBuiltin<"__builtin_riscv_sha512sum1">;
 
 // Zksed
-def int_riscv_sm4ks      : ScalarCryptoByteSelectAny;
-def int_riscv_sm4ed      : ScalarCryptoByteSelectAny;
+def int_riscv_sm4ks      : ScalarCryptoByteSelect32;
+def int_riscv_sm4ed      : ScalarCryptoByteSelect32;
 
 // Zksh
-def int_riscv_sm3p0      : ScalarCryptoGprIntrinsicAny;
-def int_riscv_sm3p1      : ScalarCryptoGprIntrinsicAny;
+def int_riscv_sm3p0      : ScalarCryptoGprIntrinsic32;
+def int_riscv_sm3p1      : ScalarCryptoGprIntrinsic32;
 } // TargetPrefix = "riscv"
 
 //===----------------------------------------------------------------------===//
+// Vector Cryptography
+//
+// These intrinsics will lower directly into the corresponding instructions
+// added by the vector cyptography extension, if the extension is present.
+let TargetPrefix = "riscv" in {
+  // Zvkb
+  defm vandn             : RISCVBinaryAAX;
+  defm vbrev8            : RISCVUnaryAA;
+  defm vrev8             : RISCVUnaryAA;
+  defm vrol              : RISCVBinaryAAX;
+  defm vror              : RISCVBinaryAAX;
+
+  // Zvbb
+  defm vbrev             : RISCVUnaryAA;
+  defm vclz              : RISCVUnaryAA;
+  defm vctz              : RISCVUnaryAA;
+  defm vcpopv            : RISCVUnaryAA;
+  defm vwsll             : RISCVBinaryABX;
+
+  // Zvbc
+  defm vclmul            : RISCVBinaryAAX;
+  defm vclmulh           : RISCVBinaryAAX;
+
+  // Zvkg
+  def int_riscv_vghsh    : RISCVBinaryAAXUnMaskedZvk;
+  def int_riscv_vgmul_vv : RISCVUnaryAAUnMaskedZvk<IsVS=0>;
+
+  // Zvkned
+  defm vaesdf            : RISCVUnaryAAUnMaskedZvk;
+  defm vaesdm            : RISCVUnaryAAUnMaskedZvk;
+  defm vaesef            : RISCVUnaryAAUnMaskedZvk;
+  defm vaesem            : RISCVUnaryAAUnMaskedZvk;
+  def int_riscv_vaeskf1  : RISCVBinaryAAXUnMasked<IsVI=1>;
+  def int_riscv_vaeskf2  : RISCVBinaryAAXUnMaskedZvk<IsVI=1>;
+  defm vaesz             : RISCVUnaryAAUnMaskedZvk<HasVV=0>;
+
+  // Zvknha or Zvknhb
+  def int_riscv_vsha2ch  : RISCVBinaryAAXUnMaskedZvk;
+  def int_riscv_vsha2cl  : RISCVBinaryAAXUnMaskedZvk;
+  def int_riscv_vsha2ms  : RISCVBinaryAAXUnMaskedZvk;
+
+  // Zvksed
+  def int_riscv_vsm4k    : RISCVBinaryAAXUnMasked<IsVI=1>;
+  defm vsm4r             : RISCVUnaryAAUnMaskedZvk;
+
+  // Zvksh
+  def int_riscv_vsm3c    : RISCVBinaryAAXUnMaskedZvk<IsVI=1>;
+  def int_riscv_vsm3me   : RISCVBinaryAAXUnMasked;
+} // TargetPrefix = "riscv"
+
+// Zvabd - Vector Absolute Difference
+//===----------------------------------------------------------------------===//
+let TargetPrefix = "riscv" in {
+  defm vabd    : RISCVBinaryAAX;
+  defm vabdu   : RISCVBinaryAAX;
+  defm vwabda  : RISCVTernaryWideVS2First;
+  defm vwabdau : RISCVTernaryWideVS2First;
+} // TargetPrefix = "riscv"
+
+// Zvzip - Reordering Structured Data in Vector Registers
+//===----------------------------------------------------------------------===//
+let TargetPrefix = "riscv" in {
+  multiclass RISCVZip {
+    // Input: (passthru, vector_in, vector_in, vl)
+    def "int_riscv_" # NAME :
+      DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                            [LLVMMatchType<0>, llvm_anyvector_ty,
+                             LLVMMatchType<1>, llvm_anyint_ty],
+                            [IntrNoMem]>, RISCVVIntrinsic {
+      let VLOperand = 3;
+    }
+
+    // Input: (maskedoff, vector_in, vector_in, mask, vl, policy)
+    def "int_riscv_" # NAME # "_mask" :
+      DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                            [LLVMMatchType<0>, llvm_anyvector_ty,
+                             LLVMMatchType<1>,
+                             LLVMScalarOrSameVectorWidth<0, llvm_i1_ty>,
+                             llvm_anyint_ty, LLVMMatchType<2>],
+                            [ImmArg<ArgIndex<5>>, IntrNoMem]>, RISCVVIntrinsic {
+      let VLOperand = 4;
+    }
+  }
+
+  multiclass RISCVUnzip {
+    // Input: (passthru, vector_in, vl)
+    def "int_riscv_" # NAME :
+      DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                            [LLVMMatchType<0>, llvm_anyvector_ty,
+                             llvm_anyint_ty],
+                            [IntrNoMem]>, RISCVVIntrinsic {
+      let VLOperand = 2;
+    }
+  }
+
+  defm vzip    : RISCVZip;
+  defm vunzipe : RISCVUnzip;
+  defm vunzipo : RISCVUnzip;
+  defm vpaire  : RISCVBinaryAAA;
+  defm vpairo  : RISCVBinaryAAA;
+}
+
+//===----------------------------------------------------------------------===//
+// Zvdot4a8i - Vector 4-element Dot Product of packed 8-bit Integers
+//
+// 8-bit Integer dot-product instructions performing the dot product between two
+// 4-element vectors of 8-bit integer elements and accumulating it into a 32-bit
+// integer accumulator.
+let TargetPrefix = "riscv" in {
+  // We use llvm_anyvector_ty and llvm_anyint_ty for future extensibility
+  // purpose but only EEW=32 is defined for now
+  multiclass RISCVVDOT4A<bit HasVV = 1> {
+    def "int_riscv_" # NAME : RISCVTernaryVS2FirstUnMasked<HasVV=HasVV>;
+    def "int_riscv_" # NAME # "_mask" :
+        RISCVTernaryVS2FirstMasked<HasVV=HasVV>;
+  }
+
+  defm vdot4a   : RISCVVDOT4A;
+  defm vdot4au  : RISCVVDOT4A;
+  defm vdot4asu : RISCVVDOT4A;
+  defm vdot4aus : RISCVVDOT4A<HasVV=0>;
+} // TargetPrefix = "riscv"
+
+
+// Zihintpause extensions
+//===----------------------------------------------------------------------===//
+let TargetPrefix = "riscv" in
+def int_riscv_pause : DefaultAttrsIntrinsic<[], [], [IntrNoMem, IntrHasSideEffects]>;
+
+// Packed SIMD extensions
+//===----------------------------------------------------------------------===//
+let TargetPrefix = "riscv" in {
+class RVPBinaryIntrinsic
+    : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                            [LLVMMatchType<0>, LLVMMatchType<0>],
+                            [IntrNoMem, IntrSpeculatable]>;
+
+  // Packed Averaging Addition and Subtraction.
+  def int_riscv_paadd : RVPBinaryIntrinsic;
+  def int_riscv_paaddu : RVPBinaryIntrinsic;
+  def int_riscv_pasub : RVPBinaryIntrinsic;
+  def int_riscv_pasubu : RVPBinaryIntrinsic;
+
+  // Packed Absolute Value and Absolute Difference
+  def int_riscv_pabd  : RVPBinaryIntrinsic;
+  def int_riscv_pabdu : RVPBinaryIntrinsic;
+
+  // Packed "Q-format" Multiplication.
+  def int_riscv_pmulq  : RVPBinaryIntrinsic;
+  def int_riscv_pmulqr : RVPBinaryIntrinsic;
+
+  // Packed Saturating and Rounding Shifts.
+  class RVPShiftIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pssha  : RVPShiftIntrinsic;
+  def int_riscv_psshar : RVPShiftIntrinsic;
+  def int_riscv_psshl  : RVPShiftIntrinsic;
+  def int_riscv_psshlr : RVPShiftIntrinsic;
+
+  // Packed Shift.
+  def int_riscv_psll   : RVPShiftIntrinsic;
+  def int_riscv_psrl   : RVPShiftIntrinsic;
+  def int_riscv_psra   : RVPShiftIntrinsic;
+
+  // Packed Widening Shifts.
+  class RVPWideningShiftIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [llvm_anyvector_ty, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pwsll : RVPWideningShiftIntrinsic;
+  def int_riscv_pwsla : RVPWideningShiftIntrinsic;
+
+  // Packed Narrowing Shifts.
+  class RVPNarrowingShiftIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [llvm_anyvector_ty, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pnsrl  : RVPNarrowingShiftIntrinsic;
+  def int_riscv_pnsra  : RVPNarrowingShiftIntrinsic;
+  def int_riscv_pnsrar : RVPNarrowingShiftIntrinsic;
+
+  // Packed Saturation.
+  class RVPSaturationIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable, ImmArg<ArgIndex<1>>]>;
+  def int_riscv_psati  : RVPSaturationIntrinsic;
+  def int_riscv_pusati : RVPSaturationIntrinsic;
+
+  // Packed Exchanged Addition and Subtraction.
+  def int_riscv_pas  : RVPBinaryIntrinsic;
+  def int_riscv_psa  : RVPBinaryIntrinsic;
+  def int_riscv_psas : RVPBinaryIntrinsic;
+  def int_riscv_pssa : RVPBinaryIntrinsic;
+  def int_riscv_paas : RVPBinaryIntrinsic;
+  def int_riscv_pasa : RVPBinaryIntrinsic;
+
+  // Packed Reduction Sum.
+  class RVPReductionIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [llvm_anyvector_ty, LLVMMatchType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_predsum  : RVPReductionIntrinsic;
+  def int_riscv_predsumu : RVPReductionIntrinsic;
+
+  // Packed Merge
+  class RVPTernaryIntrinsic
+    : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                            [LLVMMatchType<0>, LLVMMatchType<0>,
+                             LLVMMatchType<0>],
+                            [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmerge : RVPTernaryIntrinsic;
+
+  // Packed Sign and Zero Extend.
+  class RVPExtIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_psext_b : RVPExtIntrinsic;
+  def int_riscv_psext_h : RVPExtIntrinsic;
+  def int_riscv_pzext_b : RVPExtIntrinsic;
+  def int_riscv_pzext_h : RVPExtIntrinsic;
+
+  // Packed Multiply High.
+  def int_riscv_pmulhr   : RVPBinaryIntrinsic;
+  def int_riscv_pmulhru  : RVPBinaryIntrinsic;
+  def int_riscv_pmulhsu  : RVPBinaryIntrinsic;
+  def int_riscv_pmulhrsu : RVPBinaryIntrinsic;
+
+  // Scalar Multiply High. On RV32 these map to the M-extension mulh
+  // instructions and the P-extension mulhr instructions.
+  class RVPScalarMulHighIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_i32_ty], [llvm_i32_ty, llvm_i32_ty],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_mulhr_i32   : RVPScalarMulHighIntrinsic;
+  def int_riscv_mulhru_u32  : RVPScalarMulHighIntrinsic;
+  def int_riscv_mulhsu_i32  : RVPScalarMulHighIntrinsic;
+  def int_riscv_mulhrsu_i32 : RVPScalarMulHighIntrinsic;
+
+  // Packed Multiply High Accumulate.
+  def int_riscv_pmhacc    : RVPTernaryIntrinsic;
+  def int_riscv_pmhracc   : RVPTernaryIntrinsic;
+  def int_riscv_pmhaccu   : RVPTernaryIntrinsic;
+  def int_riscv_pmhraccu  : RVPTernaryIntrinsic;
+  def int_riscv_pmhaccsu  : RVPTernaryIntrinsic;
+  def int_riscv_pmhraccsu : RVPTernaryIntrinsic;
+
+  // Packed Multiply High Accumulate.
+  // The result and first two operands have the same vector type; the third
+  // operand's elements are half as wide, with twice the element count. For
+  // the .b forms the third operand holds bytes, for the .w forms it holds
+  // halfwords.
+  def int_riscv_pmhacc_b0
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhacc_b1
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhaccsu_b0
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhaccsu_b1
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhacc_h0
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhacc_h1
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhaccsu_h0
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmhaccsu_h1
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>, LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  // Packed Multiply High Parts. The packed forms multiply the full-width
+  // element of rs1 by one byte (b0/b1) or one halfword (h0/h1) of each
+  // element of rs2, so rs2's elements are half the size of the result's.
+  class RVPMulHighPartsIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmulh_b0   : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulh_b1   : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulhsu_b0 : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulhsu_b1 : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulh_h0   : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulh_h1   : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulhsu_h0 : RVPMulHighPartsIntrinsic;
+  def int_riscv_pmulhsu_h1 : RVPMulHighPartsIntrinsic;
+
+  // Packed "Q-format" Multiply with Widening Accumulate.
+  class RVPQFormatWideningAccIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_v2i32_ty],
+                              [llvm_v2i32_ty, llvm_v2i16_ty, llvm_v2i16_ty],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmqwacc_i32x2  : RVPQFormatWideningAccIntrinsic;
+  def int_riscv_pmqrwacc_i32x2 : RVPQFormatWideningAccIntrinsic;
+
+  // The scalar forms keep a single product of the full-width rs1 and one
+  // halfword of rs2: <2 x i16> pairs with i32.
+  class RVPScalarMulHighPartsIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [LLVMMatchType<0>, llvm_anyvector_ty],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_mulh_h0   : RVPScalarMulHighPartsIntrinsic;
+  def int_riscv_mulh_h1   : RVPScalarMulHighPartsIntrinsic;
+  def int_riscv_mulhsu_h0 : RVPScalarMulHighPartsIntrinsic;
+  def int_riscv_mulhsu_h1 : RVPScalarMulHighPartsIntrinsic;
+
+  // Packed Multiplication with Horizontal Addition.
+  class RVPHorizontalMulIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_any_ty],
+                              [llvm_anyvector_ty, LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pm4add     : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2add     : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2add_x   : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm4addu    : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2addu    : RVPHorizontalMulIntrinsic;
+  def int_riscv_pmq2add    : RVPHorizontalMulIntrinsic;
+  def int_riscv_pmqr2add   : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2sadd    : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2sadd_x  : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2sub     : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2sub_x   : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm4addsu   : RVPHorizontalMulIntrinsic;
+  def int_riscv_pm2addsu   : RVPHorizontalMulIntrinsic;
+
+  // Packed Multiply Parts. The packed forms multiply the selected element of
+  // every pair, so the operands are the result with each element split in two.
+  class RVPPackedMulPartsIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmul_00   : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmul_01   : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmul_11   : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmulu_00  : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmulu_01  : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmulu_11  : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmulsu_00 : RVPPackedMulPartsIntrinsic;
+  def int_riscv_pmulsu_11 : RVPPackedMulPartsIntrinsic;
+
+  // The scalar forms select one element from each packed operand and keep that
+  // single product: <2 x i16> pairs with i32 and <2 x i32> with i64.
+  class RVPScalarMulPartsIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [llvm_anyvector_ty, LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_mul_00   : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mul_01   : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mul_11   : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mulu_00  : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mulu_01  : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mulu_11  : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mulsu_00 : RVPScalarMulPartsIntrinsic;
+  def int_riscv_mulsu_11 : RVPScalarMulPartsIntrinsic;
+
+  // Packed Multiply Parts Accumulate.
+  class RVPPackedMulPartsAccIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>,
+                               LLVMSubdivide2VectorType<0>,
+                               LLVMSubdivide2VectorType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pmacc_00   : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmacc_01   : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmacc_11   : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmaccu_00  : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmaccu_01  : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmaccu_11  : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmaccsu_00 : RVPPackedMulPartsAccIntrinsic;
+  def int_riscv_pmaccsu_11 : RVPPackedMulPartsAccIntrinsic;
+
+  class RVPScalarMulPartsAccIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [LLVMMatchType<0>, llvm_anyvector_ty,
+                               LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_macc_00   : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_macc_01   : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_macc_11   : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_maccu_00  : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_maccu_01  : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_maccu_11  : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_maccsu_00 : RVPScalarMulPartsAccIntrinsic;
+  def int_riscv_maccsu_11 : RVPScalarMulPartsAccIntrinsic;
+
+  // Packed Absolute Difference Sum.
+  def int_riscv_pabdsumu
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [llvm_anyvector_ty, LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pabdsumau
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [LLVMMatchType<0>, llvm_anyvector_ty,
+                               LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+
+  // Packed Saturating Absolute Value
+  class RVPUnaryIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [LLVMMatchType<0>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_psabs : RVPUnaryIntrinsic;
+
+  // Packed Narrowing Clip Pair
+  class RVPNarrowingClipIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyvector_ty],
+                              [llvm_any_ty, LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_pnclipp  : RVPNarrowingClipIntrinsic;
+  def int_riscv_pnclipup : RVPNarrowingClipIntrinsic;
+
+  // Packed "Q-format" Multiply Parts Accumulate.
+  class RVPQFormatAccIntrinsic
+      : DefaultAttrsIntrinsic<[llvm_anyint_ty],
+                              [LLVMMatchType<0>, llvm_any_ty,
+                               LLVMMatchType<1>],
+                              [IntrNoMem, IntrSpeculatable]>;
+  def int_riscv_mqacc_00  : RVPQFormatAccIntrinsic;
+  def int_riscv_mqacc_01  : RVPQFormatAccIntrinsic;
+  def int_riscv_mqacc_11  : RVPQFormatAccIntrinsic;
+  def int_riscv_mqracc_00 : RVPQFormatAccIntrinsic;
+  def int_riscv_mqracc_01 : RVPQFormatAccIntrinsic;
+  def int_riscv_mqracc_11 : RVPQFormatAccIntrinsic;
+  def int_riscv_pmqacc_h00  : RVPQFormatAccIntrinsic;
+  def int_riscv_pmqacc_h01  : RVPQFormatAccIntrinsic;
+  def int_riscv_pmqacc_h11  : RVPQFormatAccIntrinsic;
+  def int_riscv_pmqracc_h00 : RVPQFormatAccIntrinsic;
+  def int_riscv_pmqracc_h01 : RVPQFormatAccIntrinsic;
+  def int_riscv_pmqracc_h11 : RVPQFormatAccIntrinsic;
+} // TargetPrefix = "riscv"
+
+//===----------------------------------------------------------------------===//
+// Zvfofp8min - OFP8 conversion extension
+// The Zvfofp8min extension provides basic support for the two 8-bit
+// floating-point formats defined in the Open Compute Project OFP8
+// specification, OFP8 E4M3 and OFP8 E5M2.
+let TargetPrefix = "riscv" in {
+  // OFP8 to BF16 conversion instructions
+  defm vfwcvt_f_f_v_alt : RISCVConversion;
+  // BF16 to OFP8 conversion instructions
+  defm vfncvt_sat_f_f_w : RISCVConversionRoundingMode;
+  defm vfncvt_f_f_w_alt : RISCVConversionRoundingMode;
+  defm vfncvt_sat_f_f_w_alt : RISCVConversionRoundingMode;
+  // FP32 to OFP8 conversion instructions
+  defm vfncvt_f_f_q : RISCVConversionRoundingMode;
+  defm vfncvt_f_f_q_alt : RISCVConversionRoundingMode;
+  defm vfncvt_sat_f_f_q : RISCVConversionRoundingMode;
+  defm vfncvt_sat_f_f_q_alt : RISCVConversionRoundingMode;
+} // TargetPrefix = "riscv"
+
 // Vendor extensions
 //===----------------------------------------------------------------------===//
 include "llvm/IR/IntrinsicsRISCVXTHead.td"
+include "llvm/IR/IntrinsicsRISCVXsf.td"
+include "llvm/IR/IntrinsicsRISCVXCV.td"
+include "llvm/IR/IntrinsicsRISCVXAndes.td"
+include "llvm/IR/IntrinsicsRISCVXMIPS.td"

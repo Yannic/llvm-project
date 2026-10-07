@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/Support/Compiler.h"
 #include <unordered_map>
 
 namespace llvm {
@@ -31,21 +32,29 @@ class GlobalVariable;
 class Metadata;
 class Module;
 class Value;
+class ModulePass;
 
 /// Pass to remove unused function declarations.
-class GlobalDCEPass : public PassInfoMixin<GlobalDCEPass> {
+class GlobalDCEPass : public OptionalPassInfoMixin<GlobalDCEPass> {
 public:
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
+  GlobalDCEPass(bool InLTOPostLink = false) : InLTOPostLink(InLTOPostLink) {}
+
+  LLVM_ABI PreservedAnalyses run(Module &M, ModuleAnalysisManager &);
+
+  LLVM_ABI void
+  printPipeline(raw_ostream &OS,
+                function_ref<StringRef(StringRef)> MapClassName2PassName);
 
 private:
+  bool InLTOPostLink = false;
+
   SmallPtrSet<GlobalValue*, 32> AliveGlobals;
 
   /// Global -> Global that uses this global.
   DenseMap<GlobalValue *, SmallPtrSet<GlobalValue *, 4>> GVDependencies;
 
   /// Constant -> Globals that use this global cache.
-  std::unordered_map<Constant *, SmallPtrSet<GlobalValue *, 8>>
-      ConstantDependenciesCache;
+  DenseMap<Constant *, SmallPtrSet<GlobalValue *, 8>> ConstantDependenciesCache;
 
   /// Comdat -> Globals in that Comdat section.
   std::unordered_multimap<Comdat *, GlobalValue *> ComdatMembers;
@@ -61,7 +70,6 @@ private:
   void UpdateGVDependencies(GlobalValue &GV);
   void MarkLive(GlobalValue &GV,
                 SmallVectorImpl<GlobalValue *> *Updates = nullptr);
-  bool RemoveUnusedGlobalValue(GlobalValue &GV);
 
   // Dead virtual function elimination.
   void AddVirtualFunctionDependencies(Module &M);
@@ -72,6 +80,7 @@ private:
   void ComputeDependencies(Value *V, SmallPtrSetImpl<GlobalValue *> &U);
 };
 
+LLVM_ABI ModulePass *createGlobalDCEPass();
 }
 
 #endif // LLVM_TRANSFORMS_IPO_GLOBALDCE_H

@@ -12,21 +12,14 @@ define void @loop_phi_pos_start_value(i32 %y, i1 %c, i32 %n) {
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp slt i32 [[X]], [[N:%.*]]
 ; CHECK-NEXT:    br i1 [[C_1]], label [[LOOP_LATCH]], label [[EXIT]]
 ; CHECK:       loop.latch:
-; CHECK-NEXT:    [[F_1:%.*]] = icmp sle i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 true)
-; CHECK-NEXT:    [[T_1:%.*]] = icmp sgt i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 false)
-; CHECK-NEXT:    [[T_2:%.*]] = icmp sge i32 [[X]], 10
-; CHECK-NEXT:    call void @use(i1 [[T_2]])
-; CHECK-NEXT:    [[C_2:%.*]] = icmp sle i32 [[X]], 9
-; CHECK-NEXT:    call void @use(i1 [[C_2]])
-; CHECK-NEXT:    [[C_3:%.*]] = icmp sgt i32 [[X]], 9
-; CHECK-NEXT:    call void @use(i1 [[C_3]])
-; CHECK-NEXT:    [[C_4:%.*]] = icmp sge i32 [[X]], 0
-; CHECK-NEXT:    call void @use(i1 [[C_4]])
-; CHECK-NEXT:    [[C_5:%.*]] = icmp sge i32 [[X]], 9
-; CHECK-NEXT:    call void @use(i1 [[C_5]])
-; CHECK-NEXT:    [[X_NEXT]] = add nsw i32 [[X]], 1
+; CHECK-NEXT:    call void @use(i1 true)
+; CHECK-NEXT:    call void @use(i1 false)
+; CHECK-NEXT:    call void @use(i1 true)
+; CHECK-NEXT:    call void @use(i1 true)
+; CHECK-NEXT:    call void @use(i1 true)
+; CHECK-NEXT:    [[X_NEXT]] = add nuw nsw i32 [[X]], 1
 ; CHECK-NEXT:    br label [[LOOP_HEADER]]
 ; CHECK:       exit:
 ; CHECK-NEXT:    [[C_6:%.*]] = icmp sgt i32 [[Y:%.*]], 10
@@ -76,12 +69,9 @@ define void @loop_phi_neg_start_value(i32 %y, i1 %c, i32 %n) {
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp slt i32 [[X]], [[N:%.*]]
 ; CHECK-NEXT:    br i1 [[C_1]], label [[LOOP_LATCH]], label [[EXIT]]
 ; CHECK:       loop.latch:
-; CHECK-NEXT:    [[F_1:%.*]] = icmp sle i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 true)
-; CHECK-NEXT:    [[T_1:%.*]] = icmp sgt i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 false)
-; CHECK-NEXT:    [[T_2:%.*]] = icmp sge i32 [[X]], -10
-; CHECK-NEXT:    call void @use(i1 [[T_2]])
+; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp sle i32 [[X]], 9
 ; CHECK-NEXT:    call void @use(i1 [[C_2]])
 ; CHECK-NEXT:    [[C_3:%.*]] = icmp sgt i32 [[X]], 9
@@ -144,9 +134,7 @@ define void @loop_count_down(i32 %y, i1 %c, i32 %n) {
 ; CHECK-NEXT:    call void @use(i1 [[F_1]])
 ; CHECK-NEXT:    [[T_1:%.*]] = icmp sgt i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 [[T_1]])
-; CHECK-NEXT:    [[T_2:%.*]] = icmp sge i32 [[X]], 0
 ; CHECK-NEXT:    call void @use(i1 true)
-; CHECK-NEXT:    [[T_3:%.*]] = icmp sge i32 [[X]], -1
 ; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp sle i32 [[X]], 9
 ; CHECK-NEXT:    call void @use(i1 [[C_2]])
@@ -156,7 +144,7 @@ define void @loop_count_down(i32 %y, i1 %c, i32 %n) {
 ; CHECK-NEXT:    call void @use(i1 [[C_4]])
 ; CHECK-NEXT:    [[C_5:%.*]] = icmp sge i32 [[X]], 2
 ; CHECK-NEXT:    call void @use(i1 [[C_5]])
-; CHECK-NEXT:    [[X_NEXT]] = add nsw i32 [[X]], 1
+; CHECK-NEXT:    [[X_NEXT]] = add nuw nsw i32 [[X]], 1
 ; CHECK-NEXT:    br label [[LOOP_HEADER]]
 ; CHECK:       exit:
 ; CHECK-NEXT:    [[C_6:%.*]] = icmp sgt i32 [[Y:%.*]], 10
@@ -208,9 +196,7 @@ define void @loop_latch_may_not_executed(i32 %y, i1 %c, i32 %n) {
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ugt i32 [[X]], [[N:%.*]]
 ; CHECK-NEXT:    br i1 [[C_1]], label [[LOOP_LATCH]], label [[EXIT]]
 ; CHECK:       loop.latch:
-; CHECK-NEXT:    [[F_1:%.*]] = icmp ule i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 false)
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ugt i32 [[X]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp ule i32 [[X]], 9
 ; CHECK-NEXT:    call void @use(i1 [[C_2]])
@@ -260,13 +246,9 @@ define void @loop_latch_not_executed_constant_bound(i32 %y, i1 %c) {
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ugt i32 [[X]], 10
 ; CHECK-NEXT:    br i1 [[C_1]], label [[LOOP_LATCH]], label [[EXIT]]
 ; CHECK:       loop.latch:
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ule i32 [[X]], 10
 ; CHECK-NEXT:    call void @use(i1 false)
-; CHECK-NEXT:    [[F_1:%.*]] = icmp ugt i32 [[X]], 10
 ; CHECK-NEXT:    call void @use(i1 true)
-; CHECK-NEXT:    [[C_2:%.*]] = icmp ule i32 [[X]], 9
 ; CHECK-NEXT:    call void @use(i1 false)
-; CHECK-NEXT:    [[C_3:%.*]] = icmp ugt i32 [[X]], 9
 ; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[X_NEXT]] = add i32 [[X]], 1
 ; CHECK-NEXT:    br label [[LOOP_HEADER]]
@@ -312,10 +294,8 @@ define void @loop_iv_cond_variable_bound(i32 %n) {
 ; CHECK-NEXT:    [[IV:%.*]] = phi i32 [ 0, [[ENTRY:%.*]] ], [ [[IV_NEXT:%.*]], [[LOOP_LATCH:%.*]] ]
 ; CHECK-NEXT:    [[T_1:%.*]] = icmp ule i32 [[IV]], [[N:%.*]]
 ; CHECK-NEXT:    call void @use(i1 [[T_1]])
-; CHECK-NEXT:    [[T_2:%.*]] = icmp sge i32 [[IV]], 0
-; CHECK-NEXT:    call void @use(i1 [[T_2]])
-; CHECK-NEXT:    [[T_3:%.*]] = icmp sge i32 [[IV]], -1
-; CHECK-NEXT:    call void @use(i1 [[T_3]])
+; CHECK-NEXT:    call void @use(i1 true)
+; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult i32 [[IV]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 [[C_1]])
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp ugt i32 [[IV]], 1
@@ -323,7 +303,6 @@ define void @loop_iv_cond_variable_bound(i32 %n) {
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp ult i32 [[IV]], [[N]]
 ; CHECK-NEXT:    br i1 [[CMP]], label [[LOOP_LATCH]], label [[EXIT:%.*]]
 ; CHECK:       loop.latch:
-; CHECK-NEXT:    [[T_4:%.*]] = icmp ule i32 [[IV]], [[N]]
 ; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[C_3:%.*]] = icmp ult i32 [[IV]], 2
 ; CHECK-NEXT:    call void @use(i1 [[C_3]])
@@ -378,10 +357,8 @@ define void @loop_iv_cond_constant_bound() {
 ; CHECK-NEXT:    [[IV:%.*]] = phi i32 [ 0, [[ENTRY:%.*]] ], [ [[IV_NEXT:%.*]], [[LOOP_LATCH:%.*]] ]
 ; CHECK-NEXT:    [[T_1:%.*]] = icmp ule i32 [[IV]], 2
 ; CHECK-NEXT:    call void @use(i1 [[T_1]])
-; CHECK-NEXT:    [[T_2:%.*]] = icmp sge i32 [[IV]], 0
-; CHECK-NEXT:    call void @use(i1 [[T_2]])
-; CHECK-NEXT:    [[T_3:%.*]] = icmp sge i32 [[IV]], -1
-; CHECK-NEXT:    call void @use(i1 [[T_3]])
+; CHECK-NEXT:    call void @use(i1 true)
+; CHECK-NEXT:    call void @use(i1 true)
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult i32 [[IV]], 2
 ; CHECK-NEXT:    call void @use(i1 [[C_1]])
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp ugt i32 [[IV]], 1
@@ -389,11 +366,8 @@ define void @loop_iv_cond_constant_bound() {
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp ult i32 [[IV]], 2
 ; CHECK-NEXT:    br i1 [[CMP]], label [[LOOP_LATCH]], label [[EXIT:%.*]]
 ; CHECK:       loop.latch:
-; CHECK-NEXT:    [[T_4:%.*]] = icmp ule i32 [[IV]], 2
 ; CHECK-NEXT:    call void @use(i1 true)
-; CHECK-NEXT:    [[C_3:%.*]] = icmp ult i32 [[IV]], 2
 ; CHECK-NEXT:    call void @use(i1 true)
-; CHECK-NEXT:    [[C_4:%.*]] = icmp ugt i32 [[IV]], 1
 ; CHECK-NEXT:    call void @use(i1 false)
 ; CHECK-NEXT:    [[IV_NEXT]] = add nuw nsw i32 [[IV]], 1
 ; CHECK-NEXT:    br label [[LOOP_HEADER]]

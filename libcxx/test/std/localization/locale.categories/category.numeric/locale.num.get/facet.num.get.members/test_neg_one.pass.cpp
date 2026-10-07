@@ -19,6 +19,7 @@
 #include <cassert>
 #include <streambuf>
 #include <sstream>
+#include <type_traits>
 
 #include "test_iterators.h"
 #include "test_macros.h"
@@ -84,7 +85,7 @@ void test_negate() {
         ++value;
         std::string std_str = make_neg_string(value);
         const char* str = std_str.data();
-        size_t size = std_str.size();
+        std::size_t size = std_str.size();
         std::ios_base::iostate err = ios.goodbit;
         cpp17_input_iterator<const char*> iter =
             f.get(cpp17_input_iterator<const char*>(str),
@@ -102,7 +103,7 @@ void test_negate() {
         ++value;
         std::string std_str = make_neg_string(value);
         const char* str = std_str.data();
-        size_t size = std_str.size();
+        std::size_t size = std_str.size();
         std::ios_base::iostate err = ios.goodbit;
         cpp17_input_iterator<const char*> iter =
             f.get(cpp17_input_iterator<const char*>(str),
@@ -118,7 +119,7 @@ void test_negate() {
         T value = std::numeric_limits<T>::max();
         std::string std_str = make_neg_string(value);
         const char* str = std_str.data();
-        size_t size = std_str.size();
+        std::size_t size = std_str.size();
         std::ios_base::iostate err = ios.goodbit;
         cpp17_input_iterator<const char*> iter =
             f.get(cpp17_input_iterator<const char*>(str),
@@ -134,7 +135,7 @@ void test_negate() {
         std::string std_str = make_neg_string(std::numeric_limits<T>::max());
         std_str.back()++;
         const char* str = std_str.data();
-        size_t size = std_str.size();
+        std::size_t size = std_str.size();
         std::ios_base::iostate err = ios.goodbit;
         cpp17_input_iterator<const char*> iter =
             f.get(cpp17_input_iterator<const char*>(str),

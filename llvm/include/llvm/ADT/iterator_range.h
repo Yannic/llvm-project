@@ -18,7 +18,8 @@
 #ifndef LLVM_ADT_ITERATOR_RANGE_H
 #define LLVM_ADT_ITERATOR_RANGE_H
 
-#include <utility>
+#include "llvm/ADT/ADL.h"
+#include <type_traits>
 
 namespace llvm {
 
@@ -31,12 +32,21 @@ class iterator_range {
   IteratorT begin_iterator, end_iterator;
 
 public:
-  //TODO: Add SFINAE to test that the Container's iterators match the range's
-  //      iterators.
+#if defined(__GNUC__) &&                                                       \
+    (__GNUC__ == 7 || (__GNUC__ == 8 && __GNUC_MINOR__ < 4))
+  // Be careful no to break gcc-7 and gcc-8 < 8.4 on the mlir target.
+  // See https://github.com/llvm/llvm-project/issues/63843
   template <typename Container>
+#else
+  template <
+      typename Container,
+      std::enable_if_t<std::is_constructible_v<
+                           IteratorT, llvm::detail::IterOfRange<Container> &&>,
+                       int> = 0>
+#endif
   iterator_range(Container &&c)
-  //TODO: Consider ADL/non-member begin/end calls.
-      : begin_iterator(c.begin()), end_iterator(c.end()) {}
+      : begin_iterator(adl_begin(c)), end_iterator(adl_end(c)) {
+  }
   iterator_range(IteratorT begin_iterator, IteratorT end_iterator)
       : begin_iterator(std::move(begin_iterator)),
         end_iterator(std::move(end_iterator)) {}
@@ -45,6 +55,10 @@ public:
   IteratorT end() const { return end_iterator; }
   bool empty() const { return begin_iterator == end_iterator; }
 };
+
+template <typename Container>
+iterator_range(Container &&)
+    -> iterator_range<llvm::detail::IterOfRange<Container>>;
 
 /// Convenience function for iterating over sub-ranges.
 ///

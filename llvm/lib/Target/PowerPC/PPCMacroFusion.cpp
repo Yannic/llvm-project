@@ -234,7 +234,10 @@ static bool checkOpConstraints(FusionFeature::FusionKind Kd,
 static bool shouldScheduleAdjacent(const TargetInstrInfo &TII,
                                    const TargetSubtargetInfo &TSI,
                                    const MachineInstr *FirstMI,
-                                   const MachineInstr &SecondMI) {
+                                   const MachineInstr &SecondMI,
+                                   const SDep *Dep) {
+  if (isNonDataDep(Dep))
+    return false;
   // We use the PPC namespace to avoid the need to prefix opcodes with PPC:: in
   // the def file.
   using namespace PPC;
@@ -286,7 +289,7 @@ static bool shouldScheduleAdjacent(const TargetInstrInfo &TII,
 
 namespace llvm {
 
-std::unique_ptr<ScheduleDAGMutation> createPowerPCMacroFusionDAGMutation () {
+std::unique_ptr<ScheduleDAGMutation> createPowerPCMacroFusionDAGMutation() {
   return createMacroFusionDAGMutation(shouldScheduleAdjacent);
 }
 

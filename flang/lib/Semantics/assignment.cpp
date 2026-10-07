@@ -10,21 +10,17 @@
 #include "definable.h"
 #include "pointer-assignment.h"
 #include "flang/Common/idioms.h"
-#include "flang/Common/restorer.h"
 #include "flang/Evaluate/characteristics.h"
 #include "flang/Evaluate/expression.h"
 #include "flang/Evaluate/fold.h"
 #include "flang/Evaluate/tools.h"
 #include "flang/Parser/message.h"
-#include "flang/Parser/parse-tree-visitor.h"
 #include "flang/Parser/parse-tree.h"
 #include "flang/Semantics/expression.h"
 #include "flang/Semantics/symbol.h"
 #include "flang/Semantics/tools.h"
 #include <optional>
-#include <set>
 #include <string>
-#include <type_traits>
 
 using namespace Fortran::parser::literals;
 
@@ -41,11 +37,10 @@ public:
   void PopWhereContext();
   void Analyze(const parser::AssignmentStmt &);
   void Analyze(const parser::PointerAssignmentStmt &);
-  void Analyze(const parser::ConcurrentControl &);
+  SemanticsContext &context() { return context_; }
 
 private:
-  bool CheckForPureContext(const SomeExpr &rhs, parser::CharBlock rhsSource,
-      bool isPointerAssignment);
+  bool CheckForPureContext(const SomeExpr &rhs, parser::CharBlock rhsSource);
   void CheckShape(parser::CharBlock, const SomeExpr *);
   template <typename... A>
   parser::Message *Say(parser::CharBlock at, A &&...args) {
@@ -67,15 +62,37 @@ void AssignmentContext::Analyze(const parser::AssignmentStmt &stmt) {
     const SomeExpr &rhs{assignment->rhs};
     auto lhsLoc{std::get<parser::Variable>(stmt.t).GetSource()};
     const Scope &scope{context_.FindScope(lhsLoc)};
-    if (auto whyNot{WhyNotDefinable(lhsLoc, scope,
-            DefinabilityFlags{DefinabilityFlag::VectorSubscriptIsOk}, lhs)}) {
-      if (auto *msg{Say(lhsLoc,
-              "Left-hand side of assignment is not definable"_err_en_US)}) {
-        msg->Attach(std::move(*whyNot));
+    DefinabilityFlags flags{DefinabilityFlag::VectorSubscriptIsOk};
+    bool isDefinedAssignment{
+        std::holds_alternative<evaluate::ProcedureRef>(assignment->u)};
+    if (isDefinedAssignment) {
+      flags.set(DefinabilityFlag::AllowEventLockOrNotifyType);
+    } else if (const Symbol *
+        whole{evaluate::UnwrapWholeSymbolOrComponentDataRef(lhs)}) {
+      if (IsAllocatable(whole->GetUltimate())) {
+        flags.set(DefinabilityFlag::PotentialDeallocation);
+        if (IsPolymorphic(*whole) && whereDepth_ > 0) {
+          Say(lhsLoc,
+              "Assignment to whole polymorphic allocatable '%s' may not be nested in a WHERE statement or construct"_err_en_US,
+              whole->name());
+        }
+      }
+    }
+    if (auto whyNot{WhyNotDefinable(lhsLoc, scope, flags, lhs)}) {
+      if (whyNot->IsFatal()) {
+        if (auto *msg{Say(lhsLoc,
+                "Left-hand side of assignment is not definable"_err_en_US)}) {
+          msg->Attach(
+              std::move(whyNot->set_severity(parser::Severity::Because)));
+        }
+      } else {
+        context_.Say(std::move(*whyNot));
       }
     }
     auto rhsLoc{std::get<parser::Expr>(stmt.t).source};
-    CheckForPureContext(rhs, rhsLoc, false);
+    if (!isDefinedAssignment) {
+      CheckForPureContext(rhs, rhsLoc);
+    }
     if (whereDepth_ > 0) {
       CheckShape(lhsLoc, &lhs);
     }
@@ -85,12 +102,9 @@ void AssignmentContext::Analyze(const parser::AssignmentStmt &stmt) {
 void AssignmentContext::Analyze(const parser::PointerAssignmentStmt &stmt) {
   CHECK(whereDepth_ == 0);
   if (const evaluate::Assignment * assignment{GetAssignment(stmt)}) {
-    const SomeExpr &rhs{assignment->rhs};
-    CheckForPureContext(rhs, std::get<parser::Expr>(stmt.t).source, true);
     parser::CharBlock at{context_.location().value()};
     auto restorer{foldingContext().messages().SetLocation(at)};
-    const Scope &scope{context_.FindScope(at)};
-    CheckPointerAssignment(foldingContext(), *assignment, scope);
+    CheckPointerAssignment(context_, *assignment, context_.FindScope(at));
   }
 }
 
@@ -110,10 +124,16 @@ static std::optional<std::string> GetPointerComponentDesignatorName(
 // Checks C1594(5,6); false if check fails
 bool CheckCopyabilityInPureScope(parser::ContextualMessages &messages,
     const SomeExpr &expr, const Scope &scope) {
-  if (const Symbol * base{GetFirstSymbol(expr)}) {
-    if (const char *why{
-            WhyBaseObjectIsSuspicious(base->GetUltimate(), scope)}) {
-      if (auto pointer{GetPointerComponentDesignatorName(expr)}) {
+  if (auto pointer{GetPointerComponentDesignatorName(expr)}) {
+    if (const Symbol * base{GetFirstSymbol(expr)}) {
+      const char *why{WhyBaseObjectIsSuspicious(base->GetUltimate(), scope)};
+      if (!why) {
+        if (auto coarray{evaluate::ExtractCoarrayRef(expr)}) {
+          base = &coarray->GetLastSymbol();
+          why = "coindexed";
+        }
+      }
+      if (why) {
         evaluate::SayWithDeclaration(messages, *base,
             "A pure subprogram may not copy the value of '%s' because it is %s"
             " and has the POINTER potential subobject component '%s'"_err_en_US,
@@ -125,28 +145,16 @@ bool CheckCopyabilityInPureScope(parser::ContextualMessages &messages,
   return true;
 }
 
-bool AssignmentContext::CheckForPureContext(const SomeExpr &rhs,
-    parser::CharBlock rhsSource, bool isPointerAssignment) {
+bool AssignmentContext::CheckForPureContext(
+    const SomeExpr &rhs, parser::CharBlock rhsSource) {
   const Scope &scope{context_.FindScope(rhsSource)};
-  if (!FindPureProcedureContaining(scope)) {
+  if (FindPureProcedureContaining(scope)) {
+    parser::ContextualMessages messages{
+        context_.location().value(), &context_.messages()};
+    return CheckCopyabilityInPureScope(messages, rhs, scope);
+  } else {
     return true;
   }
-  parser::ContextualMessages messages{
-      context_.location().value(), &context_.messages()};
-  if (isPointerAssignment) {
-    if (const Symbol * base{GetFirstSymbol(rhs)}) {
-      if (const char *why{WhyBaseObjectIsSuspicious(
-              base->GetUltimate(), scope)}) { // C1594(3)
-        evaluate::SayWithDeclaration(messages, *base,
-            "A pure subprogram may not use '%s' as the target of pointer assignment because it is %s"_err_en_US,
-            base->name(), why);
-        return false;
-      }
-    }
-  } else {
-    return CheckCopyabilityInPureScope(messages, rhs, scope);
-  }
-  return true;
 }
 
 // 10.2.3.1(2) The masks and LHS of assignments must be arrays of the same shape
@@ -182,7 +190,8 @@ void AssignmentContext::CheckShape(parser::CharBlock at, const SomeExpr *expr) {
 
 template <typename A> void AssignmentContext::PushWhereContext(const A &x) {
   const auto &expr{std::get<parser::LogicalExpr>(x.t)};
-  CheckShape(expr.thing.value().source, GetExpr(context_, expr));
+  CheckShape(
+      parser::UnwrapRef<parser::Expr>(expr).source, GetExpr(context_, expr));
   ++whereDepth_;
 }
 
@@ -195,8 +204,16 @@ void AssignmentContext::PopWhereContext() {
 
 AssignmentChecker::~AssignmentChecker() {}
 
+SemanticsContext &AssignmentChecker::context() {
+  return context_.value().context();
+}
+
 AssignmentChecker::AssignmentChecker(SemanticsContext &context)
     : context_{new AssignmentContext{context}} {}
+
+void AssignmentChecker::Enter(const parser::OmpDeclareReductionDirective &x) {
+  context().set_location(x.source);
+}
 void AssignmentChecker::Enter(const parser::AssignmentStmt &x) {
   context_.value().Analyze(x);
 }

@@ -9,21 +9,22 @@
 #ifndef liblldb_NativeProcessLinux_H_
 #define liblldb_NativeProcessLinux_H_
 
-#include <csignal>
-#include <unordered_set>
-
+#include "Plugins/Process/Linux/IntelPTCollector.h"
+#include "Plugins/Process/Linux/NativeThreadLinux.h"
+#include "Plugins/Process/POSIX/NativeProcessELF.h"
+#include "Plugins/Process/Utility/NativeProcessSoftwareSingleStep.h"
 #include "lldb/Host/Debug.h"
 #include "lldb/Host/HostThread.h"
 #include "lldb/Host/linux/Support.h"
+#include "lldb/Host/posix/Support.h"
 #include "lldb/Target/MemoryRegionInfo.h"
 #include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/lldb-types.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
-#include "IntelPTCollector.h"
-#include "NativeThreadLinux.h"
-#include "Plugins/Process/POSIX/NativeProcessELF.h"
-#include "Plugins/Process/Utility/NativeProcessSoftwareSingleStep.h"
+#include <csignal>
+#include <unordered_set>
 
 namespace lldb_private {
 class Status;
@@ -40,20 +41,45 @@ namespace process_linux {
 class NativeProcessLinux : public NativeProcessELF,
                            private NativeProcessSoftwareSingleStep {
 public:
-  class Factory : public NativeProcessProtocol::Factory {
+  class Manager : public NativeProcessProtocol::Manager {
   public:
-    llvm::Expected<std::unique_ptr<NativeProcessProtocol>>
-    Launch(ProcessLaunchInfo &launch_info, NativeDelegate &native_delegate,
-           MainLoop &mainloop) const override;
+    Manager(MainLoop &mainloop);
 
     llvm::Expected<std::unique_ptr<NativeProcessProtocol>>
-    Attach(lldb::pid_t pid, NativeDelegate &native_delegate,
-           MainLoop &mainloop) const override;
+    Launch(ProcessLaunchInfo &launch_info,
+           NativeDelegate &native_delegate) override;
+
+    llvm::Expected<std::unique_ptr<NativeProcessProtocol>>
+    Attach(lldb::pid_t pid, NativeDelegate &native_delegate) override;
 
     Extension GetSupportedExtensions() const override;
+
+    void AddProcess(NativeProcessLinux &process) {
+      m_processes.insert(&process);
+    }
+
+    void RemoveProcess(NativeProcessLinux &process) {
+      m_processes.erase(&process);
+    }
+
+    // Collect an event for the given tid, waiting for it if necessary.
+    void CollectThread(::pid_t tid);
+
+  private:
+    MainLoop::SignalHandleUP m_sigchld_handle;
+
+    llvm::SmallPtrSet<NativeProcessLinux *, 2> m_processes;
+
+    // Threads (events) which haven't been claimed by any process.
+    llvm::DenseSet<::pid_t> m_unowned_threads;
+
+    void SigchldHandler();
   };
 
   // NativeProcessProtocol Interface
+
+  ~NativeProcessLinux() override { m_manager.RemoveProcess(*this); }
+
   Status Resume(const ResumeActionList &resume_actions) override;
 
   Status Halt() override;
@@ -69,11 +95,11 @@ public:
   Status GetMemoryRegionInfo(lldb::addr_t load_addr,
                              MemoryRegionInfo &range_info) override;
 
-  Status ReadMemory(lldb::addr_t addr, void *buf, size_t size,
+  Status ReadMemory(const ProcessAddress &addr, void *buf, size_t size,
                     size_t &bytes_read) override;
 
-  Status WriteMemory(lldb::addr_t addr, const void *buf, size_t size,
-                     size_t &bytes_written) override;
+  Status DoWriteMemory(lldb::addr_t addr, const void *buf, size_t size,
+                       size_t &bytes_written) override;
 
   llvm::Expected<lldb::addr_t> AllocateMemory(size_t size,
                                               uint32_t permissions) override;
@@ -94,8 +120,6 @@ public:
                        bool hardware) override;
 
   Status RemoveBreakpoint(lldb::addr_t addr, bool hardware = false) override;
-
-  void DoStopIDBumped(uint32_t newBumpId) override;
 
   Status GetLoadedModuleFileSpec(const char *module_path,
                                  FileSpec &file_spec) override;
@@ -146,12 +170,10 @@ protected:
   llvm::Expected<uint64_t> Syscall(llvm::ArrayRef<uint64_t> args);
 
 private:
-  MainLoop::SignalHandleUP m_sigchld_handle;
+  Manager &m_manager;
   ArchSpec m_arch;
-  MainLoop& m_main_loop;
 
   LazyBool m_supports_mem_region = eLazyBoolCalculate;
-  std::vector<std::pair<MemoryRegionInfo, FileSpec>> m_mem_region_cache;
 
   lldb::tid_t m_pending_notification_tid = LLDB_INVALID_THREAD_ID;
 
@@ -160,7 +182,7 @@ private:
 
   // Private Instance Methods
   NativeProcessLinux(::pid_t pid, int terminal_fd, NativeDelegate &delegate,
-                     const ArchSpec &arch, MainLoop &mainloop,
+                     const ArchSpec &arch, Manager &manager,
                      llvm::ArrayRef<::pid_t> tids);
 
   // Returns a list of process threads that we have attached to.
@@ -168,9 +190,9 @@ private:
 
   static Status SetDefaultPtraceOpts(const lldb::pid_t);
 
-  void MonitorCallback(NativeThreadLinux &thread, WaitStatus status);
+  bool TryHandleWaitStatus(lldb::pid_t pid, WaitStatus status);
 
-  void WaitForCloneNotification(::pid_t pid);
+  void MonitorCallback(NativeThreadLinux &thread, WaitStatus status);
 
   void MonitorSIGTRAP(const siginfo_t &info, NativeThreadLinux &thread);
 

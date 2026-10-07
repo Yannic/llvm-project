@@ -303,6 +303,85 @@ func.func @failedParentOneOf_wrong_parent1() {
    }) : () -> ()
 }
 
+// -----
+
+// CHECK: succeededHasAncestor_direct_parent
+func.func @succeededHasAncestor_direct_parent() {
+  "test.parent"() ({
+    "test.child_with_ancestor"() : () -> ()
+    "test.finish"() : () -> ()
+  }) : () -> ()
+  return
+}
+
+// -----
+
+// CHECK: succeededHasAncestor_indirect
+func.func @succeededHasAncestor_indirect() {
+  "test.parent"() ({
+    "some.intermediate_op"() ({
+      "test.child_with_ancestor"() : () -> ()
+      "test.finish"() : () -> ()
+    }) : () -> ()
+    "test.finish"() : () -> ()
+  }) : () -> ()
+  return
+}
+
+// -----
+
+func.func @failedHasAncestor_wrong_ancestor() {
+  "some.op"() ({
+    // expected-error@+1 {{'test.child_with_ancestor' op expects ancestor op 'test.parent'}}
+    "test.child_with_ancestor"() : () -> ()
+  }) : () -> ()
+}
+
+// -----
+
+// CHECK: succeededAncestorOneOf
+func.func @succeededAncestorOneOf() {
+  "test.parent"() ({
+    "test.child_with_ancestor_one_of"() : () -> ()
+    "test.finish"() : () -> ()
+  }) : () -> ()
+  return
+}
+
+// -----
+
+// CHECK: succeededAncestor1OneOf
+func.func @succeededAncestor1OneOf() {
+  "test.parent1"() ({
+    "test.child_with_ancestor_one_of"() : () -> ()
+    "test.finish"() : () -> ()
+  }) : () -> ()
+  return
+}
+
+// -----
+
+// CHECK: succeededAncestorOneOf_indirect
+func.func @succeededAncestorOneOf_indirect() {
+  "test.parent1"() ({
+    "some.intermediate_op"() ({
+      "test.child_with_ancestor_one_of"() : () -> ()
+      "test.finish"() : () -> ()
+    }) : () -> ()
+    "test.finish"() : () -> ()
+  }) : () -> ()
+  return
+}
+
+// -----
+
+func.func @failedAncestorOneOf_wrong_ancestor() {
+  "some.otherop"() ({
+    // expected-error@+1 {{'test.child_with_ancestor_one_of' op expects ancestor op to be one of 'test.parent, test.parent1'}}
+    "test.child_with_ancestor_one_of"() : () -> ()
+    "test.finish"() : () -> ()
+  }) : () -> ()
+}
 
 // -----
 
@@ -345,8 +424,8 @@ func.func @failedSingleBlockImplicitTerminator_missing_terminator() {
 
 // -----
 
-// expected-error@+1 {{op attribute 'sym_visibility' failed to satisfy constraint: string attribute}}
-"test.symbol"() {sym_name = "foo_2", sym_visibility} : () -> ()
+// expected-error@+1 {{invalid properties {sym_name = "foo_2", sym_visibility} for op test.symbol: Invalid attribute `sym_visibility` in property conversion: unit}}
+"test.symbol"() <{sym_name = "foo_2", sym_visibility}> : () -> ()
 
 // -----
 
@@ -383,101 +462,101 @@ func.func private @foo()
 // -----
 
 func.func @failedMissingOperandSizeAttr(%arg: i32) {
-  // expected-error @+1 {{requires dense i32 array attribute 'operand_segment_sizes'}}
+  // expected-error @+1 {{op operand count (4) does not match with the total size (0) specified in attribute 'operandSegmentSizes'}}
   "test.attr_sized_operands"(%arg, %arg, %arg, %arg) : (i32, i32, i32, i32) -> ()
 }
 
 // -----
 
 func.func @failedOperandSizeAttrWrongType(%arg: i32) {
-  // expected-error @+1 {{requires dense i32 array attribute 'operand_segment_sizes'}}
-  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operand_segment_sizes = 10} : (i32, i32, i32, i32) -> ()
+  // expected-error @+1 {{op operand count (4) does not match with the total size (0) specified in attribute 'operandSegmentSizes'}}
+  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operandSegmentSizes = 10} : (i32, i32, i32, i32) -> ()
 }
 
 // -----
 
 func.func @failedOperandSizeAttrWrongElementType(%arg: i32) {
-  // expected-error @+1 {{requires dense i32 array attribute 'operand_segment_sizes'}}
-  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operand_segment_sizes = array<i64: 1, 1, 1, 1>} : (i32, i32, i32, i32) -> ()
+  // expected-error @+1 {{op operand count (4) does not match with the total size (0) specified in attribute 'operandSegmentSizes'}}
+  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operandSegmentSizes = array<i64: 1, 1, 1, 1>} : (i32, i32, i32, i32) -> ()
 }
 
 // -----
 
 func.func @failedOperandSizeAttrNegativeValue(%arg: i32) {
-  // expected-error @+1 {{'operand_segment_sizes' attribute cannot have negative elements}}
-  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operand_segment_sizes = array<i32: 1, 1, -1, 1>} : (i32, i32, i32, i32) -> ()
+  // expected-error @+1 {{'operandSegmentSizes' attribute cannot have negative elements}}
+  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operandSegmentSizes = array<i32: 1, 1, -1, 1>} : (i32, i32, i32, i32) -> ()
 }
 
 // -----
 
 func.func @failedOperandSizeAttrWrongTotalSize(%arg: i32) {
-  // expected-error @+1 {{operand count (4) does not match with the total size (3) specified in attribute 'operand_segment_sizes'}}
-  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operand_segment_sizes = array<i32: 0, 1, 1, 1>} : (i32, i32, i32, i32) -> ()
+  // expected-error @+1 {{operand count (4) does not match with the total size (3) specified in attribute 'operandSegmentSizes'}}
+  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operandSegmentSizes = array<i32: 0, 1, 1, 1>} : (i32, i32, i32, i32) -> ()
 }
 
 // -----
 
 func.func @failedOperandSizeAttrWrongCount(%arg: i32) {
-  // expected-error @+1 {{'operand_segment_sizes' attribute for specifying operand segments must have 4 elements}}
-  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operand_segment_sizes = array<i32: 2, 1, 1>} : (i32, i32, i32, i32) -> ()
+  // expected-error @+1 {{test.attr_sized_operands' op operand count (4) does not match with the total size (0) specified in attribute 'operandSegmentSizes}}
+  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operandSegmentSizes = array<i32: 2, 1, 1>} : (i32, i32, i32, i32) -> ()
 }
 
 // -----
 
 func.func @succeededOperandSizeAttr(%arg: i32) {
   // CHECK: test.attr_sized_operands
-  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operand_segment_sizes = array<i32: 0, 2, 1, 1>} : (i32, i32, i32, i32) -> ()
+  "test.attr_sized_operands"(%arg, %arg, %arg, %arg) {operandSegmentSizes = array<i32: 0, 2, 1, 1>} : (i32, i32, i32, i32) -> ()
   return
 }
 
 // -----
 
 func.func @failedMissingResultSizeAttr() {
-  // expected-error @+1 {{requires dense i32 array attribute 'result_segment_sizes'}}
+  // expected-error @+1 {{op result count (4) does not match with the total size (0) specified in attribute 'resultSegmentSizes'}}
   %0:4 = "test.attr_sized_results"() : () -> (i32, i32, i32, i32)
 }
 
 // -----
 
 func.func @failedResultSizeAttrWrongType() {
-  // expected-error @+1 {{requires dense i32 array attribute 'result_segment_sizes'}}
-  %0:4 = "test.attr_sized_results"() {result_segment_sizes = 10} : () -> (i32, i32, i32, i32)
+  // expected-error @+1 {{ op result count (4) does not match with the total size (0) specified in attribute 'resultSegmentSizes'}}
+  %0:4 = "test.attr_sized_results"() {resultSegmentSizes = 10} : () -> (i32, i32, i32, i32)
 }
 
 
 // -----
 
 func.func @failedResultSizeAttrWrongElementType() {
-  // expected-error @+1 {{requires dense i32 array attribute 'result_segment_sizes'}}
-  %0:4 = "test.attr_sized_results"() {result_segment_sizes = array<i64: 1, 1, 1, 1>} : () -> (i32, i32, i32, i32)
+  // expected-error @+1 {{ op result count (4) does not match with the total size (0) specified in attribute 'resultSegmentSizes'}}
+  %0:4 = "test.attr_sized_results"() {resultSegmentSizes = array<i64: 1, 1, 1, 1>} : () -> (i32, i32, i32, i32)
 }
 
 // -----
 
 func.func @failedResultSizeAttrNegativeValue() {
-  // expected-error @+1 {{'result_segment_sizes' attribute cannot have negative elements}}
-  %0:4 = "test.attr_sized_results"() {result_segment_sizes = array<i32: 1, 1, -1, 1>} : () -> (i32, i32, i32, i32)
+  // expected-error @+1 {{'resultSegmentSizes' attribute cannot have negative elements}}
+  %0:4 = "test.attr_sized_results"() {resultSegmentSizes = array<i32: 1, 1, -1, 1>} : () -> (i32, i32, i32, i32)
 }
 
 // -----
 
 func.func @failedResultSizeAttrWrongTotalSize() {
-  // expected-error @+1 {{result count (4) does not match with the total size (3) specified in attribute 'result_segment_sizes'}}
-  %0:4 = "test.attr_sized_results"() {result_segment_sizes = array<i32: 0, 1, 1, 1>} : () -> (i32, i32, i32, i32)
+  // expected-error @+1 {{result count (4) does not match with the total size (3) specified in attribute 'resultSegmentSizes'}}
+  %0:4 = "test.attr_sized_results"() {resultSegmentSizes = array<i32: 0, 1, 1, 1>} : () -> (i32, i32, i32, i32)
 }
 
 // -----
 
 func.func @failedResultSizeAttrWrongCount() {
-  // expected-error @+1 {{'result_segment_sizes' attribute for specifying result segments must have 4 elements, but got 3}}
-  %0:4 = "test.attr_sized_results"() {result_segment_sizes = array<i32: 2, 1, 1>} : () -> (i32, i32, i32, i32)
+  // expected-error @+1 {{ op result count (4) does not match with the total size (0) specified in attribute 'resultSegmentSizes'}}
+  %0:4 = "test.attr_sized_results"() {resultSegmentSizes = array<i32: 2, 1, 1>} : () -> (i32, i32, i32, i32)
 }
 
 // -----
 
 func.func @succeededResultSizeAttr() {
   // CHECK: test.attr_sized_results
-  %0:4 = "test.attr_sized_results"() {result_segment_sizes = array<i32: 0, 2, 1, 1>} : () -> (i32, i32, i32, i32)
+  %0:4 = "test.attr_sized_results"() {resultSegmentSizes = array<i32: 0, 2, 1, 1>} : () -> (i32, i32, i32, i32)
   return
 }
 
@@ -497,6 +576,36 @@ func.func @succeededOilistTrivial() {
   test.oilist_with_keywords_only thirdKeyword
   // CHECK: test.oilist_with_keywords_only keyword thirdKeyword
   test.oilist_with_keywords_only keyword thirdKeyword
+  return
+}
+
+// -----
+
+// CHECK-LABEL: @succeededOilistTrivialProperties
+func.func @succeededOilistTrivialProperties() {
+  // CHECK: test.oilist_with_keywords_only_properties keyword
+  test.oilist_with_keywords_only_properties keyword
+  // CHECK: test.oilist_with_keywords_only_properties otherKeyword
+  test.oilist_with_keywords_only_properties otherKeyword
+  // CHECK: test.oilist_with_keywords_only_properties keyword otherKeyword
+  test.oilist_with_keywords_only_properties keyword otherKeyword
+  // CHECK: test.oilist_with_keywords_only_properties keyword otherKeyword
+  test.oilist_with_keywords_only_properties otherKeyword keyword
+  // CHECK: test.oilist_with_keywords_only_properties thirdKeyword
+  test.oilist_with_keywords_only_properties thirdKeyword
+  // CHECK: test.oilist_with_keywords_only_properties keyword thirdKeyword
+  test.oilist_with_keywords_only_properties keyword thirdKeyword
+  return
+}
+
+// -----
+
+// CHECK-LABEL: @succeededOilistOptionalAttr
+func.func @succeededOilistOptionalAttr() {
+  // CHECK: test.oilist_optional_attr keyword nested <nested = <1, !test.smpla, [5, 6]>>
+  test.oilist_optional_attr nested <nested = <1, !test.smpla, [5, 6]>> keyword
+  // CHECK: test.oilist_optional_attr nested <nested = <1, !test.smpla, [5, 6]>>
+  test.oilist_optional_attr nested #test.cmpnd_nested<nested = <1, !test.smpla, [5, 6]>>
   return
 }
 
@@ -556,6 +665,49 @@ func.func @succeededOilistCustom(%arg0: i32, %arg1: i32, %arg2: i32) {
 
 // -----
 
+// CHECK-LABEL: @succeededOilistWithSeparator
+func.func @succeededOilistWithSeparator() {
+  // CHECK: test.oilist_with_separator
+  test.oilist_with_separator
+  // CHECK: test.oilist_with_separator keyword
+  test.oilist_with_separator keyword
+  // CHECK: test.oilist_with_separator keyword, otherKeyword
+  test.oilist_with_separator otherKeyword, keyword
+  // CHECK: test.oilist_with_separator keyword, otherKeyword, thirdKeyword
+  test.oilist_with_separator thirdKeyword, keyword, otherKeyword
+  return
+}
+
+// -----
+
+func.func @failedOilistWithDuplicateSeparatedClause() {
+  // expected-error@+1 {{`keyword` clause can appear at most once in the expansion of the oilist directive}}
+  test.oilist_with_separator keyword, keyword
+}
+
+// -----
+
+func.func @failedOilistWithMissingSeparator() {
+  // expected-error@+1 {{expected ',' between oilist clauses}}
+  test.oilist_with_separator keyword otherKeyword
+}
+
+// -----
+
+func.func @failedOilistWithTrailingSeparator() {
+  // expected-error@+1 {{expected oilist clause after separator}}
+  test.oilist_with_separator keyword,
+}
+
+// -----
+
+func.func @failedOilistOptionalAttrMissingValue() {
+  // expected-error@+1 {{expected '<'}}
+  test.oilist_optional_attr nested
+}
+
+// -----
+
 func.func @failedHasDominanceScopeOutsideDominanceFreeScope() -> () {
   "test.ssacfg_region"() ({
     test.graph_region {
@@ -572,15 +724,13 @@ func.func @failedHasDominanceScopeOutsideDominanceFreeScope() -> () {
 
 // Ensure that SSACFG regions of operations in GRAPH regions are
 // checked for dominance
-func.func @illegalInsideDominanceFreeScope() -> () {
+func.func @illegalInsideDominanceFreeScope(%cond: i1) -> () {
   test.graph_region {
-    func.func @test() -> i1 {
-    ^bb1:
+    scf.if %cond {
       // expected-error @+1 {{operand #0 does not dominate this use}}
       %2:3 = "bar"(%1) : (i64) -> (i1,i1,i1)
       // expected-note @+1 {{operand defined here}}
-	   %1 = "baz"(%2#0) : (i1) -> (i64)
-      return %2#1 : i1
+      %1 = "baz"(%2#0) : (i1) -> (i64)
     }
     "terminator"() : () -> ()
   }
@@ -591,20 +741,21 @@ func.func @illegalInsideDominanceFreeScope() -> () {
 
 // Ensure that SSACFG regions of operations in GRAPH regions are
 // checked for dominance
-func.func @illegalCDFGInsideDominanceFreeScope() -> () {
+func.func @illegalCFGInsideDominanceFreeScope(%cond: i1) -> () {
   test.graph_region {
-    func.func @test() -> i1 {
-    ^bb1:
-      // expected-error @+1 {{operand #0 does not dominate this use}}
-      %2:3 = "bar"(%1) : (i64) -> (i1,i1,i1)
-      cf.br ^bb4
-    ^bb2:
-      cf.br ^bb2
-    ^bb4:
-      %1 = "foo"() : ()->i64   // expected-note {{operand defined here}}
-		return %2#1 : i1
+    scf.if %cond {
+      "test.ssacfg_region"() ({
+      ^bb1:
+        // expected-error @+1 {{operand #0 does not dominate this use}}
+        %2:3 = "bar"(%1) : (i64) -> (i1,i1,i1)
+        cf.br ^bb4
+      ^bb2:
+        cf.br ^bb2
+      ^bb4:
+        %1 = "foo"() : ()->i64   // expected-note {{operand defined here}}
+      }) : () -> ()
     }
-     "terminator"() : () -> ()
+    "terminator"() : () -> ()
   }
   return
 }
@@ -655,7 +806,7 @@ func.func @failed_type_traits() {
 
 // Check that we can query traits in attributes
 func.func @succeeded_attr_traits() {
-  // CHECK: "test.attr_with_trait"() {attr = #test.attr_with_trait} : () -> ()
+  // CHECK: "test.attr_with_trait"() <{attr = #test.attr_with_trait}> : () -> ()
   "test.attr_with_trait"() {attr = #test.attr_with_trait} : () -> ()
   return
 }

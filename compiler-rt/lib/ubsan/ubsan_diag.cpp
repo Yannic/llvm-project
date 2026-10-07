@@ -13,18 +13,27 @@
 #include "ubsan_platform.h"
 #if CAN_SANITIZE_UB
 #include "ubsan_diag.h"
-#include "ubsan_init.h"
 #include "ubsan_flags.h"
+#include "ubsan_init.h"
 #include "ubsan_monitor.h"
+
+#include "sanitizer_common/sanitizer_common.h"
+#include "sanitizer_common/sanitizer_internal_defs.h"
 #include "sanitizer_common/sanitizer_placement_new.h"
 #include "sanitizer_common/sanitizer_report_decorator.h"
 #include "sanitizer_common/sanitizer_stacktrace.h"
 #include "sanitizer_common/sanitizer_stacktrace_printer.h"
 #include "sanitizer_common/sanitizer_suppressions.h"
 #include "sanitizer_common/sanitizer_symbolizer.h"
+
 #include <stdio.h>
 
 using namespace __ubsan;
+
+// Can be overriden in frontend.
+SANITIZER_INTERFACE_WEAK_DEF(const char *, __ubsan_default_suppressions, void) {
+  return "";
+}
 
 // UBSan is combined with runtimes that already provide this functionality
 // (e.g., ASan) as well as runtimes that lack it (e.g., scudo). Tried to use
@@ -41,15 +50,26 @@ void ubsan_GetStackTrace(BufferedStackTrace *stack, uptr max_depth, uptr pc,
   stack->Unwind(max_depth, pc, bp, context, top, bottom, fast);
 }
 
-static void MaybePrintStackTrace(uptr pc, uptr bp) {
+static void PrintSymbolizedFrames(SymbolizedStack *Frames);
+
+static void MaybePrintStackTrace(const ReportOptions &Opts) {
   // We assume that flags are already parsed, as UBSan runtime
   // will definitely be called when we print the first diagnostics message.
   if (!flags()->print_stacktrace)
     return;
 
-  BufferedStackTrace stack;
-  ubsan_GetStackTrace(&stack, kStackTraceMax, pc, bp, nullptr,
-                common_flags()->fast_unwind_on_fatal);
+  // Reports to be symbolized from the device need to use a separate file.
+  if (Opts.FromOffload) {
+    if (!Opts.pc)
+      return;
+    SymbolizedStackHolder Frame(getReportLocation(Opts.pc, true));
+    PrintSymbolizedFrames(const_cast<SymbolizedStack *>(Frame.get()));
+    return;
+  }
+
+  UNINITIALIZED BufferedStackTrace stack;
+  ubsan_GetStackTrace(&stack, kStackTraceMax, Opts.pc, Opts.bp, nullptr,
+                      common_flags()->fast_unwind_on_fatal);
   stack.Print();
 }
 
@@ -88,7 +108,7 @@ static void MaybeReportErrorSummary(Location Loc, ErrorType Type) {
       AI.file = internal_strdup(SLoc.getFilename());
       AI.line = SLoc.getLine();
       AI.column = SLoc.getColumn();
-      AI.function = internal_strdup("");  // Avoid printing ?? as function name.
+      AI.function = nullptr;
       ReportErrorSummary(ErrorKind, AI, GetSanititizerToolName());
       AI.Clear();
       return;
@@ -103,15 +123,26 @@ static void MaybeReportErrorSummary(Location Loc, ErrorType Type) {
 
 namespace {
 class Decorator : public SanitizerCommonDecorator {
- public:
+public:
   Decorator() : SanitizerCommonDecorator() {}
   const char *Highlight() const { return Green(); }
   const char *Note() const { return Black(); }
 };
+} // namespace
+
+// Symbolization hook for the remote device support. The hook returns a null
+// pointer if the given PC was not present in any of the known device images.
+static SymbolizedStack *(*OffloadSymbolize)(uptr PC);
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE void
+__ubsan_set_offload_symbolize(SymbolizedStack *(*Fn)(uptr PC)) {
+  OffloadSymbolize = Fn;
 }
 
 SymbolizedStack *__ubsan::getSymbolizedLocation(uptr PC) {
   InitAsStandaloneIfNecessary();
+  if (OffloadSymbolize)
+    if (SymbolizedStack *S = OffloadSymbolize(PC))
+      return S;
   return Symbolizer::GetOrInit()->SymbolizePC(PC);
 }
 
@@ -134,9 +165,9 @@ Diag &Diag::operator<<(const Value &V) {
 /// Hexadecimal printing for numbers too large for Printf to handle directly.
 static void RenderHex(InternalScopedString *Buffer, UIntMax Val) {
 #if HAVE_INT128_T
-  Buffer->append("0x%08x%08x%08x%08x", (unsigned int)(Val >> 96),
-                 (unsigned int)(Val >> 64), (unsigned int)(Val >> 32),
-                 (unsigned int)(Val));
+  Buffer->AppendF("0x%08x%08x%08x%08x", (unsigned int)(Val >> 96),
+                  (unsigned int)(Val >> 64), (unsigned int)(Val >> 32),
+                  (unsigned int)(Val));
 #else
   UNREACHABLE("long long smaller than 64 bits?");
 #endif
@@ -147,31 +178,34 @@ static void RenderLocation(InternalScopedString *Buffer, Location Loc) {
   case Location::LK_Source: {
     SourceLocation SLoc = Loc.getSourceLocation();
     if (SLoc.isInvalid())
-      Buffer->append("<unknown>");
+      Buffer->AppendF("<unknown>");
     else
-      RenderSourceLocation(Buffer, SLoc.getFilename(), SLoc.getLine(),
-                           SLoc.getColumn(), common_flags()->symbolize_vs_style,
-                           common_flags()->strip_path_prefix);
+      StackTracePrinter::GetOrInit()->RenderSourceLocation(
+          Buffer, SLoc.getFilename(), SLoc.getLine(), SLoc.getColumn(),
+          common_flags()->symbolize_vs_style,
+          common_flags()->strip_path_prefix);
     return;
   }
   case Location::LK_Memory:
-    Buffer->append("%p", reinterpret_cast<void *>(Loc.getMemoryLocation()));
+    Buffer->AppendF("%p", reinterpret_cast<void *>(Loc.getMemoryLocation()));
     return;
   case Location::LK_Symbolized: {
     const AddressInfo &Info = Loc.getSymbolizedStack()->info;
     if (Info.file)
-      RenderSourceLocation(Buffer, Info.file, Info.line, Info.column,
-                           common_flags()->symbolize_vs_style,
-                           common_flags()->strip_path_prefix);
+      StackTracePrinter::GetOrInit()->RenderSourceLocation(
+          Buffer, Info.file, Info.line, Info.column,
+          common_flags()->symbolize_vs_style,
+          common_flags()->strip_path_prefix);
     else if (Info.module)
-      RenderModuleLocation(Buffer, Info.module, Info.module_offset,
-                           Info.module_arch, common_flags()->strip_path_prefix);
+      StackTracePrinter::GetOrInit()->RenderModuleLocation(
+          Buffer, Info.module, Info.module_offset, Info.module_arch,
+          common_flags()->strip_path_prefix);
     else
-      Buffer->append("%p", reinterpret_cast<void *>(Info.address));
+      Buffer->AppendF("%p", reinterpret_cast<void *>(Info.address));
     return;
   }
   case Location::LK_Null:
-    Buffer->append("<unknown>");
+    Buffer->AppendF("<unknown>");
     return;
   }
 }
@@ -180,32 +214,32 @@ static void RenderText(InternalScopedString *Buffer, const char *Message,
                        const Diag::Arg *Args) {
   for (const char *Msg = Message; *Msg; ++Msg) {
     if (*Msg != '%') {
-      Buffer->append("%c", *Msg);
+      Buffer->AppendF("%c", *Msg);
       continue;
     }
     const Diag::Arg &A = Args[*++Msg - '0'];
     switch (A.Kind) {
     case Diag::AK_String:
-      Buffer->append("%s", A.String);
+      Buffer->AppendF("%s", A.String);
       break;
     case Diag::AK_TypeName: {
       if (SANITIZER_WINDOWS)
         // The Windows implementation demangles names early.
-        Buffer->append("'%s'", A.String);
+        Buffer->AppendF("'%s'", A.String);
       else
-        Buffer->append("'%s'", Symbolizer::GetOrInit()->Demangle(A.String));
+        Buffer->AppendF("'%s'", Symbolizer::GetOrInit()->Demangle(A.String));
       break;
     }
     case Diag::AK_SInt:
       // 'long long' is guaranteed to be at least 64 bits wide.
       if (A.SInt >= INT64_MIN && A.SInt <= INT64_MAX)
-        Buffer->append("%lld", (long long)A.SInt);
+        Buffer->AppendF("%lld", (long long)A.SInt);
       else
         RenderHex(Buffer, A.SInt);
       break;
     case Diag::AK_UInt:
       if (A.UInt <= UINT64_MAX)
-        Buffer->append("%llu", (unsigned long long)A.UInt);
+        Buffer->AppendF("%llu", (unsigned long long)A.UInt);
       else
         RenderHex(Buffer, A.UInt);
       break;
@@ -214,15 +248,20 @@ static void RenderText(InternalScopedString *Buffer, const char *Message,
       //        printf, and stop using snprintf here.
       char FloatBuffer[32];
 #if SANITIZER_WINDOWS
-      sprintf_s(FloatBuffer, sizeof(FloatBuffer), "%Lg", (long double)A.Float);
+      // On MSVC platforms, long doubles are equal to regular doubles.
+      // In MinGW environments on x86, long doubles are 80 bit, but here,
+      // we're calling an MS CRT provided printf function which considers
+      // long doubles to be 64 bit. Just cast the float value to a regular
+      // double to avoid the potential ambiguity in MinGW mode.
+      sprintf_s(FloatBuffer, sizeof(FloatBuffer), "%g", (double)A.Float);
 #else
       snprintf(FloatBuffer, sizeof(FloatBuffer), "%Lg", (long double)A.Float);
 #endif
-      Buffer->append("%s", FloatBuffer);
+      Buffer->Append(FloatBuffer);
       break;
     }
     case Diag::AK_Pointer:
-      Buffer->append("%p", A.Pointer);
+      Buffer->AppendF("%p", A.Pointer);
       break;
     }
   }
@@ -278,13 +317,13 @@ static void PrintMemorySnippet(const Decorator &Decor, MemoryLocation Loc,
   // Emit data.
   InternalScopedString Buffer;
   for (uptr P = Min; P != Max; ++P) {
-    unsigned char C = *reinterpret_cast<const unsigned char*>(P);
-    Buffer.append("%s%02x", (P % 8 == 0) ? "  " : " ", C);
+    unsigned char C = *reinterpret_cast<const unsigned char *>(P);
+    Buffer.AppendF("%s%02x", (P % 8 == 0) ? "  " : " ", C);
   }
-  Buffer.append("\n");
+  Buffer.AppendF("\n");
 
   // Emit highlights.
-  Buffer.append("%s", Decor.Highlight());
+  Buffer.Append(Decor.Highlight());
   Range *InRange = upperBound(Min, Ranges, NumRanges);
   for (uptr P = Min; P != Max; ++P) {
     char Pad = ' ', Byte = ' ';
@@ -297,12 +336,12 @@ static void PrintMemorySnippet(const Decorator &Decor, MemoryLocation Loc,
     if (InRange && InRange->getStart().getMemoryLocation() <= P)
       Byte = '~';
     if (P % 8 == 0)
-      Buffer.append("%c", Pad);
-    Buffer.append("%c", Pad);
-    Buffer.append("%c", P == Loc ? '^' : Byte);
-    Buffer.append("%c", Byte);
+      Buffer.AppendF("%c", Pad);
+    Buffer.AppendF("%c", Pad);
+    Buffer.AppendF("%c", P == Loc ? '^' : Byte);
+    Buffer.AppendF("%c", Byte);
   }
-  Buffer.append("%s\n", Decor.Default());
+  Buffer.AppendF("%s\n", Decor.Default());
 
   // Go over the line again, and print names for the ranges.
   InRange = 0;
@@ -317,9 +356,9 @@ static void PrintMemorySnippet(const Decorator &Decor, MemoryLocation Loc,
 
     if (InRange && InRange->getStart().getMemoryLocation() == P) {
       while (Spaces--)
-        Buffer.append(" ");
+        Buffer.AppendF(" ");
       RenderText(&Buffer, InRange->getText(), Args);
-      Buffer.append("\n");
+      Buffer.AppendF("\n");
       // FIXME: We only support naming one range for now!
       break;
     }
@@ -353,28 +392,44 @@ Diag::~Diag() {
     Buffer.clear();
   }
 
-  Buffer.append("%s", Decor.Bold());
+  Buffer.Append(Decor.Bold());
   RenderLocation(&Buffer, Loc);
-  Buffer.append(":");
+  Buffer.AppendF(":");
 
   switch (Level) {
   case DL_Error:
-    Buffer.append("%s runtime error: %s%s", Decor.Warning(), Decor.Default(),
-                  Decor.Bold());
+    Buffer.AppendF("%s runtime error: %s%s", Decor.Warning(), Decor.Default(),
+                   Decor.Bold());
     break;
 
   case DL_Note:
-    Buffer.append("%s note: %s", Decor.Note(), Decor.Default());
+    Buffer.AppendF("%s note: %s", Decor.Note(), Decor.Default());
     break;
   }
 
   RenderText(&Buffer, Message, Args);
 
-  Buffer.append("%s\n", Decor.Default());
+  Buffer.AppendF("%s\n", Decor.Default());
   Printf("%s", Buffer.data());
 
   if (Loc.isMemoryLocation())
     PrintMemorySnippet(Decor, Loc.getMemoryLocation(), Ranges, NumRanges, Args);
+}
+
+static void PrintSymbolizedFrames(SymbolizedStack *Frames) {
+  InternalScopedString Out;
+  uptr N = 0;
+  for (SymbolizedStack *F = Frames; F; F = F->next) {
+    uptr Was = Out.length();
+    StackTracePrinter::GetOrInit()->RenderFrame(
+        &Out, common_flags()->stack_trace_format, N++, F->info.address,
+        &F->info, common_flags()->symbolize_vs_style,
+        common_flags()->strip_path_prefix);
+    if (Out.length() != Was)
+      Out.Append("\n");
+  }
+  Out.Append("\n");
+  Printf("%s", Out.data());
 }
 
 ScopedReport::Initializer::Initializer() { InitAsStandaloneIfNecessary(); }
@@ -384,7 +439,7 @@ ScopedReport::ScopedReport(ReportOptions Opts, Location SummaryLoc,
     : Opts(Opts), SummaryLoc(SummaryLoc), Type(Type) {}
 
 ScopedReport::~ScopedReport() {
-  MaybePrintStackTrace(Opts.pc, Opts.bp);
+  MaybePrintStackTrace(Opts);
   MaybeReportErrorSummary(SummaryLoc, Type);
 
   if (common_flags()->print_module_map >= 2)
@@ -394,7 +449,7 @@ ScopedReport::~ScopedReport() {
     Die();
 }
 
-ALIGNED(64) static char suppression_placeholder[sizeof(SuppressionContext)];
+alignas(64) static char suppression_placeholder[sizeof(SuppressionContext)];
 static SuppressionContext *suppression_ctx = nullptr;
 static const char kVptrCheck[] = "vptr_check";
 static const char *kSuppressionTypes[] = {
@@ -409,6 +464,7 @@ void __ubsan::InitializeSuppressions() {
   suppression_ctx = new (suppression_placeholder)
       SuppressionContext(kSuppressionTypes, ARRAY_SIZE(kSuppressionTypes));
   suppression_ctx->ParseFromFile(flags()->suppressions);
+  suppression_ctx->Parse(__ubsan_default_suppressions());
 }
 
 bool __ubsan::IsVptrCheckSuppressed(const char *TypeName) {
@@ -421,6 +477,9 @@ bool __ubsan::IsVptrCheckSuppressed(const char *TypeName) {
 bool __ubsan::IsPCSuppressed(ErrorType ET, uptr PC, const char *Filename) {
   InitAsStandaloneIfNecessary();
   CHECK(suppression_ctx);
+  // PC is the return address from the UBSan handler call. Symbolize the
+  // instruction that caused the call.
+  PC = StackTrace::GetPreviousInstructionPc(PC);
   const char *SuppType = ConvertTypeToFlagName(ET);
   // Fast path: don't symbolize PC if there is no suppressions for given UB
   // type.
@@ -436,10 +495,13 @@ bool __ubsan::IsPCSuppressed(ErrorType ET, uptr PC, const char *Filename) {
       return true;
   }
   // Suppress by function or source file name from debug info.
+  // The first frame is the innermost logical inline frame, if inline debug
+  // information is available. Do not search the rest of the chain: a
+  // suppression for an inline wrapper must not suppress an inlined callee.
   SymbolizedStackHolder Stack(Symbolizer::GetOrInit()->SymbolizePC(PC));
   const AddressInfo &AI = Stack.get()->info;
   return suppression_ctx->Match(AI.function, SuppType, &s) ||
          suppression_ctx->Match(AI.file, SuppType, &s);
 }
 
-#endif  // CAN_SANITIZE_UB
+#endif // CAN_SANITIZE_UB

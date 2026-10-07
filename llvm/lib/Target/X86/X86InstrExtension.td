@@ -93,17 +93,17 @@ def MOVZX32rm16: I<0xB7, MRMSrcMem, (outs GR32:$dst), (ins i16mem:$src),
 let isCodeGenOnly = 1, ForceDisassemble = 1, hasSideEffects = 0 in {
 def MOVSX16rr16: I<0xBF, MRMSrcReg, (outs GR16:$dst), (ins GR16:$src),
                    "movs{ww|x}\t{$src, $dst|$dst, $src}",
-                   []>, TB, OpSize16, Sched<[WriteALU]>, NotMemoryFoldable;
+                   []>, TB, OpSize16, Sched<[WriteALU]>;
 def MOVZX16rr16: I<0xB7, MRMSrcReg, (outs GR16:$dst), (ins GR16:$src),
                    "movz{ww|x}\t{$src, $dst|$dst, $src}",
-                   []>, TB, OpSize16, Sched<[WriteALU]>, NotMemoryFoldable;
+                   []>, TB, OpSize16, Sched<[WriteALU]>;
 let mayLoad = 1 in {
 def MOVSX16rm16: I<0xBF, MRMSrcMem, (outs GR16:$dst), (ins i16mem:$src),
                    "movs{ww|x}\t{$src, $dst|$dst, $src}",
-                   []>, OpSize16, TB, Sched<[WriteLoad]>, NotMemoryFoldable;
+                   []>, OpSize16, TB, Sched<[WriteLoad]>;
 def MOVZX16rm16: I<0xB7, MRMSrcMem, (outs GR16:$dst), (ins i16mem:$src),
                    "movz{ww|x}\t{$src, $dst|$dst, $src}",
-                   []>, TB, OpSize16, Sched<[WriteLoad]>, NotMemoryFoldable;
+                   []>, TB, OpSize16, Sched<[WriteLoad]>;
 } // mayLoad = 1
 } // isCodeGenOnly = 1, ForceDisassemble = 1, hasSideEffects = 0
 
@@ -202,14 +202,14 @@ def MOVZX64rm16 : RI<0xB7, MRMSrcMem, (outs GR64:$dst), (ins i16mem:$src),
 // 64-bit zero-extension patterns use SUBREG_TO_REG and an operation writing a
 // 32-bit register.
 def : Pat<(i64 (zext GR8:$src)),
-          (SUBREG_TO_REG (i64 0), (MOVZX32rr8 GR8:$src), sub_32bit)>;
+          (SUBREG_TO_REG (MOVZX32rr8 GR8:$src), sub_32bit)>;
 def : Pat<(zextloadi64i8 addr:$src),
-          (SUBREG_TO_REG (i64 0), (MOVZX32rm8 addr:$src), sub_32bit)>;
+          (SUBREG_TO_REG (MOVZX32rm8 addr:$src), sub_32bit)>;
 
 def : Pat<(i64 (zext GR16:$src)),
-          (SUBREG_TO_REG (i64 0), (MOVZX32rr16 GR16:$src), sub_32bit)>;
+          (SUBREG_TO_REG (MOVZX32rr16 GR16:$src), sub_32bit)>;
 def : Pat<(zextloadi64i16 addr:$src),
-          (SUBREG_TO_REG (i64 0), (MOVZX32rm16 addr:$src), sub_32bit)>;
+          (SUBREG_TO_REG (MOVZX32rm16 addr:$src), sub_32bit)>;
 
 // The preferred way to do 32-bit-to-64-bit zero extension on x86-64 is to use a
 // SUBREG_TO_REG to utilize implicit zero-extension, however this isn't possible
@@ -217,6 +217,6 @@ def : Pat<(zextloadi64i16 addr:$src),
 // where the high bits aren't necessarily all zero. In such cases, we fall back
 // to these explicit zext instructions.
 def : Pat<(i64 (zext GR32:$src)),
-          (SUBREG_TO_REG (i64 0), (MOV32rr GR32:$src), sub_32bit)>;
+          (SUBREG_TO_REG (MOV32rr GR32:$src), sub_32bit)>;
 def : Pat<(i64 (zextloadi64i32 addr:$src)),
-          (SUBREG_TO_REG (i64 0), (MOV32rm addr:$src), sub_32bit)>;
+          (SUBREG_TO_REG (MOV32rm addr:$src), sub_32bit)>;

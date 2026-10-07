@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import subprocess
 import sys
@@ -12,5 +12,5 @@ print("Running " + (" ".join(args)))
 real_exit_code = subprocess.call(args)
 
 if str(real_exit_code) != expected_exit_code:
-  print("Got exit code %d but expected %s" % (real_exit_code, expected_exit_code))
-  exit(1)
+    print("Got exit code %d but expected %s" % (real_exit_code, expected_exit_code))
+    exit(1)

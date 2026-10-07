@@ -15,6 +15,7 @@
 #ifndef NDEBUG
 #include "llvm/Analysis/RegionPrinter.h"
 #endif
+#include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/RegionInfoImpl.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Function.h"
@@ -27,9 +28,9 @@ using namespace llvm;
 
 namespace llvm {
 
-template class RegionBase<RegionTraits<Function>>;
-template class RegionNodeBase<RegionTraits<Function>>;
-template class RegionInfoBase<RegionTraits<Function>>;
+template class LLVM_EXPORT_TEMPLATE RegionBase<RegionTraits<Function>>;
+template class LLVM_EXPORT_TEMPLATE RegionNodeBase<RegionTraits<Function>>;
+template class LLVM_EXPORT_TEMPLATE RegionInfoBase<RegionTraits<Function>>;
 
 } // end namespace llvm
 
@@ -115,9 +116,7 @@ void RegionInfo::viewOnly() { viewRegionOnly(this); }
 // RegionInfoPass implementation
 //
 
-RegionInfoPass::RegionInfoPass() : FunctionPass(ID) {
-  initializeRegionInfoPassPass(*PassRegistry::getPassRegistry());
-}
+RegionInfoPass::RegionInfoPass() : FunctionPass(ID) {}
 
 RegionInfoPass::~RegionInfoPass() = default;
 

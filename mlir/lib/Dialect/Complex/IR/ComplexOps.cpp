@@ -6,9 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/Matchers.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/PatternMatch.h"
 
 using namespace mlir;
 using namespace mlir::complex;
@@ -17,9 +19,7 @@ using namespace mlir::complex;
 // ConstantOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) {
-  return getValue();
-}
+OpFoldResult ConstantOp::fold(FoldAdaptor adaptor) { return getValue(); }
 
 void ConstantOp::getAsmResultNames(
     function_ref<void(Value, StringRef)> setNameFn) {
@@ -27,15 +27,21 @@ void ConstantOp::getAsmResultNames(
 }
 
 bool ConstantOp::isBuildableWith(Attribute value, Type type) {
-  if (auto arrAttr = value.dyn_cast<ArrayAttr>()) {
-    auto complexTy = type.dyn_cast<ComplexType>();
+  if (auto arrAttr = llvm::dyn_cast<ArrayAttr>(value)) {
+    auto complexTy = llvm::dyn_cast<ComplexType>(type);
     if (!complexTy || arrAttr.size() != 2)
       return false;
     auto complexEltTy = complexTy.getElementType();
-    auto re = arrAttr[0].dyn_cast<FloatAttr>();
-    auto im = arrAttr[1].dyn_cast<FloatAttr>();
-    return re && im && re.getType() == complexEltTy &&
-           im.getType() == complexEltTy;
+    if (auto fre = llvm::dyn_cast<FloatAttr>(arrAttr[0])) {
+      auto im = llvm::dyn_cast<FloatAttr>(arrAttr[1]);
+      return im && fre.getType() == complexEltTy &&
+             im.getType() == complexEltTy;
+    }
+    if (auto ire = llvm::dyn_cast<IntegerAttr>(arrAttr[0])) {
+      auto im = llvm::dyn_cast<IntegerAttr>(arrAttr[1]);
+      return im && ire.getType() == complexEltTy &&
+             im.getType() == complexEltTy;
+    }
   }
   return false;
 }
@@ -49,10 +55,12 @@ LogicalResult ConstantOp::verify() {
   }
 
   auto complexEltTy = getType().getElementType();
-  auto re = arrayAttr[0].dyn_cast<FloatAttr>();
-  auto im = arrayAttr[1].dyn_cast<FloatAttr>();
-  if (!re || !im)
-    return emitOpError("requires attribute's elements to be float attributes");
+  if (!isa<FloatAttr, IntegerAttr>(arrayAttr[0]) ||
+      !isa<FloatAttr, IntegerAttr>(arrayAttr[1]))
+    return emitOpError(
+        "requires attribute's elements to be float or integer attributes");
+  auto re = llvm::dyn_cast<TypedAttr>(arrayAttr[0]);
+  auto im = llvm::dyn_cast<TypedAttr>(arrayAttr[1]);
   if (complexEltTy != re.getType() || complexEltTy != im.getType()) {
     return emitOpError()
            << "requires attribute's element types (" << re.getType() << ", "
@@ -61,6 +69,102 @@ LogicalResult ConstantOp::verify() {
            << complexEltTy << ")";
   }
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// BitcastOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult BitcastOp::fold(FoldAdaptor bitcast) {
+  if (getOperand().getType() == getType())
+    return getOperand();
+
+  return {};
+}
+
+LogicalResult BitcastOp::verify() {
+  auto operandType = getOperand().getType();
+  auto resultType = getType();
+
+  // We allow this to be legal as it can be folded away.
+  if (operandType == resultType)
+    return success();
+
+  if (!operandType.isIntOrFloat() && !isa<ComplexType>(operandType)) {
+    return emitOpError("operand must be int/float/complex");
+  }
+
+  if (!resultType.isIntOrFloat() && !isa<ComplexType>(resultType)) {
+    return emitOpError("result must be int/float/complex");
+  }
+
+  if (isa<ComplexType>(operandType) == isa<ComplexType>(resultType)) {
+    return emitOpError(
+        "requires that either input or output has a complex type");
+  }
+
+  if (isa<ComplexType>(resultType))
+    std::swap(operandType, resultType);
+
+  int32_t operandBitwidth = dyn_cast<ComplexType>(operandType)
+                                .getElementType()
+                                .getIntOrFloatBitWidth() *
+                            2;
+  int32_t resultBitwidth = resultType.getIntOrFloatBitWidth();
+
+  if (operandBitwidth != resultBitwidth) {
+    return emitOpError("casting bitwidths do not match");
+  }
+
+  return success();
+}
+
+struct MergeComplexBitcast final : OpRewritePattern<BitcastOp> {
+  using OpRewritePattern<BitcastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(BitcastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (auto defining = op.getOperand().getDefiningOp<BitcastOp>()) {
+      if (isa<ComplexType>(op.getType()) ||
+          isa<ComplexType>(defining.getOperand().getType())) {
+        // complex.bitcast requires that input or output is complex.
+        rewriter.replaceOpWithNewOp<BitcastOp>(op, op.getType(),
+                                               defining.getOperand());
+      } else {
+        rewriter.replaceOpWithNewOp<arith::BitcastOp>(op, op.getType(),
+                                                      defining.getOperand());
+      }
+      return success();
+    }
+
+    if (auto defining = op.getOperand().getDefiningOp<arith::BitcastOp>()) {
+      rewriter.replaceOpWithNewOp<BitcastOp>(op, op.getType(),
+                                             defining.getOperand());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct MergeArithBitcast final : OpRewritePattern<arith::BitcastOp> {
+  using OpRewritePattern<arith::BitcastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::BitcastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (auto defining = op.getOperand().getDefiningOp<complex::BitcastOp>()) {
+      rewriter.replaceOpWithNewOp<complex::BitcastOp>(op, op.getType(),
+                                                      defining.getOperand());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+void BitcastOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.add<MergeComplexBitcast, MergeArithBitcast>(context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -84,7 +188,8 @@ OpFoldResult CreateOp::fold(FoldAdaptor adaptor) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult ImOp::fold(FoldAdaptor adaptor) {
-  ArrayAttr arrayAttr = adaptor.getComplex().dyn_cast_or_null<ArrayAttr>();
+  ArrayAttr arrayAttr =
+      llvm::dyn_cast_if_present<ArrayAttr>(adaptor.getComplex());
   if (arrayAttr && arrayAttr.size() == 2)
     return arrayAttr[1];
   if (auto createOp = getOperand().getDefiningOp<CreateOp>())
@@ -92,17 +197,53 @@ OpFoldResult ImOp::fold(FoldAdaptor adaptor) {
   return {};
 }
 
+namespace {
+template <typename OpKind, int ComponentIndex>
+struct FoldComponentNeg final : OpRewritePattern<OpKind> {
+  using OpRewritePattern<OpKind>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpKind op,
+                                PatternRewriter &rewriter) const override {
+    auto negOp = op.getOperand().template getDefiningOp<NegOp>();
+    if (!negOp)
+      return failure();
+
+    auto createOp = negOp.getComplex().template getDefiningOp<CreateOp>();
+    if (!createOp)
+      return failure();
+
+    Type elementType = createOp.getType().getElementType();
+    assert(isa<FloatType>(elementType));
+
+    rewriter.replaceOpWithNewOp<arith::NegFOp>(
+        op, elementType, createOp.getOperand(ComponentIndex));
+    return success();
+  }
+};
+} // namespace
+
+void ImOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                       MLIRContext *context) {
+  results.add<FoldComponentNeg<ImOp, 1>>(context);
+}
+
 //===----------------------------------------------------------------------===//
 // ReOp
 //===----------------------------------------------------------------------===//
 
 OpFoldResult ReOp::fold(FoldAdaptor adaptor) {
-  ArrayAttr arrayAttr = adaptor.getComplex().dyn_cast_or_null<ArrayAttr>();
+  ArrayAttr arrayAttr =
+      llvm::dyn_cast_if_present<ArrayAttr>(adaptor.getComplex());
   if (arrayAttr && arrayAttr.size() == 2)
     return arrayAttr[0];
   if (auto createOp = getOperand().getDefiningOp<CreateOp>())
     return createOp.getOperand(0);
   return {};
+}
+
+void ReOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                       MLIRContext *context) {
+  results.add<FoldComponentNeg<ReOp, 0>>(context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -120,11 +261,11 @@ OpFoldResult AddOp::fold(FoldAdaptor adaptor) {
     if (getLhs() == sub.getRhs())
       return sub.getLhs();
 
-  // complex.add(a, complex.constant<0.0, 0.0>) -> a
+  // complex.add(a, complex.constant<-0.0, -0.0>) -> a
   if (auto constantOp = getRhs().getDefiningOp<ConstantOp>()) {
     auto arrayAttr = constantOp.getValue();
-    if (arrayAttr[0].cast<FloatAttr>().getValue().isZero() &&
-        arrayAttr[1].cast<FloatAttr>().getValue().isZero()) {
+    if (llvm::cast<FloatAttr>(arrayAttr[0]).getValue().isNegZero() &&
+        llvm::cast<FloatAttr>(arrayAttr[1]).getValue().isNegZero()) {
       return getLhs();
     }
   }
@@ -145,8 +286,8 @@ OpFoldResult SubOp::fold(FoldAdaptor adaptor) {
   // complex.sub(a, complex.constant<0.0, 0.0>) -> a
   if (auto constantOp = getRhs().getDefiningOp<ConstantOp>()) {
     auto arrayAttr = constantOp.getValue();
-    if (arrayAttr[0].cast<FloatAttr>().getValue().isZero() &&
-        arrayAttr[1].cast<FloatAttr>().getValue().isZero()) {
+    if (llvm::cast<FloatAttr>(arrayAttr[0]).getValue().isZero() &&
+        llvm::cast<FloatAttr>(arrayAttr[1]).getValue().isZero()) {
       return getLhs();
     }
   }
@@ -162,18 +303,6 @@ OpFoldResult NegOp::fold(FoldAdaptor adaptor) {
   // complex.neg(complex.neg(a)) -> a
   if (auto negOp = getOperand().getDefiningOp<NegOp>())
     return negOp.getOperand();
-
-  return {};
-}
-
-//===----------------------------------------------------------------------===//
-// LogOp
-//===----------------------------------------------------------------------===//
-
-OpFoldResult LogOp::fold(FoldAdaptor adaptor) {
-  // complex.log(complex.exp(a)) -> a
-  if (auto expOp = getOperand().getDefiningOp<ExpOp>())
-    return expOp.getOperand();
 
   return {};
 }
@@ -198,6 +327,71 @@ OpFoldResult ConjOp::fold(FoldAdaptor adaptor) {
   // complex.conj(complex.conj(a)) -> a
   if (auto conjOp = getOperand().getDefiningOp<ConjOp>())
     return conjOp.getOperand();
+
+  return {};
+}
+
+//===----------------------------------------------------------------------===//
+// MulOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult MulOp::fold(FoldAdaptor adaptor) {
+  auto constant = getRhs().getDefiningOp<ConstantOp>();
+  if (!constant)
+    return {};
+
+  ArrayAttr arrayAttr = constant.getValue();
+  APFloat real = cast<FloatAttr>(arrayAttr[0]).getValue();
+  APFloat imag = cast<FloatAttr>(arrayAttr[1]).getValue();
+
+  if (!imag.isZero())
+    return {};
+
+  // complex.mul(a, complex.constant<1.0, 0.0>) -> a
+  if (real == APFloat(real.getSemantics(), 1))
+    return getLhs();
+
+  return {};
+}
+
+//===----------------------------------------------------------------------===//
+// DivOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult DivOp::fold(FoldAdaptor adaptor) {
+  Attribute rhs = adaptor.getRhs();
+  Attribute lhs = adaptor.getLhs();
+
+  // complex.div(complex.constant<NaN, NaN>, a) -> complex.constant<NaN, NaN>
+  // complex.div(complex.constant<NaN, a>, b) -> complex.constant<NaN, NaN>
+  // complex.div(complex.constant<a, NaN>, b) -> complex.constant<NaN, NaN>
+  bool isLhsComplexHasNan = false;
+  ArrayAttr lhsArrayAttr = dyn_cast_if_present<ArrayAttr>(lhs);
+  if (lhsArrayAttr && lhsArrayAttr.size() == 2) {
+    APFloat lhsReal = cast<FloatAttr>(lhsArrayAttr[0]).getValue();
+    APFloat lhsImag = cast<FloatAttr>(lhsArrayAttr[1]).getValue();
+    isLhsComplexHasNan = lhsReal.isNaN() || lhsImag.isNaN();
+    if (isLhsComplexHasNan) {
+      Attribute nanValue = lhsReal.isNaN() ? lhsArrayAttr[0] : lhsArrayAttr[1];
+      return ArrayAttr::get(getContext(), {nanValue, nanValue});
+    }
+  }
+
+  ArrayAttr rhsArrayAttr = dyn_cast_if_present<ArrayAttr>(rhs);
+  if (!rhsArrayAttr || rhsArrayAttr.size() != 2)
+    return {};
+
+  // Fold only if RHS is complex.constant<1.0, 0.0>
+  APFloat rhsImag = cast<FloatAttr>(rhsArrayAttr[1]).getValue();
+  APFloat rhsReal = cast<FloatAttr>(rhsArrayAttr[0]).getValue();
+  if (!rhsImag.isZero() || rhsReal != APFloat(rhsReal.getSemantics(), 1))
+    return {};
+
+  // Fold to LHS if it doesn't contains NaNs or fast math flag nan is set
+  // complex.div(a, complex.constant<1.0, 0.0>) fastmath<nnan> -> a
+  if ((lhsArrayAttr && !isLhsComplexHasNan) ||
+      arith::bitEnumContainsAll(getFastmath(), arith::FastMathFlags::nnan))
+    return getLhs();
 
   return {};
 }

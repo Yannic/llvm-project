@@ -68,11 +68,19 @@
 ; OBJ:     FunctionType: main (0x1005)
 ; OBJ:     CodeOffset: _main+0x0
 ; OBJ:     Segment: 0x0
-; OBJ:     Flags [ (0x0)
+; OBJ:     Flags [ (0x80)
+; OBJ:       HasOptimizedDebugInfo (0x80)
 ; OBJ:     ]
 ; OBJ:     DisplayName: main
 ; OBJ:     LinkageName: _main
 ; OBJ:   }
+
+; OBJ:        InlineesSym {
+; OBJ-NEXT:     Kind: S_INLINEES (0x1168)
+; OBJ-NEXT:     Inlinees [
+; OBJ-NEXT:       FuncID: g (0x1002)
+; OBJ-NEXT:     ]
+; OBJ-NEXT:   }
 
 ; Previously, g's InlineSiteSym referenced t.h, which was wasteful.
 ; OBJ:        InlineSiteSym {
@@ -129,7 +137,7 @@ entry:
   ret i32 %5, !dbg !32
 }
 
-attributes #0 = { norecurse nounwind uwtable "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "stack-protector-buffer-size"="8" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { norecurse nounwind uwtable "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "stack-protector-buffer-size"="8" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 
 !llvm.dbg.cu = !{!2}
 !llvm.module.flags = !{!8, !9, !10}

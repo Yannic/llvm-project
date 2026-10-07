@@ -75,9 +75,9 @@ M68kRegisterInfo::getRegsForTailCall(const MachineFunction &MF) const {
 unsigned
 M68kRegisterInfo::getMatchingMegaReg(unsigned Reg,
                                      const TargetRegisterClass *RC) const {
-  for (MCSuperRegIterator Super(Reg, this); Super.isValid(); ++Super)
-    if (RC->contains(*Super))
-      return *Super;
+  for (MCPhysReg Super : superregs(Reg))
+    if (RC->contains(Super))
+      return Super;
   return 0;
 }
 
@@ -89,14 +89,11 @@ M68kRegisterInfo::getMaximalPhysRegClass(unsigned reg, MVT VT) const {
   // Pick the most sub register class of the right type that contains
   // this physreg.
   const TargetRegisterClass *BestRC = nullptr;
-  for (regclass_iterator I = regclass_begin(), E = regclass_end(); I != E;
-       ++I) {
-    const TargetRegisterClass *RC = *I;
-    if ((VT == MVT::Other || isTypeLegalForClass(*RC, VT)) &&
-        RC->contains(reg) &&
+  for (const TargetRegisterClass &RC : regclasses()) {
+    if ((VT == MVT::Other || isTypeLegalForClass(RC, VT)) && RC.contains(reg) &&
         (!BestRC ||
-         (BestRC->hasSubClass(RC) && RC->getNumRegs() > BestRC->getNumRegs())))
-      BestRC = RC;
+         (BestRC->hasSubClass(&RC) && RC.getNumRegs() > BestRC->getNumRegs())))
+      BestRC = &RC;
   }
 
   assert(BestRC && "Couldn't find the register class");
@@ -129,8 +126,8 @@ BitVector M68kRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
     for (MCRegAliasIterator I(Reg, this, /* self */ true); I.isValid(); ++I) {
       Reserved.set(*I);
     }
-    for (MCSubRegIterator I(Reg, this, /* self */ true); I.isValid(); ++I) {
-      Reserved.set(*I);
+    for (MCPhysReg I : subregs_inclusive(Reg)) {
+      Reserved.set(I);
     }
   };
 
@@ -213,7 +210,7 @@ bool M68kRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
 bool M68kRegisterInfo::requiresRegisterScavenging(
     const MachineFunction &MF) const {
-  return true;
+  return false;
 }
 
 bool M68kRegisterInfo::trackLivenessAfterRegAlloc(

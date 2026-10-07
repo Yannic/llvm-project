@@ -20,9 +20,11 @@
 
 #include <cassert>
 #include <concepts>
+#include <cstddef>
 #include <functional>
 #include <ranges>
 #include <tuple>
+#include <utility>
 
 #include "../types.h"
 
@@ -31,7 +33,7 @@ struct Iter {
   std::tuple<int>* it_;
 
   using value_type       = std::tuple<int>;
-  using difference_type  = intptr_t;
+  using difference_type  = std::ptrdiff_t;
   using iterator_concept = std::input_iterator_tag;
 
   constexpr decltype(auto) operator*() const { return *it_; }

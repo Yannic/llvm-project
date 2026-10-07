@@ -1,11 +1,11 @@
 //===----------------------------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
 // template <class T>
@@ -17,6 +17,7 @@
 
 #include <bit>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -86,13 +87,13 @@ int main(int, char**)
     static_assert(!std::is_invocable_v<L, __int128_t>);
 #endif
 
-    static_assert(!std::is_invocable_v<L, int8_t>);
-    static_assert(!std::is_invocable_v<L, int16_t>);
-    static_assert(!std::is_invocable_v<L, int32_t>);
-    static_assert(!std::is_invocable_v<L, int64_t>);
-    static_assert(!std::is_invocable_v<L, intmax_t>);
-    static_assert(!std::is_invocable_v<L, intptr_t>);
-    static_assert(!std::is_invocable_v<L, ptrdiff_t>);
+    static_assert(!std::is_invocable_v<L, std::int8_t>);
+    static_assert(!std::is_invocable_v<L, std::int16_t>);
+    static_assert(!std::is_invocable_v<L, std::int32_t>);
+    static_assert(!std::is_invocable_v<L, std::int64_t>);
+    static_assert(!std::is_invocable_v<L, std::intmax_t>);
+    static_assert(!std::is_invocable_v<L, std::intptr_t>);
+    static_assert(!std::is_invocable_v<L, std::ptrdiff_t>);
 
     static_assert(!std::is_invocable_v<L, bool>);
     static_assert(!std::is_invocable_v<L, char>);
@@ -117,13 +118,13 @@ int main(int, char**)
 #ifndef TEST_HAS_NO_INT128
     static_assert(test<__uint128_t>());
 #endif
-    static_assert(test<uint8_t>());
-    static_assert(test<uint16_t>());
-    static_assert(test<uint32_t>());
-    static_assert(test<uint64_t>());
-    static_assert(test<uintmax_t>());
-    static_assert(test<uintptr_t>());
-    static_assert(test<size_t>());
+    static_assert(test<std::uint8_t>());
+    static_assert(test<std::uint16_t>());
+    static_assert(test<std::uint32_t>());
+    static_assert(test<std::uint64_t>());
+    static_assert(test<std::uintmax_t>());
+    static_assert(test<std::uintptr_t>());
+    static_assert(test<std::size_t>());
 
     test<unsigned char>();
     test<unsigned short>();
@@ -133,13 +134,68 @@ int main(int, char**)
 #ifndef TEST_HAS_NO_INT128
     test<__uint128_t>();
 #endif
-    test<uint8_t>();
-    test<uint16_t>();
-    test<uint32_t>();
-    test<uint64_t>();
-    test<uintmax_t>();
-    test<uintptr_t>();
-    test<size_t>();
+    test<std::uint8_t>();
+    test<std::uint16_t>();
+    test<std::uint32_t>();
+    test<std::uint64_t>();
+    test<std::uintmax_t>();
+    test<std::uintptr_t>();
+    test<std::size_t>();
+
+    // _BitInt tests. Width tiers follow C23 7.18.2.5.
+    // bit_width depends on numeric_limits::digits, so only byte-aligned widths.
+#if TEST_HAS_BITINT
+    {
+      using T32 = unsigned _BitInt(32);
+      using T64 = unsigned _BitInt(64);
+
+      assert(std::bit_width(T32(0)) == 0);
+      assert(std::bit_width(T32(1)) == 1);
+      assert(std::bit_width(T32(2)) == 2);
+      assert(std::bit_width(T32(3)) == 2);
+      assert(std::bit_width(T32(4)) == 3);
+      assert(std::bit_width(T32(7)) == 3);
+      assert(std::bit_width(T32(8)) == 4);
+      assert(std::bit_width(T32(9)) == 4);
+      assert(std::bit_width(T32(127)) == 7);
+      assert(std::bit_width(T32(128)) == 8);
+      assert(std::bit_width(T32(1024)) == 11);
+      assert(std::bit_width(T32(~T32(0) - 1)) == 32);
+      assert(std::bit_width(T32(~T32(0))) == 32);
+      assert(std::bit_width(T64(0)) == 0);
+      assert(std::bit_width(T64(1)) == 1);
+      assert(std::bit_width(T64(127)) == 7);
+      assert(std::bit_width(T64(128)) == 8);
+      assert(std::bit_width(T64(T64(1) << 63)) == 64);
+      assert(std::bit_width(T64(~T64(0))) == 64);
+    }
+#  if __BITINT_MAXWIDTH__ >= 128
+    {
+      using T128 = unsigned _BitInt(128);
+      assert(std::bit_width(T128(0)) == 0);
+      assert(std::bit_width(T128(1)) == 1);
+      // Bit at position 64 (just above 64-bit limb boundary).
+      assert(std::bit_width(T128(1) << 64) == 65);
+      assert(std::bit_width(T128(1) << 127) == 128);
+      assert(std::bit_width(T128(~T128(0))) == 128);
+    }
+#  endif
+#  if __BITINT_MAXWIDTH__ >= 256
+    {
+      using T256 = unsigned _BitInt(256);
+      assert(std::bit_width(T256(0)) == 0);
+      assert(std::bit_width(T256(1)) == 1);
+      assert(std::bit_width(T256(127)) == 7);
+      assert(std::bit_width(T256(128)) == 8);
+      // Boundary: bit at position 128 (just above 128-bit limb).
+      assert(std::bit_width(T256(1) << 128) == 129);
+      assert(std::bit_width(T256(1) << 100) == 101);
+      assert(std::bit_width(T256(1) << 200) == 201);
+      assert(std::bit_width(T256(1) << 255) == 256);
+      assert(std::bit_width(T256(~T256(0))) == 256);
+    }
+#  endif
+#endif // TEST_HAS_BITINT
 
     return 0;
 }

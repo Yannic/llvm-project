@@ -8,6 +8,7 @@
 
 #include "MinimalSymbolDumper.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/DebugInfo/CodeView/CVRecord.h"
 #include "llvm/DebugInfo/CodeView/CodeView.h"
 #include "llvm/DebugInfo/CodeView/Formatters.h"
@@ -210,6 +211,11 @@ static std::string formatSourceLanguage(SourceLanguage Lang) {
     RETURN_CASE(SourceLanguage, D, "d");
     RETURN_CASE(SourceLanguage, Swift, "swift");
     RETURN_CASE(SourceLanguage, Rust, "rust");
+    RETURN_CASE(SourceLanguage, ObjC, "objc");
+    RETURN_CASE(SourceLanguage, ObjCpp, "objc++");
+    RETURN_CASE(SourceLanguage, AliasObj, "aliasobj");
+    RETURN_CASE(SourceLanguage, Go, "go");
+    RETURN_CASE(SourceLanguage, OldSwift, "swift");
   }
   return formatUnknownEnum(Lang);
 }
@@ -279,6 +285,7 @@ static std::string formatMachineType(CPUType Cpu) {
     RETURN_CASE(CPUType, Thumb, "thumb");
     RETURN_CASE(CPUType, ARMNT, "arm nt");
     RETURN_CASE(CPUType, D3D11_Shader, "d3d11 shader");
+    RETURN_CASE(CPUType, Unknown, "unknown");
   }
   return formatUnknownEnum(Cpu);
 }
@@ -355,6 +362,31 @@ static std::string formatGaps(uint32_t IndentLevel,
   return typesetItemList(GapStrs, 7, IndentLevel, ", ");
 }
 
+static std::string formatJumpTableEntrySize(JumpTableEntrySize EntrySize) {
+  switch (EntrySize) {
+    RETURN_CASE(JumpTableEntrySize, Int8, "int8");
+    RETURN_CASE(JumpTableEntrySize, UInt8, "uin8");
+    RETURN_CASE(JumpTableEntrySize, Int16, "int16");
+    RETURN_CASE(JumpTableEntrySize, UInt16, "uint16");
+    RETURN_CASE(JumpTableEntrySize, Int32, "int32");
+    RETURN_CASE(JumpTableEntrySize, UInt32, "uint32");
+    RETURN_CASE(JumpTableEntrySize, Pointer, "pointer");
+    RETURN_CASE(JumpTableEntrySize, UInt8ShiftLeft, "uint8shl");
+    RETURN_CASE(JumpTableEntrySize, UInt16ShiftLeft, "uint16shl");
+    RETURN_CASE(JumpTableEntrySize, Int8ShiftLeft, "int8shl");
+    RETURN_CASE(JumpTableEntrySize, Int16ShiftLeft, "int16shl");
+  }
+  return formatUnknownEnum(EntrySize);
+}
+
+static std::string formatAssociationKind(AssociationKind Kind) {
+  switch (Kind) {
+    RETURN_CASE(AssociationKind, None, "none");
+    RETURN_CASE(AssociationKind, Coroutine, "coroutine");
+  }
+  return formatUnknownEnum(Kind);
+}
+
 Error MinimalSymbolDumper::visitSymbolBegin(codeview::CVSymbol &Record) {
   return visitSymbolBegin(Record, 0);
 }
@@ -372,12 +404,21 @@ Error MinimalSymbolDumper::visitSymbolBegin(codeview::CVSymbol &Record,
 }
 
 Error MinimalSymbolDumper::visitSymbolEnd(CVSymbol &Record) {
-  if (RecordBytes) {
-    AutoIndent Indent(P, 7);
-    P.formatBinary("bytes", Record.content(), 0);
-  }
+  if (RecordBytes)
+    printSymbolBytes(Record);
   P.Unindent();
   return Error::success();
+}
+
+Error MinimalSymbolDumper::visitUnknownSymbol(CVSymbol &Record) {
+  if (!RecordBytes)
+    printSymbolBytes(Record);
+  return Error::success();
+}
+
+void MinimalSymbolDumper::printSymbolBytes(CVSymbol &Record) const {
+  AutoIndent Indent(P, 7);
+  P.formatBinary("bytes", Record.content(), 0);
 }
 
 std::string MinimalSymbolDumper::typeOrIdIndex(codeview::TypeIndex TI,
@@ -605,6 +646,20 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
   return Error::success();
 }
 
+Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
+                                            DefRangeRegisterRelIndirSym &Def) {
+  AutoIndent Indent(P, 7);
+  P.formatLine("register = {0}, offset = {1}, offset in udt = {2}, offset in "
+               "parent = {3}, has "
+               "spilled udt = {4}",
+               formatRegisterId(Def.Hdr.Register, CompilationCPU),
+               int32_t(Def.Hdr.BasePointerOffset), int32_t(Def.Hdr.OffsetInUdt),
+               Def.offsetInParent(), Def.hasSpilledUDTMember());
+  P.formatLine("range = {0}, gaps = [{1}]", formatRange(Def.Range),
+               formatGaps(P.getIndentLevel() + 9, Def.Gaps));
+  return Error::success();
+}
+
 Error MinimalSymbolDumper::visitKnownRecord(
     CVSymbol &CVR, DefRangeRegisterSym &DefRangeRegister) {
   AutoIndent Indent(P, 7);
@@ -749,7 +804,7 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR, InlineSiteSym &IS) {
         else
           return MaybeFile.takeError();
       }
-      P.format(" setfile {0} 0x{1}", utohexstr(FileOffset));
+      P.format(" setfile {0} 0x{1}", Filename, utohexstr(FileOffset));
       break;
     }
 
@@ -855,9 +910,24 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
 }
 
 Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR, CallerSym &Caller) {
+  const char *Format;
+  switch (CVR.kind()) {
+  case S_CALLEES:
+    Format = "callee: {0}";
+    break;
+  case S_CALLERS:
+    Format = "caller: {0}";
+    break;
+  case S_INLINEES:
+    Format = "inlinee: {0}";
+    break;
+  default:
+    return llvm::make_error<CodeViewError>(
+        "Unknown CV Record type for a CallerSym object!");
+  }
   AutoIndent Indent(P, 7);
   for (const auto &I : Caller.Indices) {
-    P.formatLine("callee: {0}", idIndex(I));
+    P.formatLine(Format, idIndex(I));
   }
   return Error::success();
 }
@@ -869,6 +939,17 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
   P.formatLine(
       "type = {0}, register = {1}, offset = {2}", typeIndex(RegRel.Type),
       formatRegisterId(RegRel.Register, CompilationCPU), RegRel.Offset);
+  return Error::success();
+}
+
+Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
+                                            RegRelativeIndirSym &RegRelIndir) {
+  P.format(" `{0}`", RegRelIndir.Name);
+  AutoIndent Indent(P, 7);
+  P.formatLine("type = {0}, register = {1}, offset = {2}, offset-in-udt = {3}",
+               typeIndex(RegRelIndir.Type),
+               formatRegisterId(RegRelIndir.Register, CompilationCPU),
+               RegRelIndir.Offset, RegRelIndir.OffsetInUdt);
   return Error::success();
 }
 
@@ -900,5 +981,35 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
   P.formatLine("addr = {0}", formatSegmentOffset(Annot.Segment, Annot.CodeOffset));
   P.formatLine("strings = {0}", typesetStringList(P.getIndentLevel() + 9 + 2,
                                                    Annot.Strings));
+  return Error::success();
+}
+
+Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
+                                            JumpTableSym &JumpTable) {
+  AutoIndent Indent(P, 7);
+  P.formatLine(
+      "base = {0}, switchtype = {1}, branch = {2}, table = {3}, entriescount = "
+      "{4}",
+      formatSegmentOffset(JumpTable.BaseSegment, JumpTable.BaseOffset),
+      formatJumpTableEntrySize(JumpTable.SwitchType),
+      formatSegmentOffset(JumpTable.BranchSegment, JumpTable.BranchOffset),
+      formatSegmentOffset(JumpTable.TableSegment, JumpTable.TableOffset),
+      JumpTable.EntriesCount);
+  return Error::success();
+}
+
+Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
+                                            HotPatchFuncSym &JumpTable) {
+  AutoIndent Indent(P, 7);
+  P.formatLine("function = {0}, name = {1}", typeIndex(JumpTable.Function),
+               JumpTable.Name);
+  return Error::success();
+}
+
+Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
+                                            AssociationSym &Assoc) {
+  AutoIndent Indent(P, 7);
+  P.formatLine("kind = {0}, addr = {1}", formatAssociationKind(Assoc.AssocKind),
+               formatSegmentOffset(Assoc.Segment, Assoc.CodeOffset));
   return Error::success();
 }

@@ -14,6 +14,7 @@
 // FIXME: Use appropriate wrappers for poll.h and mman.h
 // to support Windows and remove this linux-only guard.
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Errc.h"
 
@@ -27,7 +28,6 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <vector>
 
 #include <poll.h>
 #include <sys/mman.h>
@@ -45,13 +45,16 @@ static const size_t kDataBufferSize = kBufferPages * getpagesize();
 // the next page, so we allocate one more page.
 static const size_t kMappedBufferSize = (kBufferPages + 1) * getpagesize();
 
+static constexpr int kPollTimeoutMs = 1000;
+static constexpr int kMaxPolls = 3;
+
 // Waits for the LBR perf events.
 static int pollLbrPerfEvent(const int FileDescriptor) {
   struct pollfd PollFd;
   PollFd.fd = FileDescriptor;
   PollFd.events = POLLIN;
   PollFd.revents = 0;
-  return poll(&PollFd, 1 /* num of fds */, 10000 /* timeout in ms */);
+  return poll(&PollFd, 1 /* num of fds */, kPollTimeoutMs);
 }
 
 // Copies the data-buffer into Buf, given the pointer to MMapped.
@@ -74,9 +77,9 @@ static void copyDataBuffer(void *MMappedBuffer, char *Buf, uint64_t Tail,
 // Parses the given data-buffer for stats and fill the CycleArray.
 // If data has been extracted successfully, also modifies the code to jump
 // out the benchmark loop.
-static llvm::Error parseDataBuffer(const char *DataBuf, size_t DataSize,
-                                   const void *From, const void *To,
-                                   llvm::SmallVector<int64_t, 4> *CycleArray) {
+static Error parseDataBuffer(const char *DataBuf, size_t DataSize,
+                             const void *From, const void *To,
+                             SmallVector<int64_t, 4> *CycleArray) {
   const char *DataPtr = DataBuf;
   while (DataPtr < DataBuf + DataSize) {
     struct perf_event_header Header;
@@ -87,7 +90,7 @@ static llvm::Error parseDataBuffer(const char *DataBuf, size_t DataSize,
       continue;
     }
     DataPtr += sizeof(Header);
-    uint64_t Count = llvm::support::endian::read64(DataPtr, support::native);
+    uint64_t Count = support::endian::read64(DataPtr, endianness::native);
     DataPtr += sizeof(Count);
 
     struct perf_branch_entry Entry;
@@ -107,15 +110,14 @@ static llvm::Error parseDataBuffer(const char *DataBuf, size_t DataSize,
 
       if (i == Count - 1)
         // We've reached the last entry.
-        return llvm::Error::success();
+        return Error::success();
 
       // Advance to next entry
       DataPtr += sizeof(Entry);
       memcpy(&Entry, DataPtr, sizeof(struct perf_branch_entry));
     }
   }
-  return llvm::make_error<llvm::StringError>("Unable to parse databuffer.",
-                                             llvm::errc::io_error);
+  return make_error<StringError>("Unable to parse databuffer.", errc::io_error);
 }
 
 X86LbrPerfEvent::X86LbrPerfEvent(unsigned SamplingPeriod) {
@@ -140,23 +142,23 @@ X86LbrPerfEvent::X86LbrPerfEvent(unsigned SamplingPeriod) {
 }
 
 X86LbrCounter::X86LbrCounter(pfm::PerfEvent &&NewEvent)
-    : Counter(std::move(NewEvent)) {
+    : CounterGroup(std::move(NewEvent), {}) {
   MMappedBuffer = mmap(nullptr, kMappedBufferSize, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, FileDescriptor, 0);
+                       MAP_SHARED, getFileDescriptor(), 0);
   if (MMappedBuffer == MAP_FAILED)
-    llvm::errs() << "Failed to mmap buffer.";
+    errs() << "Failed to mmap buffer.";
 }
 
 X86LbrCounter::~X86LbrCounter() {
   if (0 != munmap(MMappedBuffer, kMappedBufferSize))
-    llvm::errs() << "Failed to munmap buffer.";
+    errs() << "Failed to munmap buffer.";
 }
 
 void X86LbrCounter::start() {
-  ioctl(FileDescriptor, PERF_EVENT_IOC_REFRESH, 1024 /* kMaxPollsPerFd */);
+  ioctl(getFileDescriptor(), PERF_EVENT_IOC_REFRESH, 1024 /* kMaxPollsPerFd */);
 }
 
-llvm::Error X86LbrCounter::checkLbrSupport() {
+Error X86LbrCounter::checkLbrSupport() {
   // Do a sample read and check if the results contain non-zero values.
 
   X86LbrCounter counter(X86LbrPerfEvent(123));
@@ -180,59 +182,54 @@ llvm::Error X86LbrCounter::checkLbrSupport() {
   counter.stop();
   (void)Sum;
 
-  auto ResultOrError = counter.doReadCounter(nullptr, nullptr);
-  if (ResultOrError)
-    if (!ResultOrError.get().empty())
-      // If there is at least one non-zero entry, then LBR is supported.
-      for (const int64_t &Value : ResultOrError.get())
-        if (Value != 0)
-          return Error::success();
+  // A read that fails just means LBR is unusable here. If there is at least one
+  // non-zero entry, then LBR is supported.
+  if (auto Result = expectedToOptional(counter.doReadCounter(nullptr, nullptr)))
+    if (any_of(*Result, [](int64_t Value) { return Value != 0; }))
+      return Error::success();
 
-  return llvm::make_error<llvm::StringError>(
+  return make_error<StringError>(
       "LBR format with cycles is not suppported on the host.",
-      llvm::errc::not_supported);
+      errc::not_supported);
 }
 
-llvm::Expected<llvm::SmallVector<int64_t, 4>>
+Expected<SmallVector<int64_t, 4>>
 X86LbrCounter::readOrError(StringRef FunctionBytes) const {
   // Disable the event before reading
-  ioctl(FileDescriptor, PERF_EVENT_IOC_DISABLE, 0);
+  ioctl(getFileDescriptor(), PERF_EVENT_IOC_DISABLE, 0);
 
   // Find the boundary of the function so that we could filter the LBRs
   // to keep only the relevant records.
   if (FunctionBytes.empty())
-    return llvm::make_error<llvm::StringError>("Empty function bytes",
-                                               llvm::errc::invalid_argument);
+    return make_error<StringError>("Empty function bytes",
+                                   errc::invalid_argument);
   const void *From = reinterpret_cast<const void *>(FunctionBytes.data());
   const void *To = reinterpret_cast<const void *>(FunctionBytes.data() +
                                                   FunctionBytes.size());
   return doReadCounter(From, To);
 }
 
-llvm::Expected<llvm::SmallVector<int64_t, 4>>
+Expected<SmallVector<int64_t, 4>>
 X86LbrCounter::doReadCounter(const void *From, const void *To) const {
-  // The max number of time-outs/retries before we give up.
-  static constexpr int kMaxTimeouts = 160;
-
   // Parses the LBR buffer and fills CycleArray with the sequence of cycle
   // counts from the buffer.
-  llvm::SmallVector<int64_t, 4> CycleArray;
+  SmallVector<int64_t, 4> CycleArray;
   auto DataBuf = std::make_unique<char[]>(kDataBufferSize);
-  int NumTimeouts = 0;
-  int PollResult = 0;
 
-  while (PollResult <= 0) {
-    PollResult = pollLbrPerfEvent(FileDescriptor);
-    if (PollResult > 0)
-      break;
-    if (PollResult == -1)
-      return llvm::make_error<llvm::StringError>("Cannot poll LBR perf event.",
-                                                 llvm::errc::io_error);
-    if (NumTimeouts++ >= kMaxTimeouts)
-      return llvm::make_error<llvm::StringError>(
-          "LBR polling still timed out after max number of attempts.",
-          llvm::errc::device_or_resource_busy);
-  }
+  // The event is disabled before we get here, so a sample either is already in
+  // the ring buffer -- wakeup_events == 1 leaves POLLIN asserted -- or it will
+  // never arrive. The budget only absorbs wake-up latency.
+  int PollResult = 0;
+  for (int I = 0; I != kMaxPolls && PollResult == 0; ++I)
+    PollResult = pollLbrPerfEvent(getFileDescriptor());
+
+  if (PollResult < 0)
+    return make_error<StringError>("Cannot poll LBR perf event.",
+                                   errc::io_error);
+  if (PollResult == 0)
+    return make_error<StringError>(
+        "LBR polling still timed out after max number of attempts.",
+        errc::device_or_resource_busy);
 
   struct perf_event_mmap_page Page;
   memcpy(&Page, MMappedBuffer, sizeof(struct perf_event_mmap_page));
@@ -243,12 +240,11 @@ X86LbrCounter::doReadCounter(const void *From, const void *To) const {
   std::atomic_thread_fence(std::memory_order_acq_rel);
   const size_t DataSize = DataHead - DataTail;
   if (DataSize > kDataBufferSize)
-    return llvm::make_error<llvm::StringError>(
-        "DataSize larger than buffer size.", llvm::errc::invalid_argument);
+    return make_error<StringError>("DataSize larger than buffer size.",
+                                   errc::invalid_argument);
 
   copyDataBuffer(MMappedBuffer, DataBuf.get(), DataTail, DataSize);
-  llvm::Error error =
-      parseDataBuffer(DataBuf.get(), DataSize, From, To, &CycleArray);
+  Error error = parseDataBuffer(DataBuf.get(), DataSize, From, To, &CycleArray);
   if (!error)
     return CycleArray;
   return std::move(error);

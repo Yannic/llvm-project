@@ -8,22 +8,16 @@
 
 #include "src/sys/select/select.h"
 
+#include "hdr/types/fd_set.h"
+#include "hdr/types/struct_timespec.h"
+#include "hdr/types/struct_timeval.h"
 #include "src/__support/CPP/limits.h"
-#include "src/__support/OSUtil/syscall.h" // For internal syscall function.
+#include "src/__support/OSUtil/linux/syscall_wrappers/pselect6.h"
 #include "src/__support/common.h"
+#include "src/__support/libc_errno.h"
+#include "src/__support/macros/config.h"
 
-#include <errno.h>
-#include <signal.h>
-#include <stddef.h> // For size_t
-#include <sys/select.h>
-#include <sys/syscall.h> // For syscall numbers.
-
-namespace __llvm_libc {
-
-struct pselect6_sigset_t {
-  sigset_t *ss;
-  size_t ss_len;
-};
+namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(int, select,
                    (int nfds, fd_set *__restrict read_set,
@@ -32,12 +26,9 @@ LLVM_LIBC_FUNCTION(int, select,
   // Linux has a SYS_select syscall but it is not available on all
   // architectures. So, we use the SYS_pselect6 syscall which is more
   // widely available. However, SYS_pselect6 takes a struct timespec argument
-  // instead of a struct timeval argument. Also, it takes an additional
-  // argument which is a pointer to an object of a type defined above as
-  // "pselect6_sigset_t".
-  struct timespec ts {
-    0, 0
-  };
+  // instead of a struct timeval argument.
+  struct timespec ts;
+  struct timespec *tsp = nullptr;
   if (timeout != nullptr) {
     // In general, if the tv_sec and tv_usec in |timeout| are correctly set,
     // then converting tv_usec to nanoseconds will not be a problem. However,
@@ -49,17 +40,18 @@ LLVM_LIBC_FUNCTION(int, select,
       ts.tv_nsec = 999999999;
     } else {
       ts.tv_sec = timeout->tv_sec + timeout->tv_usec / 1000000;
-      ts.tv_nsec = timeout->tv_usec * 1000;
+      ts.tv_nsec = (timeout->tv_usec % 1000000) * 1000;
     }
+    tsp = &ts;
   }
-  pselect6_sigset_t pss{nullptr, sizeof(sigset_t)};
-  long ret = __llvm_libc::syscall_impl(SYS_pselect6, nfds, read_set, write_set,
-                                       error_set, &ts, &pss);
-  if (ret < 0) {
-    errno = -ret;
+
+  auto result = linux_syscalls::pselect6(nfds, read_set, write_set, error_set,
+                                         tsp, nullptr);
+  if (!result.has_value()) {
+    libc_errno = result.error();
     return -1;
   }
-  return ret;
+  return result.value();
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

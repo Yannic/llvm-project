@@ -3,9 +3,9 @@
 ; RUN: %llc_dwarf -fast-isel=false -O0 -filetype=obj %s -o %t
 ; RUN: llvm-dwarfdump -a %t | FileCheck %s
 
-; CHECK: {{0x[0-9a-f]+}}      1      0      1   0             0  is_stmt
-; CHECK: {{0x[0-9a-f]+}}      2      0      1   0             0  is_stmt
-; CHECK: {{0x[0-9a-f]+}}      4      0      1   0             0  is_stmt
+; CHECK: {{0x[0-9a-f]+}}      1      0      1   0             0       0  is_stmt
+; CHECK: {{0x[0-9a-f]+}}      2      0      1   0             0       0  is_stmt
+; CHECK: {{0x[0-9a-f]+}}      4      0      1   0             0       0  is_stmt
 
 ; IR generated from clang -O0 -g with the following source:
 ;void foo(int i){
@@ -37,7 +37,7 @@ sw.default:                                       ; preds = %entry
 ; Function Attrs: nounwind readnone
 declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 
-attributes #0 = { nounwind "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone }
 
 !llvm.dbg.cu = !{!0}

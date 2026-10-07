@@ -18,27 +18,139 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ProfileData/SampleProfWriter.h"
+#include "llvm/ADT/Eytzinger.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ProfileData/ProfileCommon.h"
 #include "llvm/ProfileData/SampleProf.h"
 #include "llvm/Support/Compression.h"
-#include "llvm/Support/Endian.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MD5.h"
+#include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
-#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <memory>
-#include <set>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#define DEBUG_TYPE "llvm-profdata"
+
 using namespace llvm;
 using namespace sampleprof;
+
+// To begin with, make this option off by default.
+static cl::opt<bool> ExtBinaryWriteVTableTypeProf(
+    "extbinary-write-vtable-type-prof", cl::init(false), cl::Hidden,
+    cl::desc("Write vtable type profile in ext-binary sample profile writer"));
+
+static cl::opt<uint64_t> RequestedVersion(
+    "sample-profile-format-version", cl::init(DefaultVersion), cl::Hidden,
+    cl::desc("Format version to write for extensible binary profiles"));
+
+static cl::opt<bool>
+    ExtBinaryCompositeProf("extbinary-composite-prof", cl::init(false),
+                           cl::Hidden,
+                           cl::desc("Use the composite profile format"));
+
+namespace llvm {
+namespace support {
+namespace endian {
+namespace {
+
+// Adapter class to llvm::support::endian::Writer for pwrite().
+struct SeekableWriter {
+  raw_pwrite_stream &OS;
+  endianness Endian;
+  SeekableWriter(raw_pwrite_stream &OS, endianness Endian)
+      : OS(OS), Endian(Endian) {}
+
+  template <typename ValueType> void pwrite(ValueType Val, size_t Offset) {
+    std::string StringBuf;
+    raw_string_ostream SStream(StringBuf);
+    Writer(SStream, Endian).write(Val);
+    OS.pwrite(StringBuf.data(), StringBuf.size(), Offset);
+  }
+};
+
+} // namespace
+} // namespace endian
+} // namespace support
+} // namespace llvm
+
+DefaultFunctionPruningStrategy::DefaultFunctionPruningStrategy(
+    SampleProfileMap &ProfileMap, size_t OutputSizeLimit)
+    : FunctionPruningStrategy(ProfileMap, OutputSizeLimit) {
+  sortFuncProfiles(ProfileMap, SortedFunctions);
+}
+
+void DefaultFunctionPruningStrategy::Erase(size_t CurrentOutputSize) {
+  double D = (double)OutputSizeLimit / CurrentOutputSize;
+  size_t NewSize = (size_t)round(ProfileMap.size() * D * D);
+  size_t NumToRemove = ProfileMap.size() - NewSize;
+  if (NumToRemove < 1)
+    NumToRemove = 1;
+
+  assert(NumToRemove <= SortedFunctions.size());
+  for (const NameFunctionSamples &E :
+       llvm::drop_begin(SortedFunctions, SortedFunctions.size() - NumToRemove))
+    ProfileMap.erase(E.first);
+  SortedFunctions.resize(SortedFunctions.size() - NumToRemove);
+}
+
+std::error_code SampleProfileWriter::writeWithSizeLimitInternal(
+    SampleProfileMap &ProfileMap, size_t OutputSizeLimit,
+    FunctionPruningStrategy *Strategy) {
+  if (OutputSizeLimit == 0)
+    return write(ProfileMap);
+
+  size_t OriginalFunctionCount = ProfileMap.size();
+
+  std::unique_ptr<raw_ostream> OriginalOutputStream;
+  OutputStream.swap(OriginalOutputStream);
+
+  size_t IterationCount = 0;
+  size_t TotalSize;
+
+  SmallVector<char> StringBuffer;
+  do {
+    StringBuffer.clear();
+    OutputStream.reset(new raw_svector_ostream(StringBuffer));
+    if (std::error_code EC = write(ProfileMap))
+      return EC;
+
+    TotalSize = StringBuffer.size();
+    // On Windows every "\n" is actually written as "\r\n" to disk but not to
+    // memory buffer, this difference should be added when considering the total
+    // output size.
+#ifdef _WIN32
+    if (Format == SPF_Text)
+      TotalSize += LineCount;
+#endif
+    if (TotalSize <= OutputSizeLimit)
+      break;
+
+    Strategy->Erase(TotalSize);
+    IterationCount++;
+  } while (ProfileMap.size() != 0);
+
+  if (ProfileMap.size() == 0)
+    return sampleprof_error::too_large;
+
+  OutputStream.swap(OriginalOutputStream);
+  OutputStream->write(StringBuffer.data(), StringBuffer.size());
+  LLVM_DEBUG(dbgs() << "Profile originally has " << OriginalFunctionCount
+                    << " functions, reduced to " << ProfileMap.size() << " in "
+                    << IterationCount << " iterations\n");
+  // Silence warning on Release build.
+  (void)OriginalFunctionCount;
+  (void)IterationCount;
+  return sampleprof_error::success;
+}
 
 std::error_code
 SampleProfileWriter::writeFuncProfiles(const SampleProfileMap &ProfileMap) {
@@ -71,7 +183,7 @@ SampleProfileWriterExtBinaryBase::markSectionStart(SecType Type,
   assert(LayoutIdx < SectionHdrLayout.size() && "LayoutIdx out of range");
   const auto &Entry = SectionHdrLayout[LayoutIdx];
   assert(Entry.Type == Type && "Unexpected section type");
-  // Use LocalBuf as a temporary output for writting data.
+  // Use LocalBuf as a temporary output for writing data.
   if (hasSecFlag(Entry, SecCommonFlags::SecFlagCompress))
     LocalBufStream.swap(OutputStream);
   return SectionStart;
@@ -82,7 +194,7 @@ std::error_code SampleProfileWriterExtBinaryBase::compressAndOutput() {
     return sampleprof_error::zlib_unavailable;
   std::string &UncompressedStrings =
       static_cast<raw_string_ostream *>(LocalBufStream.get())->str();
-  if (UncompressedStrings.size() == 0)
+  if (UncompressedStrings.empty())
     return sampleprof_error::success;
   auto &OS = *OutputStream;
   SmallVector<uint8_t, 128> CompressedStrings;
@@ -116,6 +228,12 @@ std::error_code SampleProfileWriterExtBinaryBase::addNewSection(
 
 std::error_code
 SampleProfileWriterExtBinaryBase::write(const SampleProfileMap &ProfileMap) {
+  // When calling write on a different profile map, existing states should be
+  // cleared.
+  NameTable.clear();
+  CSNameTable.clear();
+  SecHdrTable.clear();
+
   if (std::error_code EC = writeHeader(ProfileMap))
     return EC;
 
@@ -135,7 +253,7 @@ std::error_code SampleProfileWriterExtBinaryBase::writeContextIdx(
   if (Context.hasContext())
     return writeCSNameIdx(Context);
   else
-    return SampleProfileWriterBinary::writeNameIdx(Context.getName());
+    return SampleProfileWriterBinary::writeNameIdx(Context.getFunction());
 }
 
 std::error_code
@@ -152,11 +270,71 @@ SampleProfileWriterExtBinaryBase::writeSample(const FunctionSamples &S) {
   uint64_t Offset = OutputStream->tell();
   auto &Context = S.getContext();
   FuncOffsetTable[Context] = Offset - SecLBRProfileStart;
-  encodeULEB128(S.getHeadSamples(), *OutputStream);
-  return writeBody(S);
+  if (!WriteCompositeProf)
+    encodeULEB128(S.getHeadSamples(), *OutputStream);
+  return writeBody(S, /*IsNested=*/false);
 }
 
-std::error_code SampleProfileWriterExtBinaryBase::writeFuncOffsetTable() {
+std::error_code
+SampleProfileWriterExtBinaryBase::writeFuncOffsetTable(SecType Type,
+                                                       bool IsNested) {
+  if (UseMD5IndexedTables) {
+    // Eytzinger layout requires MD5 representation and does not support
+    // multi-context Context-Sensitive profiles.
+    if (!UseMD5 || FunctionSamples::ProfileIsCS)
+      return sampleprof_error::unsupported_writing_format;
+    return writeEytzingerFuncOffsetTable(Type, IsNested);
+  }
+  return writeLegacyFuncOffsetTable(Type);
+}
+
+std::error_code
+SampleProfileWriterExtBinaryBase::writeEytzingerFuncOffsetTable(SecType Type,
+                                                                bool IsNested) {
+  assert((NumNested + NumFlat > 0 || FuncOffsetTable.empty()) &&
+         "SecNameTable must be written before SecFuncOffsetTable to establish "
+         "Eytzinger indices!");
+
+  size_t SpanSize = IsNested ? NumNested : NumFlat;
+  size_t BaseIdx = IsNested ? 0 : NumNested;
+
+  std::vector<support::ulittle32_t> FuncOffsets(
+      SpanSize, support::ulittle32_t(UINT32_MAX));
+
+  // Populate the function offset array parallel to the Eytzinger span.
+  for (const auto &[Context, RelativeOffset] : FuncOffsetTable) {
+    if (RelativeOffset >= UINT32_MAX)
+      return sampleprof_error::too_large;
+
+    FunctionId FId = Context.getFunction();
+    auto It = NameTable.find(FId);
+    if (It == NameTable.end())
+      continue;
+
+    size_t GlobalIdx = It->second;
+    if (GlobalIdx < BaseIdx || (GlobalIdx - BaseIdx) >= SpanSize)
+      continue;
+
+    size_t LocalIdx = GlobalIdx - BaseIdx;
+    assert(
+        FuncOffsets[LocalIdx] == UINT32_MAX &&
+        "Function offset slot already populated; duplicate GUID or collision!");
+    FuncOffsets[LocalIdx] = static_cast<uint32_t>(RelativeOffset);
+  }
+
+  assert(!llvm::is_contained(FuncOffsets, support::ulittle32_t(UINT32_MAX)) &&
+         "Unpopulated slot in Eytzinger function offset array!");
+
+  OutputStream->write(reinterpret_cast<const char *>(FuncOffsets.data()),
+                      SpanSize * sizeof(support::ulittle32_t));
+  // Type is SecFuncOffsetTable or SecCompositeFuncOffsetTable.
+  addSectionFlag(Type, SecFuncOffsetFlags::SecFlagEytzinger);
+  FuncOffsetTable.clear();
+  return sampleprof_error::success;
+}
+
+std::error_code
+SampleProfileWriterExtBinaryBase::writeLegacyFuncOffsetTable(SecType Type) {
   auto &OS = *OutputStream;
 
   // Write out the table size.
@@ -180,7 +358,7 @@ std::error_code SampleProfileWriterExtBinaryBase::writeFuncOffsetTable() {
       if (std::error_code EC = WriteItem(Entry.first, Entry.second))
         return EC;
     }
-    addSectionFlag(SecFuncOffsetTable, SecFuncOffsetFlags::SecFlagOrdered);
+    addSectionFlag(Type, SecFuncOffsetFlags::SecFlagOrdered);
   } else {
     for (const auto &Entry : FuncOffsetTable) {
       if (std::error_code EC = WriteItem(Entry.first, Entry.second))
@@ -236,28 +414,40 @@ std::error_code SampleProfileWriterExtBinaryBase::writeFuncMetadata(
   return sampleprof_error::success;
 }
 
+template <class KeyT, class ValT>
+static SmallVector<std::pair<KeyT, ValT> *, 0>
+stabilizeTable(MapVector<KeyT, ValT> &Table) {
+  SmallVector<std::pair<KeyT, ValT> *, 0> Entries(
+      llvm::make_pointer_range(Table));
+
+  llvm::sort(Entries,
+             [](const auto *L, const auto *R) { return L->first < R->first; });
+
+  for (const auto &[I, Entry] : llvm::enumerate(Entries))
+    Entry->second = I;
+
+  return Entries;
+}
+
 std::error_code SampleProfileWriterExtBinaryBase::writeNameTable() {
   if (!UseMD5)
     return SampleProfileWriterBinary::writeNameTable();
 
   auto &OS = *OutputStream;
-  std::set<StringRef> V;
-  stablizeNameTable(NameTable, V);
 
   // Write out the MD5 name table. We wrote unencoded MD5 so reader can
   // retrieve the name using the name index without having to read the
   // whole name table.
   encodeULEB128(NameTable.size(), OS);
-  support::endian::Writer Writer(OS, support::little);
-  for (auto N : V)
-    Writer.write(MD5Hash(N));
+  support::endian::Writer Writer(OS, llvm::endianness::little);
+  for (const auto *Entry : stabilizeTable(NameTable))
+    Writer.write(Entry->first.getHashCode());
   return sampleprof_error::success;
 }
 
 std::error_code SampleProfileWriterExtBinaryBase::writeNameTableSection(
     const SampleProfileMap &ProfileMap) {
   for (const auto &I : ProfileMap) {
-    assert(I.first == I.second.getContext() && "Inconsistent profile map");
     addContext(I.second.getContext());
     addNames(I.second);
   }
@@ -265,11 +455,24 @@ std::error_code SampleProfileWriterExtBinaryBase::writeNameTableSection(
   // If NameTable contains ".__uniq." suffix, set SecFlagUniqSuffix flag
   // so compiler won't strip the suffix during profile matching after
   // seeing the flag in the profile.
-  for (const auto &I : NameTable) {
-    if (I.first.contains(FunctionSamples::UniqSuffix)) {
-      addSectionFlag(SecNameTable, SecNameTableFlags::SecFlagUniqSuffix);
-      break;
+  // Original names are unavailable if using MD5, so this option has no use.
+  if (!UseMD5) {
+    for (const auto &I : NameTable) {
+      if (I.first.stringRef().contains(FunctionSamples::UniqSuffix)) {
+        addSectionFlag(SecNameTable, SecNameTableFlags::SecFlagUniqSuffix);
+        break;
+      }
     }
+  }
+
+  if (UseMD5 && UseMD5IndexedTables) {
+    // Eytzinger name tables do not support CSSPGO profiles
+    // (FunctionSamples::ProfileIsCS).
+    if (FunctionSamples::ProfileIsCS)
+      return sampleprof_error::unsupported_writing_format;
+    if (auto EC = writeEytzingerNameTableSection(ProfileMap))
+      return EC;
+    return sampleprof_error::success;
   }
 
   if (auto EC = writeNameTable())
@@ -277,25 +480,111 @@ std::error_code SampleProfileWriterExtBinaryBase::writeNameTableSection(
   return sampleprof_error::success;
 }
 
-std::error_code SampleProfileWriterExtBinaryBase::writeCSNameTableSection() {
-  // Sort the names to make CSNameTable deterministic.
-  std::set<SampleContext> OrderedContexts;
-  for (const auto &I : CSNameTable)
-    OrderedContexts.insert(I.first);
-  assert(OrderedContexts.size() == CSNameTable.size() &&
-         "Unmatched ordered and unordered contexts");
-  uint64_t I = 0;
-  for (auto &Context : OrderedContexts)
-    CSNameTable[Context] = I++;
+namespace {
 
+// Helper class to construct and write the SecNameTable section in Eytzinger
+// layout for ExtBinary MD5 profiles.
+//
+// The on-disk layout of the Eytzinger name table section consists of symbol
+// counts followed by three contiguous Eytzinger hash arrays:
+// - ULEB128 count of Nested top-level profile symbol keys
+// - ULEB128 count of Flat top-level profile symbol keys
+// - ULEB128 count of Inlinee and auxiliary profile symbol keys
+// - Array of 64-bit little-endian MD5 hash keys for Nested profiles in
+//   Eytzinger order
+// - Array of 64-bit little-endian MD5 hash keys for Flat profiles in Eytzinger
+//   order
+// - Array of 64-bit little-endian MD5 hash keys for Inlinees in Eytzinger order
+class EytzingerNameTable {
+  using TableT = llvm::EytzingerTable<support::ulittle64_t>;
+  std::array<TableT, static_cast<size_t>(EytzingerSpan::NumSpans)> Spans;
+
+public:
+  EytzingerNameTable(std::vector<support::ulittle64_t> NestedKeys,
+                     std::vector<support::ulittle64_t> FlatKeys,
+                     std::vector<support::ulittle64_t> InlineeKeys)
+      : Spans{TableT::create(std::move(NestedKeys)),
+              TableT::create(std::move(FlatKeys)),
+              TableT::create(std::move(InlineeKeys))} {}
+
+  // Find the global index of GUID across the three Eytzinger table spans.
+  uint64_t findGlobalIdx(uint64_t GUID) const {
+    uint64_t BaseIdx = 0;
+    for (const auto &Table : Spans) {
+      if (std::optional<size_t> LocalIdx = Table.findIndex(GUID))
+        return BaseIdx + *LocalIdx;
+      BaseIdx += Table.size();
+    }
+    llvm_unreachable("Symbol in NameTable missing from Eytzinger spans");
+  }
+
+  void write(raw_ostream &OS) const {
+    for (const auto &Table : Spans)
+      encodeULEB128(uint64_t(Table.size()), OS);
+    for (const auto &Table : Spans)
+      OS.write(reinterpret_cast<const char *>(Table.data()),
+               Table.size() * sizeof(support::ulittle64_t));
+  }
+
+  size_t size(EytzingerSpan S) const {
+    return Spans[static_cast<size_t>(S)].size();
+  }
+};
+
+} // end anonymous namespace
+
+std::error_code
+SampleProfileWriterExtBinaryBase::writeEytzingerNameTableSection(
+    const SampleProfileMap &ProfileMap) {
+  DenseSet<uint64_t> TopLevelGUIDs;
+  std::vector<support::ulittle64_t> NestedKeys, FlatKeys, InlineeKeys;
+
+  // Collect top-level Nested and Flat keys directly from ProfileMap.
+  for (const auto &I : ProfileMap) {
+    const SampleContext &Ctx = I.second.getContext();
+    uint64_t GUID = Ctx.getFunction().getHashCode();
+    if (TopLevelGUIDs.insert(GUID).second) {
+      // In single-table default layouts, unify all top-level symbols in the
+      // Nested partition so they match the single unflagged function offset
+      // table.
+      if (SecLayout != CtxSplitLayout || I.second.hasCallsiteSamples())
+        NestedKeys.emplace_back(GUID);
+      else
+        FlatKeys.emplace_back(GUID);
+    }
+  }
+
+  // Collect remaining non-top-level symbols (inlinees, targets, vtables) from
+  // NameTable.
+  for (const auto &Entry : NameTable) {
+    uint64_t GUID = Entry.first.getHashCode();
+    if (!TopLevelGUIDs.contains(GUID))
+      InlineeKeys.emplace_back(GUID);
+  }
+
+  EytzingerNameTable Tables(std::move(NestedKeys), std::move(FlatKeys),
+                            std::move(InlineeKeys));
+
+  // Assign each symbol its corresponding index in the Eytzinger layout.
+  for (auto &[FId, Idx] : NameTable)
+    Idx = Tables.findGlobalIdx(FId.getHashCode());
+
+  Tables.write(*OutputStream);
+  NumNested = Tables.size(EytzingerSpan::Nested);
+  NumFlat = Tables.size(EytzingerSpan::Flat);
+
+  return sampleprof_error::success;
+}
+
+std::error_code SampleProfileWriterExtBinaryBase::writeCSNameTableSection() {
   auto &OS = *OutputStream;
-  encodeULEB128(OrderedContexts.size(), OS);
-  support::endian::Writer Writer(OS, support::little);
-  for (auto Context : OrderedContexts) {
-    auto Frames = Context.getContextFrames();
+  encodeULEB128(CSNameTable.size(), OS);
+  support::endian::Writer Writer(OS, llvm::endianness::little);
+  for (const auto *Entry : stabilizeTable(CSNameTable)) {
+    auto Frames = Entry->first.getContextFrames();
     encodeULEB128(Frames.size(), OS);
     for (auto &Callsite : Frames) {
-      if (std::error_code EC = writeNameIdx(Callsite.FuncName))
+      if (std::error_code EC = writeNameIdx(Callsite.Func))
         return EC;
       encodeULEB128(Callsite.Location.LineOffset, OS);
       encodeULEB128(Callsite.Location.Discriminator, OS);
@@ -307,6 +596,16 @@ std::error_code SampleProfileWriterExtBinaryBase::writeCSNameTableSection() {
 
 std::error_code
 SampleProfileWriterExtBinaryBase::writeProfileSymbolListSection() {
+  if (UseMD5ProfSymList)
+    return writeMD5ProfileSymbolListSection();
+  return writeStringBasedProfileSymbolListSection();
+}
+
+std::error_code
+SampleProfileWriterExtBinaryBase::writeStringBasedProfileSymbolListSection() {
+  assert((!ProfSymList || !ProfSymList->isMD5()) &&
+         "Writing string-based ProfileSymbolListSection from MD5 table "
+         "not yet implemented");
   if (ProfSymList && ProfSymList->size() > 0)
     if (std::error_code EC = ProfSymList->write(*OutputStream))
       return EC;
@@ -314,11 +613,37 @@ SampleProfileWriterExtBinaryBase::writeProfileSymbolListSection() {
   return sampleprof_error::success;
 }
 
+std::error_code
+SampleProfileWriterExtBinaryBase::writeMD5ProfileSymbolListSection() {
+  if (!ProfSymList || ProfSymList->size() == 0)
+    return sampleprof_error::success;
+
+  auto &OS = *OutputStream;
+  std::vector<uint64_t> Keys = ProfSymList->collectGUIDs();
+
+  auto Table =
+      llvm::EytzingerTable<support::ulittle64_t>::create(std::move(Keys));
+
+  OS.write(reinterpret_cast<const char *>(Table.data()),
+           Table.size() * sizeof(support::ulittle64_t));
+  return sampleprof_error::success;
+}
+
+unsigned SampleProfileWriterExtBinaryBase::findUnwrittenEntry(SecType Type) {
+  auto WrittenIndices =
+      llvm::map_range(SecHdrTable, &SecHdrTableEntry::LayoutIndex);
+  for (auto [I, Entry] : llvm::enumerate(SectionHdrLayout))
+    if (Entry.Type == Type && !llvm::is_contained(WrittenIndices, I))
+      return I;
+  llvm_unreachable("Matching section not found in SectionHdrLayout");
+}
+
 std::error_code SampleProfileWriterExtBinaryBase::writeOneSection(
-    SecType Type, uint32_t LayoutIdx, const SampleProfileMap &ProfileMap) {
+    SecType Type, const SampleProfileMap &ProfileMap) {
+  unsigned LayoutIdx = findUnwrittenEntry(Type);
+  SecHdrTableEntry &Entry = SectionHdrLayout[LayoutIdx];
+
   // The setting of SecFlagCompress should happen before markSectionStart.
-  if (Type == SecProfileSymbolList && ProfSymList && ProfSymList->toCompress())
-    setToCompressSection(SecProfileSymbolList);
   if (Type == SecFuncMetadata && FunctionSamples::ProfileIsProbeBased)
     addSectionFlag(SecFuncMetadata, SecFuncMetadataFlags::SecFlagIsProbeBased);
   if (Type == SecFuncMetadata &&
@@ -330,6 +655,13 @@ std::error_code SampleProfileWriterExtBinaryBase::writeOneSection(
     addSectionFlag(SecProfSummary, SecProfSummaryFlags::SecFlagIsPreInlined);
   if (Type == SecProfSummary && FunctionSamples::ProfileIsFS)
     addSectionFlag(SecProfSummary, SecProfSummaryFlags::SecFlagFSDiscriminator);
+  if (Type == SecProfSummary && ExtBinaryWriteVTableTypeProf)
+    addSectionFlag(SecProfSummary,
+                   SecProfSummaryFlags::SecFlagHasVTableTypeProf);
+  if (Type == SecProfileSymbolList && UseMD5ProfSymList)
+    addSectionFlag(SecProfileSymbolList, SecProfileSymbolListFlags::SecFlagMD5);
+  if (Type == SecNameTable && UseMD5IndexedTables && UseMD5)
+    addSectionFlag(SecNameTable, SecNameTableFlags::SecFlagEytzinger);
 
   uint64_t SectionStart = markSectionStart(Type, LayoutIdx);
   switch (Type) {
@@ -347,14 +679,21 @@ std::error_code SampleProfileWriterExtBinaryBase::writeOneSection(
       return EC;
     break;
   case SecLBRProfile:
+  case SecCompositeProfile:
     SecLBRProfileStart = OutputStream->tell();
     if (std::error_code EC = writeFuncProfiles(ProfileMap))
       return EC;
     break;
   case SecFuncOffsetTable:
-    if (auto EC = writeFuncOffsetTable())
+  case SecCompositeFuncOffsetTable: {
+    bool IsFlat = hasSecFlag(Entry, SecCommonFlags::SecFlagFlat);
+    // An unflagged function offset table inherently indexes the primary
+    // Nested symbol span.
+    bool IsNested = !IsFlat;
+    if (auto EC = writeFuncOffsetTable(Type, IsNested))
       return EC;
     break;
+  }
   case SecFuncMetadata:
     if (std::error_code EC = writeFuncMetadata(ProfileMap))
       return EC;
@@ -373,73 +712,80 @@ std::error_code SampleProfileWriterExtBinaryBase::writeOneSection(
   return sampleprof_error::success;
 }
 
+SampleProfileWriterExtBinary::SampleProfileWriterExtBinary(
+    std::unique_ptr<raw_ostream> &OS)
+    : SampleProfileWriterExtBinaryBase(OS) {
+  WriteVTableProf = ExtBinaryWriteVTableTypeProf;
+}
+
 std::error_code SampleProfileWriterExtBinary::writeDefaultLayout(
     const SampleProfileMap &ProfileMap) {
-  // The const indices passed to writeOneSection below are specifying the
-  // positions of the sections in SectionHdrLayout. Look at
-  // initSectionHdrLayout to find out where each section is located in
-  // SectionHdrLayout.
-  if (auto EC = writeOneSection(SecProfSummary, 0, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecNameTable, 1, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecCSNameTable, 2, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecLBRProfile, 4, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecProfileSymbolList, 5, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecFuncOffsetTable, 3, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecFuncMetadata, 6, ProfileMap))
-    return EC;
+  // ProfSection / FuncOffsetSection are SecLBR* or SecComposite* after
+  // configureCompositeProfile.
+  const SecType Sections[] = {
+      SecProfSummary,       SecNameTable,      SecCSNameTable,  ProfSection,
+      SecProfileSymbolList, FuncOffsetSection, SecFuncMetadata,
+  };
+  for (SecType Type : Sections)
+    if (std::error_code EC = writeOneSection(Type, ProfileMap))
+      return EC;
   return sampleprof_error::success;
 }
 
 static void splitProfileMapToTwo(const SampleProfileMap &ProfileMap,
-                                 SampleProfileMap &ContextProfileMap,
-                                 SampleProfileMap &NoContextProfileMap) {
+                                 SampleProfileMap &NestedProfileMap,
+                                 SampleProfileMap &FlatProfileMap) {
   for (const auto &I : ProfileMap) {
-    if (I.second.getCallsiteSamples().size())
-      ContextProfileMap.insert({I.first, I.second});
+    if (I.second.hasCallsiteSamples())
+      NestedProfileMap.insert({I.first, I.second});
     else
-      NoContextProfileMap.insert({I.first, I.second});
+      FlatProfileMap.insert({I.first, I.second});
   }
 }
 
 std::error_code SampleProfileWriterExtBinary::writeCtxSplitLayout(
     const SampleProfileMap &ProfileMap) {
-  SampleProfileMap ContextProfileMap, NoContextProfileMap;
-  splitProfileMapToTwo(ProfileMap, ContextProfileMap, NoContextProfileMap);
+  SampleProfileMap NestedProfileMap, FlatProfileMap;
+  splitProfileMapToTwo(ProfileMap, NestedProfileMap, FlatProfileMap);
 
-  if (auto EC = writeOneSection(SecProfSummary, 0, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecNameTable, 1, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecLBRProfile, 3, ContextProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecFuncOffsetTable, 2, ContextProfileMap))
-    return EC;
-  // Mark the section to have no context. Note section flag needs to be set
-  // before writing the section.
-  addSectionFlag(5, SecCommonFlags::SecFlagFlat);
-  if (auto EC = writeOneSection(SecLBRProfile, 5, NoContextProfileMap))
-    return EC;
-  // Mark the section to have no context. Note section flag needs to be set
-  // before writing the section.
-  addSectionFlag(4, SecCommonFlags::SecFlagFlat);
-  if (auto EC = writeOneSection(SecFuncOffsetTable, 4, NoContextProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecProfileSymbolList, 6, ProfileMap))
-    return EC;
-  if (auto EC = writeOneSection(SecFuncMetadata, 7, ProfileMap))
-    return EC;
+  // Flat SecFlag is pre-set in ExtBinaryHdrLayoutTable; findUnwrittenEntry
+  // picks the matching unwritten ProfSection / FuncOffsetSection slot.
+  const std::pair<SecType, const SampleProfileMap &> Sections[] = {
+      {SecProfSummary, ProfileMap},       {SecNameTable, ProfileMap},
+      {ProfSection, NestedProfileMap},    {FuncOffsetSection, NestedProfileMap},
+      {ProfSection, FlatProfileMap},      {FuncOffsetSection, FlatProfileMap},
+      {SecProfileSymbolList, ProfileMap}, {SecFuncMetadata, ProfileMap},
+  };
+  for (const auto &[Type, Map] : Sections)
+    if (std::error_code EC = writeOneSection(Type, Map))
+      return EC;
 
   return sampleprof_error::success;
 }
 
+void SampleProfileWriterExtBinary::configureCompositeProfile() {
+  ProfSection = WriteCompositeProf ? SecCompositeProfile : SecLBRProfile;
+  FuncOffsetSection =
+      WriteCompositeProf ? SecCompositeFuncOffsetTable : SecFuncOffsetTable;
+
+  // Change the section types in place to avoid duplicating the whole layout and
+  // its handling. Rewrite both legacy and composite entries so repeated writes
+  // can switch formats without losing configured flags.
+  for (auto &Entry : SectionHdrLayout) {
+    if (Entry.Type == SecFuncOffsetTable ||
+        Entry.Type == SecCompositeFuncOffsetTable)
+      Entry.Type = FuncOffsetSection;
+    else if (Entry.Type == SecLBRProfile || Entry.Type == SecCompositeProfile)
+      Entry.Type = ProfSection;
+  }
+}
+
 std::error_code SampleProfileWriterExtBinary::writeSections(
     const SampleProfileMap &ProfileMap) {
+  // Rewrite the final configured layout immediately before its section types
+  // are consumed. Earlier layout configuration may replace SectionHdrLayout.
+  configureCompositeProfile();
+
   std::error_code EC;
   if (SecLayout == DefaultLayout)
     EC = writeDefaultLayout(ProfileMap);
@@ -448,15 +794,6 @@ std::error_code SampleProfileWriterExtBinary::writeSections(
   else
     llvm_unreachable("Unsupported layout");
   return EC;
-}
-
-std::error_code
-SampleProfileWriterCompactBinary::write(const SampleProfileMap &ProfileMap) {
-  if (std::error_code EC = SampleProfileWriter::write(ProfileMap))
-    return EC;
-  if (std::error_code EC = writeFuncOffsetTable())
-    return EC;
-  return sampleprof_error::success;
 }
 
 /// Write samples to a text file.
@@ -472,55 +809,78 @@ std::error_code SampleProfileWriterText::writeSample(const FunctionSamples &S) {
   if (FunctionSamples::ProfileIsCS)
     OS << "[" << S.getContext().toString() << "]:" << S.getTotalSamples();
   else
-    OS << S.getName() << ":" << S.getTotalSamples();
+    OS << S.getFunction() << ":" << S.getTotalSamples();
 
   if (Indent == 0)
     OS << ":" << S.getHeadSamples();
   OS << "\n";
+  LineCount++;
 
-  SampleSorter<LineLocation, SampleRecord> SortedSamples(S.getBodySamples());
-  for (const auto &I : SortedSamples.get()) {
-    LineLocation Loc = I->first;
-    const SampleRecord &Sample = I->second;
+  for (const auto &[Loc, Sample] : S.getBodySamples()) {
     OS.indent(Indent + 1);
-    if (Loc.Discriminator == 0)
-      OS << Loc.LineOffset << ": ";
-    else
-      OS << Loc.LineOffset << "." << Loc.Discriminator << ": ";
-
-    OS << Sample.getSamples();
+    Loc.print(OS);
+    OS << ": " << Sample.getSamples();
 
     for (const auto &J : Sample.getSortedCallTargets())
       OS << " " << J.first << ":" << J.second;
     OS << "\n";
+    LineCount++;
+
+    if (const TypeCountMap *Map = S.findCallsiteTypeSamplesAt(Loc);
+        Map && !Map->empty()) {
+      OS.indent(Indent + 1);
+      Loc.print(OS);
+      OS << ": ";
+      OS << kVTableProfPrefix;
+      for (const auto &[TypeName, Count] : *Map) {
+        OS << TypeName << ":" << Count << " ";
+      }
+      OS << "\n";
+      LineCount++;
+    }
   }
 
-  SampleSorter<LineLocation, FunctionSamplesMap> SortedCallsiteSamples(
-      S.getCallsiteSamples());
   Indent += 1;
-  for (const auto &I : SortedCallsiteSamples.get())
-    for (const auto &FS : I->second) {
-      LineLocation Loc = I->first;
-      const FunctionSamples &CalleeSamples = FS.second;
+  for (const auto &[Loc, FunctionSamplesMap] : S.getCallsiteSamples()) {
+    for (const FunctionSamples &CalleeSamples :
+         make_second_range(FunctionSamplesMap)) {
       OS.indent(Indent);
-      if (Loc.Discriminator == 0)
-        OS << Loc.LineOffset << ": ";
-      else
-        OS << Loc.LineOffset << "." << Loc.Discriminator << ": ";
+      Loc.print(OS);
+      OS << ": ";
       if (std::error_code EC = writeSample(CalleeSamples))
         return EC;
     }
+
+    if (const TypeCountMap *Map = S.findCallsiteTypeSamplesAt(Loc);
+        Map && !Map->empty()) {
+      OS.indent(Indent);
+      Loc.print(OS);
+      OS << ": ";
+      OS << kVTableProfPrefix;
+      for (const auto &[TypeId, Count] : *Map) {
+        OS << TypeId << ":" << Count << " ";
+      }
+      OS << "\n";
+      LineCount++;
+    }
+  }
+
   Indent -= 1;
 
   if (FunctionSamples::ProfileIsProbeBased) {
     OS.indent(Indent + 1);
     OS << "!CFGChecksum: " << S.getFunctionHash() << "\n";
+    LineCount++;
   }
 
   if (S.getContext().getAllAttributes()) {
     OS.indent(Indent + 1);
     OS << "!Attributes: " << S.getContext().getAllAttributes() << "\n";
+    LineCount++;
   }
+
+  if (Indent == 0 && MarkFlatProfiles && S.getCallsiteSamples().size() == 0)
+    OS << " !Flat\n";
 
   return sampleprof_error::success;
 }
@@ -528,10 +888,10 @@ std::error_code SampleProfileWriterText::writeSample(const FunctionSamples &S) {
 std::error_code
 SampleProfileWriterBinary::writeContextIdx(const SampleContext &Context) {
   assert(!Context.hasContext() && "cs profile is not supported");
-  return writeNameIdx(Context.getName());
+  return writeNameIdx(Context.getFunction());
 }
 
-std::error_code SampleProfileWriterBinary::writeNameIdx(StringRef FName) {
+std::error_code SampleProfileWriterBinary::writeNameIdx(FunctionId FName) {
   auto &NTable = getNameTable();
   const auto &Ret = NTable.find(FName);
   if (Ret == NTable.end())
@@ -540,13 +900,13 @@ std::error_code SampleProfileWriterBinary::writeNameIdx(StringRef FName) {
   return sampleprof_error::success;
 }
 
-void SampleProfileWriterBinary::addName(StringRef FName) {
+void SampleProfileWriterBinary::addName(FunctionId FName) {
   auto &NTable = getNameTable();
   NTable.insert(std::make_pair(FName, 0));
 }
 
 void SampleProfileWriterBinary::addContext(const SampleContext &Context) {
-  addName(Context.getName());
+  addName(Context.getFunction());
 }
 
 void SampleProfileWriterBinary::addNames(const FunctionSamples &S) {
@@ -554,87 +914,48 @@ void SampleProfileWriterBinary::addNames(const FunctionSamples &S) {
   for (const auto &I : S.getBodySamples()) {
     const SampleRecord &Sample = I.second;
     for (const auto &J : Sample.getCallTargets())
-      addName(J.first());
+      addName(J.first);
   }
 
   // Recursively add all the names for inlined callsites.
   for (const auto &J : S.getCallsiteSamples())
     for (const auto &FS : J.second) {
       const FunctionSamples &CalleeSamples = FS.second;
-      addName(CalleeSamples.getName());
+      addName(CalleeSamples.getFunction());
       addNames(CalleeSamples);
     }
+
+  if (!WriteVTableProf)
+    return;
+  // Add all the vtable names to NameTable.
+  for (const auto &VTableAccessCountMap :
+       llvm::make_second_range(S.getCallsiteTypeCounts())) {
+    // Add type name to NameTable.
+    for (const auto Type : llvm::make_first_range(VTableAccessCountMap)) {
+      addName(Type);
+    }
+  }
 }
 
 void SampleProfileWriterExtBinaryBase::addContext(
     const SampleContext &Context) {
   if (Context.hasContext()) {
     for (auto &Callsite : Context.getContextFrames())
-      SampleProfileWriterBinary::addName(Callsite.FuncName);
+      SampleProfileWriterBinary::addName(Callsite.Func);
     CSNameTable.insert(std::make_pair(Context, 0));
   } else {
-    SampleProfileWriterBinary::addName(Context.getName());
+    SampleProfileWriterBinary::addName(Context.getFunction());
   }
-}
-
-void SampleProfileWriterBinary::stablizeNameTable(
-    MapVector<StringRef, uint32_t> &NameTable, std::set<StringRef> &V) {
-  // Sort the names to make NameTable deterministic.
-  for (const auto &I : NameTable)
-    V.insert(I.first);
-  int i = 0;
-  for (const StringRef &N : V)
-    NameTable[N] = i++;
 }
 
 std::error_code SampleProfileWriterBinary::writeNameTable() {
   auto &OS = *OutputStream;
-  std::set<StringRef> V;
-  stablizeNameTable(NameTable, V);
 
   // Write out the name table.
   encodeULEB128(NameTable.size(), OS);
-  for (auto N : V) {
-    OS << N;
+  for (const auto *Entry : stabilizeTable(NameTable)) {
+    OS << Entry->first;
     encodeULEB128(0, OS);
-  }
-  return sampleprof_error::success;
-}
-
-std::error_code SampleProfileWriterCompactBinary::writeFuncOffsetTable() {
-  auto &OS = *OutputStream;
-
-  // Fill the slot remembered by TableOffset with the offset of FuncOffsetTable.
-  auto &OFS = static_cast<raw_fd_ostream &>(OS);
-  uint64_t FuncOffsetTableStart = OS.tell();
-  if (OFS.seek(TableOffset) == (uint64_t)-1)
-    return sampleprof_error::ostream_seek_unsupported;
-  support::endian::Writer Writer(*OutputStream, support::little);
-  Writer.write(FuncOffsetTableStart);
-  if (OFS.seek(FuncOffsetTableStart) == (uint64_t)-1)
-    return sampleprof_error::ostream_seek_unsupported;
-
-  // Write out the table size.
-  encodeULEB128(FuncOffsetTable.size(), OS);
-
-  // Write out FuncOffsetTable.
-  for (auto Entry : FuncOffsetTable) {
-    if (std::error_code EC = writeNameIdx(Entry.first))
-      return EC;
-    encodeULEB128(Entry.second, OS);
-  }
-  return sampleprof_error::success;
-}
-
-std::error_code SampleProfileWriterCompactBinary::writeNameTable() {
-  auto &OS = *OutputStream;
-  std::set<StringRef> V;
-  stablizeNameTable(NameTable, V);
-
-  // Write out the name table.
-  encodeULEB128(NameTable.size(), OS);
-  for (auto N : V) {
-    encodeULEB128(MD5Hash(N), OS);
   }
   return sampleprof_error::success;
 }
@@ -644,12 +965,16 @@ SampleProfileWriterBinary::writeMagicIdent(SampleProfileFormat Format) {
   auto &OS = *OutputStream;
   // Write file magic identifier.
   encodeULEB128(SPMagic(Format), OS);
-  encodeULEB128(SPVersion(), OS);
+  encodeULEB128(FormatVersion, OS);
   return sampleprof_error::success;
 }
 
 std::error_code
 SampleProfileWriterBinary::writeHeader(const SampleProfileMap &ProfileMap) {
+  // When calling write on a different profile map, existing names should be
+  // cleared.
+  NameTable.clear();
+
   writeMagicIdent(Format);
 
   computeSummary(ProfileMap);
@@ -658,8 +983,7 @@ SampleProfileWriterBinary::writeHeader(const SampleProfileMap &ProfileMap) {
 
   // Generate the name table for all the functions referenced in the profile.
   for (const auto &I : ProfileMap) {
-    assert(I.first == I.second.getContext() && "Inconsistent profile map");
-    addContext(I.first);
+    addContext(I.second.getContext());
     addNames(I.second);
   }
 
@@ -677,7 +1001,7 @@ void SampleProfileWriterExtBinaryBase::setToCompressSection(SecType Type) {
 }
 
 void SampleProfileWriterExtBinaryBase::allocSecHdrTable() {
-  support::endian::Writer Writer(*OutputStream, support::little);
+  support::endian::Writer Writer(*OutputStream, llvm::endianness::little);
 
   Writer.write(static_cast<uint64_t>(SectionHdrLayout.size()));
   SecHdrTableOffset = OutputStream->tell();
@@ -690,14 +1014,6 @@ void SampleProfileWriterExtBinaryBase::allocSecHdrTable() {
 }
 
 std::error_code SampleProfileWriterExtBinaryBase::writeSecHdrTable() {
-  auto &OFS = static_cast<raw_fd_ostream &>(*OutputStream);
-  uint64_t Saved = OutputStream->tell();
-
-  // Set OutputStream to the location saved in SecHdrTableOffset.
-  if (OFS.seek(SecHdrTableOffset) == (uint64_t)-1)
-    return sampleprof_error::ostream_seek_unsupported;
-  support::endian::Writer Writer(*OutputStream, support::little);
-
   assert(SecHdrTable.size() == SectionHdrLayout.size() &&
          "SecHdrTable entries doesn't match SectionHdrLayout");
   SmallVector<uint32_t, 16> IndexMap(SecHdrTable.size(), -1);
@@ -714,26 +1030,34 @@ std::error_code SampleProfileWriterExtBinaryBase::writeSecHdrTable() {
   // needs to be computed after SecLBRProfile (the order in SecHdrTable),
   // but it needs to be read before SecLBRProfile (the order in
   // SectionHdrLayout). So we use IndexMap above to switch the order.
+  support::endian::SeekableWriter Writer(
+      static_cast<raw_pwrite_stream &>(*OutputStream),
+      llvm::endianness::little);
   for (uint32_t LayoutIdx = 0; LayoutIdx < SectionHdrLayout.size();
        LayoutIdx++) {
     assert(IndexMap[LayoutIdx] < SecHdrTable.size() &&
            "Incorrect LayoutIdx in SecHdrTable");
     auto Entry = SecHdrTable[IndexMap[LayoutIdx]];
-    Writer.write(static_cast<uint64_t>(Entry.Type));
-    Writer.write(static_cast<uint64_t>(Entry.Flags));
-    Writer.write(static_cast<uint64_t>(Entry.Offset));
-    Writer.write(static_cast<uint64_t>(Entry.Size));
+    Writer.pwrite(static_cast<uint64_t>(Entry.Type),
+                  SecHdrTableOffset + 4 * LayoutIdx * sizeof(uint64_t));
+    Writer.pwrite(static_cast<uint64_t>(Entry.Flags),
+                  SecHdrTableOffset + (4 * LayoutIdx + 1) * sizeof(uint64_t));
+    Writer.pwrite(static_cast<uint64_t>(Entry.Offset),
+                  SecHdrTableOffset + (4 * LayoutIdx + 2) * sizeof(uint64_t));
+    Writer.pwrite(static_cast<uint64_t>(Entry.Size),
+                  SecHdrTableOffset + (4 * LayoutIdx + 3) * sizeof(uint64_t));
   }
-
-  // Reset OutputStream.
-  if (OFS.seek(Saved) == (uint64_t)-1)
-    return sampleprof_error::ostream_seek_unsupported;
 
   return sampleprof_error::success;
 }
 
 std::error_code SampleProfileWriterExtBinaryBase::writeHeader(
     const SampleProfileMap &ProfileMap) {
+  // Reject a version that cannot describe the selected profile encoding before
+  // emitting any part of the header.
+  if (WriteCompositeProf && FormatVersion < CompositeProfileVersion)
+    return sampleprof_error::unsupported_version;
+
   auto &OS = *OutputStream;
   FileStart = OS.tell();
   writeMagicIdent(Format);
@@ -742,16 +1066,19 @@ std::error_code SampleProfileWriterExtBinaryBase::writeHeader(
   return sampleprof_error::success;
 }
 
-std::error_code SampleProfileWriterCompactBinary::writeHeader(
-    const SampleProfileMap &ProfileMap) {
-  support::endian::Writer Writer(*OutputStream, support::little);
-  if (auto EC = SampleProfileWriterBinary::writeHeader(ProfileMap))
-    return EC;
+std::error_code SampleProfileWriterBinary::writeCallsiteVTableProf(
+    const CallsiteTypeMap &CallsiteTypeMap, raw_ostream &OS) {
+  assert(WriteVTableProf &&
+         "writeCallsiteVTableProf should not be called if WriteVTableProf is "
+         "false");
 
-  // Reserve a slot for the offset of function offset table. The slot will
-  // be populated with the offset of FuncOffsetTable later.
-  TableOffset = OutputStream->tell();
-  Writer.write(static_cast<uint64_t>(-2));
+  encodeULEB128(CallsiteTypeMap.size(), OS);
+  for (const auto &[Loc, TypeMap] : CallsiteTypeMap) {
+    Loc.serialize(OS);
+    if (std::error_code EC = serializeTypeMap(TypeMap, getNameTable(), OS))
+      return EC;
+  }
+
   return sampleprof_error::success;
 }
 
@@ -762,8 +1089,7 @@ std::error_code SampleProfileWriterBinary::writeSummary() {
   encodeULEB128(Summary->getMaxFunctionCount(), OS);
   encodeULEB128(Summary->getNumCounts(), OS);
   encodeULEB128(Summary->getNumFunctions(), OS);
-  const std::vector<ProfileSummaryEntry> &Entries =
-      Summary->getDetailedSummary();
+  ArrayRef<ProfileSummaryEntry> Entries = Summary->getDetailedSummary();
   encodeULEB128(Entries.size(), OS);
   for (auto Entry : Entries) {
     encodeULEB128(Entry.Cutoff, OS);
@@ -772,29 +1098,146 @@ std::error_code SampleProfileWriterBinary::writeSummary() {
   }
   return sampleprof_error::success;
 }
-std::error_code SampleProfileWriterBinary::writeBody(const FunctionSamples &S) {
+
+std::error_code
+SampleProfileWriterBinary::writeLBRProfile(const FunctionSamples &S,
+                                           bool IsNested) {
   auto &OS = *OutputStream;
-  if (std::error_code EC = writeContextIdx(S.getContext()))
-    return EC;
-
+  if (WriteCompositeProf && !IsNested)
+    encodeULEB128(S.getHeadSamples(), OS);
   encodeULEB128(S.getTotalSamples(), OS);
-
-  // Emit all the body samples.
   encodeULEB128(S.getBodySamples().size(), OS);
   for (const auto &I : S.getBodySamples()) {
     LineLocation Loc = I.first;
     const SampleRecord &Sample = I.second;
-    encodeULEB128(Loc.LineOffset, OS);
-    encodeULEB128(Loc.Discriminator, OS);
-    encodeULEB128(Sample.getSamples(), OS);
-    encodeULEB128(Sample.getCallTargets().size(), OS);
-    for (const auto &J : Sample.getSortedCallTargets()) {
-      StringRef Callee = J.first;
-      uint64_t CalleeSamples = J.second;
-      if (std::error_code EC = writeNameIdx(Callee))
-        return EC;
-      encodeULEB128(CalleeSamples, OS);
+    Loc.serialize(OS);
+    if (std::error_code EC = Sample.serialize(OS, getNameTable()))
+      return EC;
+  }
+  return sampleprof_error::success;
+}
+
+namespace {
+
+/// A reusable stream that discards payload bytes while counting their size.
+class PayloadSizeCountingStream final : public raw_ostream {
+public:
+  /// Avoid retaining payload data in raw_ostream's internal buffer.
+  PayloadSizeCountingStream() { SetUnbuffered(); }
+
+  /// Prepare the stream to count another payload.
+  void resetPayload() {
+    PayloadSize = 0;
+    Overflowed = false;
+  }
+
+  /// Return whether the payload size exceeded the representable range.
+  bool overflowed() const { return Overflowed; }
+
+  /// Return the complete payload size when overflowed() is false.
+  uint64_t payloadSize() const { return PayloadSize; }
+
+private:
+  /// Count incoming bytes without retaining their contents.
+  void write_impl(const char *, size_t Size) override {
+    if (Overflowed)
+      return;
+
+    // Fail closed if the payload cannot be represented by its uint64_t size.
+    if (Size > UINT64_MAX - PayloadSize) {
+      Overflowed = true;
+      return;
     }
+    PayloadSize += Size;
+  }
+
+  /// Report the number of bytes accepted from the current payload.
+  uint64_t current_pos() const override { return PayloadSize; }
+
+  /// Number of bytes observed during the counting pass.
+  uint64_t PayloadSize = 0;
+  /// Whether the counted size no longer fits in uint64_t.
+  bool Overflowed = false;
+};
+
+} // namespace
+
+std::error_code SampleProfileWriterBinary::writeProfileType(
+    ProfTypes Type, function_ref<std::error_code()> WritePayload) {
+  // PayloadSizeStream temporarily owns the real output while the callback
+  // writes through OutputStream. A nested call would therefore mistake the
+  // real output for PayloadSizeCountingStream.
+  if (WritingProfileType)
+    return sampleprof_error::malformed;
+  SaveAndRestore RestoreWritingProfileType(WritingProfileType, true);
+
+  // A profile block stores its payload size before the payload, but that size
+  // is not known until it has been serialized. Count one complete serialization
+  // without retaining its bytes, then emit the header and serialize it again.
+  // TODO: Avoid serializing each payload twice while retaining bounded memory
+  // use and compatibility with compressed section output.
+  if (!PayloadSizeStream)
+    PayloadSizeStream = std::make_unique<PayloadSizeCountingStream>();
+  auto *SizeStream =
+      static_cast<PayloadSizeCountingStream *>(PayloadSizeStream.get());
+  SizeStream->resetPayload();
+  OutputStream.swap(PayloadSizeStream);
+  std::error_code EC = WritePayload();
+  OutputStream.swap(PayloadSizeStream);
+  if (EC)
+    return EC;
+  if (SizeStream->overflowed())
+    return sampleprof_error::too_large;
+
+  // Emit the compact header followed by the second, materialized pass.
+  auto &OS = *OutputStream;
+  encodeULEB128(Type, OS);
+  encodeULEB128(SizeStream->payloadSize(), OS);
+  uint64_t PayloadStart = OS.tell();
+  if (std::error_code SecondPassEC = WritePayload())
+    return SecondPassEC;
+
+  // Reject a stateful callback that did not reproduce the counted payload.
+  if (OS.tell() - PayloadStart != SizeStream->payloadSize())
+    return sampleprof_error::malformed;
+  return sampleprof_error::success;
+}
+
+static bool hasNonEmptyLBRProfile(const FunctionSamples &S, bool IsNested) {
+  return S.getTotalSamples() != 0 || (!IsNested && S.getHeadSamples() != 0) ||
+         !S.getBodySamples().empty();
+}
+
+std::error_code
+SampleProfileWriterBinary::writeCompositeProfile(const FunctionSamples &S,
+                                                 bool IsNested) {
+  auto &OS = *OutputStream;
+  bool WriteLBRProf = hasNonEmptyLBRProfile(S, IsNested);
+  // Other profile types should be added here.
+  uint32_t TypesNum = WriteLBRProf;
+
+  // Write the number of profile types for function.
+  encodeULEB128(TypesNum, OS);
+
+  if (WriteLBRProf)
+    return writeProfileType(ProfTypeLBR,
+                            [&] { return writeLBRProfile(S, IsNested); });
+  return sampleprof_error::success;
+}
+
+std::error_code SampleProfileWriterBinary::writeBody(const FunctionSamples &S,
+                                                     bool IsNested) {
+  auto &OS = *OutputStream;
+  if (std::error_code EC = writeContextIdx(S.getContext()))
+    return EC;
+
+  // Emit all the body samples.
+  if (WriteCompositeProf) {
+    if (std::error_code EC = writeCompositeProfile(S, IsNested))
+      return EC;
+  } else {
+    if (std::error_code EC = writeLBRProfile(S, IsNested))
+      return EC;
   }
 
   // Recursively emit all the callsite samples.
@@ -804,13 +1247,13 @@ std::error_code SampleProfileWriterBinary::writeBody(const FunctionSamples &S) {
   encodeULEB128(NumCallsites, OS);
   for (const auto &J : S.getCallsiteSamples())
     for (const auto &FS : J.second) {
-      LineLocation Loc = J.first;
-      const FunctionSamples &CalleeSamples = FS.second;
-      encodeULEB128(Loc.LineOffset, OS);
-      encodeULEB128(Loc.Discriminator, OS);
-      if (std::error_code EC = writeBody(CalleeSamples))
+      J.first.serialize(OS);
+      if (std::error_code EC = writeBody(FS.second, /*IsNested=*/true))
         return EC;
     }
+
+  if (WriteVTableProf)
+    return writeCallsiteVTableProf(S.getCallsiteTypeCounts(), OS);
 
   return sampleprof_error::success;
 }
@@ -821,16 +1264,7 @@ std::error_code SampleProfileWriterBinary::writeBody(const FunctionSamples &S) {
 std::error_code
 SampleProfileWriterBinary::writeSample(const FunctionSamples &S) {
   encodeULEB128(S.getHeadSamples(), *OutputStream);
-  return writeBody(S);
-}
-
-std::error_code
-SampleProfileWriterCompactBinary::writeSample(const FunctionSamples &S) {
-  uint64_t Offset = OutputStream->tell();
-  StringRef Name = S.getName();
-  FuncOffsetTable[Name] = Offset;
-  encodeULEB128(S.getHeadSamples(), *OutputStream);
-  return writeBody(S);
+  return writeBody(S, /*IsNested=*/false);
 }
 
 /// Create a sample profile file writer based on the specified format.
@@ -844,8 +1278,7 @@ ErrorOr<std::unique_ptr<SampleProfileWriter>>
 SampleProfileWriter::create(StringRef Filename, SampleProfileFormat Format) {
   std::error_code EC;
   std::unique_ptr<raw_ostream> OS;
-  if (Format == SPF_Binary || Format == SPF_Ext_Binary ||
-      Format == SPF_Compact_Binary)
+  if (Format == SPF_Binary || Format == SPF_Ext_Binary)
     OS.reset(new raw_fd_ostream(Filename, EC, sys::fs::OF_None));
   else
     OS.reset(new raw_fd_ostream(Filename, EC, sys::fs::OF_TextWithCRLF));
@@ -870,15 +1303,13 @@ SampleProfileWriter::create(std::unique_ptr<raw_ostream> &OS,
 
   // Currently only Text and Extended Binary format are supported for CSSPGO.
   if ((FunctionSamples::ProfileIsCS || FunctionSamples::ProfileIsProbeBased) &&
-      (Format == SPF_Binary || Format == SPF_Compact_Binary))
+      Format == SPF_Binary)
     return sampleprof_error::unsupported_writing_format;
 
   if (Format == SPF_Binary)
     Writer.reset(new SampleProfileWriterRawBinary(OS));
   else if (Format == SPF_Ext_Binary)
     Writer.reset(new SampleProfileWriterExtBinary(OS));
-  else if (Format == SPF_Compact_Binary)
-    Writer.reset(new SampleProfileWriterCompactBinary(OS));
   else if (Format == SPF_Text)
     Writer.reset(new SampleProfileWriterText(OS));
   else if (Format == SPF_GCC)
@@ -890,6 +1321,29 @@ SampleProfileWriter::create(std::unique_ptr<raw_ostream> &OS,
     return EC;
 
   Writer->Format = Format;
+  if (Format != SPF_Ext_Binary) {
+    Writer->setFormatVersion(DefaultVersion);
+  } else {
+    if (!formatVersionIsSupported(RequestedVersion))
+      return sampleprof_error::unsupported_version;
+
+    // Composite output defaults to its first compatible format version.
+    // Preserve a compatible version explicitly selected by the user.
+    if (ExtBinaryCompositeProf) {
+      if (RequestedVersion.getNumOccurrences() == 0) {
+        Writer->setFormatVersion(CompositeProfileVersion);
+      } else {
+        if (RequestedVersion < CompositeProfileVersion)
+          return sampleprof_error::unsupported_version;
+        Writer->setFormatVersion(RequestedVersion);
+      }
+      // Keep subsequent writes independent of the global command-line option.
+      Writer->setUseCompositeProfile(true);
+    } else {
+      Writer->setFormatVersion(RequestedVersion);
+    }
+  }
+
   return std::move(Writer);
 }
 

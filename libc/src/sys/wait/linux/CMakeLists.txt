@@ -5,10 +5,9 @@ add_entrypoint_object(
   HDRS
     ../wait.h
   DEPENDS
-    libc.include.errno
-    libc.include.sys_wait
-    libc.include.sys_syscall
-    libc.src.__support.OSUtil.osutil
+    libc.hdr.types.pid_t
+    libc.hdr.types.struct_rusage
+    libc.src.__support.OSUtil.linux.syscall_wrappers.wait4
     libc.src.errno.errno
 )
 
@@ -19,10 +18,9 @@ add_entrypoint_object(
   HDRS
     ../wait4.h
   DEPENDS
-    libc.include.errno
-    libc.include.sys_wait
-    libc.include.sys_syscall
-    libc.src.__support.OSUtil.osutil
+    libc.hdr.types.pid_t
+    libc.hdr.types.struct_rusage
+    libc.src.__support.OSUtil.linux.syscall_wrappers.wait4
     libc.src.errno.errno
 )
 
@@ -33,9 +31,8 @@ add_entrypoint_object(
   HDRS
     ../waitpid.h
   DEPENDS
-    libc.include.errno
-    libc.include.sys_wait
-    libc.include.sys_syscall
-    libc.src.__support.OSUtil.osutil
+    libc.hdr.types.pid_t
+    libc.hdr.types.struct_rusage
+    libc.src.__support.OSUtil.linux.syscall_wrappers.wait4
     libc.src.errno.errno
 )

@@ -5,32 +5,36 @@
 // RUN:               -async-runtime-ref-counting                              \
 // RUN:               -async-runtime-ref-counting-opt                          \
 // RUN:               -convert-async-to-llvm                                   \
-// RUN:               -convert-scf-to-cf                                      \
+// RUN:               -convert-scf-to-cf                                       \
 // RUN:               -arith-expand                                            \
-// RUN:               -memref-expand                                              \
+// RUN:               -memref-expand                                           \
 // RUN:               -convert-vector-to-llvm                                  \
-// RUN:               -convert-memref-to-llvm                                  \
-// RUN:               -convert-func-to-llvm                                     \
+// RUN:               -finalize-memref-to-llvm                                 \
+// RUN:               -convert-func-to-llvm                                    \
+// RUN:               -convert-arith-to-llvm                                   \
+// RUN:               -convert-cf-to-llvm                                      \
 // RUN:               -reconcile-unrealized-casts                              \
-// RUN: | mlir-cpu-runner                                                      \
+// RUN: | mlir-runner                                                      \
 // RUN: -e entry -entry-point-result=void -O3                                  \
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_runner_utils%shlibext  \
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_c_runner_utils%shlibext\
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_async_runtime%shlibext \
+// RUN: -shared-libs=%mlir_runner_utils  \
+// RUN: -shared-libs=%mlir_c_runner_utils\
+// RUN: -shared-libs=%mlir_async_runtime \
 // RUN: | FileCheck %s --dump-input=always
 
 // RUN:   mlir-opt %s                                                          \
 // RUN:               -convert-linalg-to-loops                                 \
-// RUN:               -convert-scf-to-cf                                      \
+// RUN:               -convert-scf-to-cf                                       \
 // RUN:               -convert-vector-to-llvm                                  \
-// RUN:               -convert-memref-to-llvm                                  \
-// RUN:               -convert-func-to-llvm                                     \
+// RUN:               -finalize-memref-to-llvm                                 \
+// RUN:               -convert-func-to-llvm                                    \
+// RUN:               -convert-arith-to-llvm                                   \
+// RUN:               -convert-cf-to-llvm                                      \
 // RUN:               -reconcile-unrealized-casts                              \
-// RUN: | mlir-cpu-runner                                                      \
+// RUN: | mlir-runner                                                      \
 // RUN: -e entry -entry-point-result=void -O3                                  \
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_runner_utils%shlibext  \
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_c_runner_utils%shlibext\
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_async_runtime%shlibext \
+// RUN: -shared-libs=%mlir_runner_utils  \
+// RUN: -shared-libs=%mlir_c_runner_utils\
+// RUN: -shared-libs=%mlir_async_runtime \
 // RUN: | FileCheck %s --dump-input=always
 
 #map0 = affine_map<(d0, d1) -> (d0, d1)>
@@ -64,9 +68,9 @@ func.func @entry() {
   // Sanity check for the function under test.
   //
 
-  %LHS10 = memref.alloc() {alignment = 64} : memref<1x10xf32>
-  %RHS10 = memref.alloc() {alignment = 64} : memref<1x10xf32>
-  %DST10 = memref.alloc() {alignment = 64} : memref<1x10xf32>
+  %LHS10 = memref.alloc() alignment = 64 : memref<1x10xf32>
+  %RHS10 = memref.alloc() alignment = 64 : memref<1x10xf32>
+  %DST10 = memref.alloc() alignment = 64 : memref<1x10xf32>
 
   linalg.fill ins(%f1 : f32) outs(%LHS10 : memref<1x10xf32>)
   linalg.fill ins(%f1 : f32) outs(%RHS10 : memref<1x10xf32>)
@@ -90,9 +94,9 @@ func.func @entry() {
   // Allocate data for microbenchmarks.
   //
 
-  %LHS1024 = memref.alloc() {alignment = 64} : memref<1024x1024xf32>
-  %RHS1024 = memref.alloc() {alignment = 64} : memref<1024x1024xf32>
-  %DST1024 = memref.alloc() {alignment = 64} : memref<1024x1024xf32>
+  %LHS1024 = memref.alloc() alignment = 64 : memref<1024x1024xf32>
+  %RHS1024 = memref.alloc() alignment = 64 : memref<1024x1024xf32>
+  %DST1024 = memref.alloc() alignment = 64 : memref<1024x1024xf32>
 
   %LHS0 = memref.cast %LHS1024 : memref<1024x1024xf32> to memref<?x?xf32>
   %RHS0 = memref.cast %RHS1024 : memref<1024x1024xf32> to memref<?x?xf32>

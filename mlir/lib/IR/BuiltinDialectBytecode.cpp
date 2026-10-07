@@ -7,556 +7,83 @@
 //===----------------------------------------------------------------------===//
 
 #include "BuiltinDialectBytecode.h"
+#include "AttributeDetail.h"
 #include "mlir/Bytecode/BytecodeImplementation.h"
+#include "mlir/IR/AffineExpr.h"
+#include "mlir/IR/AffineMap.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/DialectResourceBlobManager.h"
+#include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/Location.h"
+#include "mlir/Support/LLVM.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include <cstdint>
 
 using namespace mlir;
-
-//===----------------------------------------------------------------------===//
-// Encoding
-//===----------------------------------------------------------------------===//
-
-namespace {
-namespace builtin_encoding {
-/// This enum contains marker codes used to indicate which attribute is
-/// currently being decoded, and how it should be decoded. The order of these
-/// codes should generally be unchanged, as any changes will inevitably break
-/// compatibility with older bytecode.
-enum AttributeCode {
-  ///   ArrayAttr {
-  ///     elements: Attribute[]
-  ///   }
-  ///
-  kArrayAttr = 0,
-
-  ///   DictionaryAttr {
-  ///     attrs: <StringAttr, Attribute>[]
-  ///   }
-  kDictionaryAttr = 1,
-
-  ///   StringAttr {
-  ///     value: string
-  ///   }
-  kStringAttr = 2,
-
-  ///   StringAttrWithType {
-  ///     value: string,
-  ///     type: Type
-  ///   }
-  /// A variant of StringAttr with a type.
-  kStringAttrWithType = 3,
-
-  ///   FlatSymbolRefAttr {
-  ///     rootReference: StringAttr
-  ///   }
-  /// A variant of SymbolRefAttr with no leaf references.
-  kFlatSymbolRefAttr = 4,
-
-  ///   SymbolRefAttr {
-  ///     rootReference: StringAttr,
-  ///     leafReferences: FlatSymbolRefAttr[]
-  ///   }
-  kSymbolRefAttr = 5,
-
-  ///   TypeAttr {
-  ///     value: Type
-  ///   }
-  kTypeAttr = 6,
-
-  ///   UnitAttr {
-  ///   }
-  kUnitAttr = 7,
-
-  ///   IntegerAttr {
-  ///     type: Type
-  ///     value: APInt,
-  ///   }
-  kIntegerAttr = 8,
-
-  ///   FloatAttr {
-  ///     type: FloatType
-  ///     value: APFloat
-  ///   }
-  kFloatAttr = 9,
-
-  ///   CallSiteLoc {
-  ///    callee: LocationAttr,
-  ///    caller: LocationAttr
-  ///   }
-  kCallSiteLoc = 10,
-
-  ///   FileLineColLoc {
-  ///     file: StringAttr,
-  ///     line: varint,
-  ///     column: varint
-  ///   }
-  kFileLineColLoc = 11,
-
-  ///   FusedLoc {
-  ///     locations: LocationAttr[]
-  ///   }
-  kFusedLoc = 12,
-
-  ///   FusedLocWithMetadata {
-  ///     locations: LocationAttr[],
-  ///     metadata: Attribute
-  ///   }
-  /// A variant of FusedLoc with metadata.
-  kFusedLocWithMetadata = 13,
-
-  ///   NameLoc {
-  ///     name: StringAttr,
-  ///     childLoc: LocationAttr
-  ///   }
-  kNameLoc = 14,
-
-  ///   UnknownLoc {
-  ///   }
-  kUnknownLoc = 15,
-
-  ///   DenseResourceElementsAttr {
-  ///     type: Type,
-  ///     handle: ResourceHandle
-  ///   }
-  kDenseResourceElementsAttr = 16,
-
-  ///   DenseArrayAttr {
-  ///     type: RankedTensorType,
-  ///     data: blob
-  ///   }
-  kDenseArrayAttr = 17,
-
-  ///   DenseIntOrFPElementsAttr {
-  ///     type: ShapedType,
-  ///     data: blob
-  ///   }
-  kDenseIntOrFPElementsAttr = 18,
-
-  ///   DenseStringElementsAttr {
-  ///     type: ShapedType,
-  ///     isSplat: varint,
-  ///     data: string[]
-  ///   }
-  kDenseStringElementsAttr = 19,
-
-  ///   SparseElementsAttr {
-  ///     type: ShapedType,
-  ///     indices: DenseIntElementsAttr,
-  ///     values: DenseElementsAttr
-  ///   }
-  kSparseElementsAttr = 20,
-};
-
-/// This enum contains marker codes used to indicate which type is currently
-/// being decoded, and how it should be decoded. The order of these codes should
-/// generally be unchanged, as any changes will inevitably break compatibility
-/// with older bytecode.
-enum TypeCode {
-  ///   IntegerType {
-  ///     widthAndSignedness: varint // (width << 2) | (signedness)
-  ///   }
-  ///
-  kIntegerType = 0,
-
-  ///   IndexType {
-  ///   }
-  ///
-  kIndexType = 1,
-
-  ///   FunctionType {
-  ///     inputs: Type[],
-  ///     results: Type[]
-  ///   }
-  ///
-  kFunctionType = 2,
-
-  ///   BFloat16Type {
-  ///   }
-  ///
-  kBFloat16Type = 3,
-
-  ///   Float16Type {
-  ///   }
-  ///
-  kFloat16Type = 4,
-
-  ///   Float32Type {
-  ///   }
-  ///
-  kFloat32Type = 5,
-
-  ///   Float64Type {
-  ///   }
-  ///
-  kFloat64Type = 6,
-
-  ///   Float80Type {
-  ///   }
-  ///
-  kFloat80Type = 7,
-
-  ///   Float128Type {
-  ///   }
-  ///
-  kFloat128Type = 8,
-
-  ///   ComplexType {
-  ///     elementType: Type
-  ///   }
-  ///
-  kComplexType = 9,
-
-  ///   MemRefType {
-  ///     shape: svarint[],
-  ///     elementType: Type,
-  ///     layout: Attribute
-  ///   }
-  ///
-  kMemRefType = 10,
-
-  ///   MemRefTypeWithMemSpace {
-  ///     memorySpace: Attribute,
-  ///     shape: svarint[],
-  ///     elementType: Type,
-  ///     layout: Attribute
-  ///   }
-  /// Variant of MemRefType with non-default memory space.
-  kMemRefTypeWithMemSpace = 11,
-
-  ///   NoneType {
-  ///   }
-  ///
-  kNoneType = 12,
-
-  ///   RankedTensorType {
-  ///     shape: svarint[],
-  ///     elementType: Type,
-  ///   }
-  ///
-  kRankedTensorType = 13,
-
-  ///   RankedTensorTypeWithEncoding {
-  ///     encoding: Attribute,
-  ///     shape: svarint[],
-  ///     elementType: Type
-  ///   }
-  /// Variant of RankedTensorType with an encoding.
-  kRankedTensorTypeWithEncoding = 14,
-
-  ///   TupleType {
-  ///     elementTypes: Type[]
-  ///   }
-  kTupleType = 15,
-
-  ///   UnrankedMemRefType {
-  ///     shape: svarint[]
-  ///   }
-  ///
-  kUnrankedMemRefType = 16,
-
-  ///   UnrankedMemRefTypeWithMemSpace {
-  ///     memorySpace: Attribute,
-  ///     shape: svarint[]
-  ///   }
-  /// Variant of UnrankedMemRefType with non-default memory space.
-  kUnrankedMemRefTypeWithMemSpace = 17,
-
-  ///   UnrankedTensorType {
-  ///     elementType: Type
-  ///   }
-  ///
-  kUnrankedTensorType = 18,
-
-  ///   VectorType {
-  ///     shape: svarint[],
-  ///     elementType: Type
-  ///   }
-  ///
-  kVectorType = 19,
-
-  ///   VectorTypeWithScalableDims {
-  ///     numScalableDims: varint,
-  ///     shape: svarint[],
-  ///     elementType: Type
-  ///   }
-  /// Variant of VectorType with scalable dimensions.
-  kVectorTypeWithScalableDims = 20,
-};
-
-} // namespace builtin_encoding
-} // namespace
 
 //===----------------------------------------------------------------------===//
 // BuiltinDialectBytecodeInterface
 //===----------------------------------------------------------------------===//
 
 namespace {
-/// This class implements the bytecode interface for the builtin dialect.
-struct BuiltinDialectBytecodeInterface : public BytecodeDialectInterface {
-  BuiltinDialectBytecodeInterface(Dialect *dialect)
-      : BytecodeDialectInterface(dialect) {}
-
-  //===--------------------------------------------------------------------===//
-  // Attributes
-
-  Attribute readAttribute(DialectBytecodeReader &reader) const override;
-  ArrayAttr readArrayAttr(DialectBytecodeReader &reader) const;
-  DenseArrayAttr readDenseArrayAttr(DialectBytecodeReader &reader) const;
-  DenseElementsAttr
-  readDenseIntOrFPElementsAttr(DialectBytecodeReader &reader) const;
-  DenseStringElementsAttr
-  readDenseStringElementsAttr(DialectBytecodeReader &reader) const;
-  DenseResourceElementsAttr
-  readDenseResourceElementsAttr(DialectBytecodeReader &reader) const;
-  DictionaryAttr readDictionaryAttr(DialectBytecodeReader &reader) const;
-  FloatAttr readFloatAttr(DialectBytecodeReader &reader) const;
-  IntegerAttr readIntegerAttr(DialectBytecodeReader &reader) const;
-  SparseElementsAttr
-  readSparseElementsAttr(DialectBytecodeReader &reader) const;
-  StringAttr readStringAttr(DialectBytecodeReader &reader, bool hasType) const;
-  SymbolRefAttr readSymbolRefAttr(DialectBytecodeReader &reader,
-                                  bool hasNestedRefs) const;
-  TypeAttr readTypeAttr(DialectBytecodeReader &reader) const;
-
-  LocationAttr readCallSiteLoc(DialectBytecodeReader &reader) const;
-  LocationAttr readFileLineColLoc(DialectBytecodeReader &reader) const;
-  LocationAttr readFusedLoc(DialectBytecodeReader &reader,
-                            bool hasMetadata) const;
-  LocationAttr readNameLoc(DialectBytecodeReader &reader) const;
-
-  LogicalResult writeAttribute(Attribute attr,
-                               DialectBytecodeWriter &writer) const override;
-  void write(ArrayAttr attr, DialectBytecodeWriter &writer) const;
-  void write(DenseArrayAttr attr, DialectBytecodeWriter &writer) const;
-  void write(DenseIntOrFPElementsAttr attr,
-             DialectBytecodeWriter &writer) const;
-  void write(DenseStringElementsAttr attr, DialectBytecodeWriter &writer) const;
-  void write(DenseResourceElementsAttr attr,
-             DialectBytecodeWriter &writer) const;
-  void write(DictionaryAttr attr, DialectBytecodeWriter &writer) const;
-  void write(IntegerAttr attr, DialectBytecodeWriter &writer) const;
-  void write(FloatAttr attr, DialectBytecodeWriter &writer) const;
-  void write(SparseElementsAttr attr, DialectBytecodeWriter &writer) const;
-  void write(StringAttr attr, DialectBytecodeWriter &writer) const;
-  void write(SymbolRefAttr attr, DialectBytecodeWriter &writer) const;
-  void write(TypeAttr attr, DialectBytecodeWriter &writer) const;
-
-  void write(CallSiteLoc attr, DialectBytecodeWriter &writer) const;
-  void write(FileLineColLoc attr, DialectBytecodeWriter &writer) const;
-  void write(FusedLoc attr, DialectBytecodeWriter &writer) const;
-  void write(NameLoc attr, DialectBytecodeWriter &writer) const;
-  LogicalResult write(OpaqueLoc attr, DialectBytecodeWriter &writer) const;
-
-  //===--------------------------------------------------------------------===//
-  // Types
-
-  Type readType(DialectBytecodeReader &reader) const override;
-  ComplexType readComplexType(DialectBytecodeReader &reader) const;
-  IntegerType readIntegerType(DialectBytecodeReader &reader) const;
-  FunctionType readFunctionType(DialectBytecodeReader &reader) const;
-  MemRefType readMemRefType(DialectBytecodeReader &reader,
-                            bool hasMemSpace) const;
-  RankedTensorType readRankedTensorType(DialectBytecodeReader &reader,
-                                        bool hasEncoding) const;
-  TupleType readTupleType(DialectBytecodeReader &reader) const;
-  UnrankedMemRefType readUnrankedMemRefType(DialectBytecodeReader &reader,
-                                            bool hasMemSpace) const;
-  UnrankedTensorType
-  readUnrankedTensorType(DialectBytecodeReader &reader) const;
-  VectorType readVectorType(DialectBytecodeReader &reader,
-                            bool hasScalableDims) const;
-
-  LogicalResult writeType(Type type,
-                          DialectBytecodeWriter &writer) const override;
-  void write(ComplexType type, DialectBytecodeWriter &writer) const;
-  void write(IntegerType type, DialectBytecodeWriter &writer) const;
-  void write(FunctionType type, DialectBytecodeWriter &writer) const;
-  void write(MemRefType type, DialectBytecodeWriter &writer) const;
-  void write(RankedTensorType type, DialectBytecodeWriter &writer) const;
-  void write(TupleType type, DialectBytecodeWriter &writer) const;
-  void write(UnrankedMemRefType type, DialectBytecodeWriter &writer) const;
-  void write(UnrankedTensorType type, DialectBytecodeWriter &writer) const;
-  void write(VectorType type, DialectBytecodeWriter &writer) const;
-};
-} // namespace
-
-void builtin_dialect_detail::addBytecodeInterface(BuiltinDialect *dialect) {
-  dialect->addInterfaces<BuiltinDialectBytecodeInterface>();
-}
 
 //===----------------------------------------------------------------------===//
-// Attributes
+// Utility functions
 //===----------------------------------------------------------------------===//
 
-Attribute BuiltinDialectBytecodeInterface::readAttribute(
-    DialectBytecodeReader &reader) const {
-  uint64_t code;
-  if (failed(reader.readVarInt(code)))
-    return Attribute();
-  switch (code) {
-  case builtin_encoding::kArrayAttr:
-    return readArrayAttr(reader);
-  case builtin_encoding::kDictionaryAttr:
-    return readDictionaryAttr(reader);
-  case builtin_encoding::kStringAttr:
-    return readStringAttr(reader, /*hasType=*/false);
-  case builtin_encoding::kStringAttrWithType:
-    return readStringAttr(reader, /*hasType=*/true);
-  case builtin_encoding::kFlatSymbolRefAttr:
-    return readSymbolRefAttr(reader, /*hasNestedRefs=*/false);
-  case builtin_encoding::kSymbolRefAttr:
-    return readSymbolRefAttr(reader, /*hasNestedRefs=*/true);
-  case builtin_encoding::kTypeAttr:
-    return readTypeAttr(reader);
-  case builtin_encoding::kUnitAttr:
-    return UnitAttr::get(getContext());
-  case builtin_encoding::kIntegerAttr:
-    return readIntegerAttr(reader);
-  case builtin_encoding::kFloatAttr:
-    return readFloatAttr(reader);
-  case builtin_encoding::kCallSiteLoc:
-    return readCallSiteLoc(reader);
-  case builtin_encoding::kFileLineColLoc:
-    return readFileLineColLoc(reader);
-  case builtin_encoding::kFusedLoc:
-    return readFusedLoc(reader, /*hasMetadata=*/false);
-  case builtin_encoding::kFusedLocWithMetadata:
-    return readFusedLoc(reader, /*hasMetadata=*/true);
-  case builtin_encoding::kNameLoc:
-    return readNameLoc(reader);
-  case builtin_encoding::kUnknownLoc:
-    return UnknownLoc::get(getContext());
-  case builtin_encoding::kDenseResourceElementsAttr:
-    return readDenseResourceElementsAttr(reader);
-  case builtin_encoding::kDenseArrayAttr:
-    return readDenseArrayAttr(reader);
-  case builtin_encoding::kDenseIntOrFPElementsAttr:
-    return readDenseIntOrFPElementsAttr(reader);
-  case builtin_encoding::kDenseStringElementsAttr:
-    return readDenseStringElementsAttr(reader);
-  case builtin_encoding::kSparseElementsAttr:
-    return readSparseElementsAttr(reader);
-  default:
-    reader.emitError() << "unknown builtin attribute code: " << code;
-    return Attribute();
-  }
+// TODO: Move these to separate file.
+
+// Returns the bitwidth if known, else return std::nullopt.
+static std::optional<unsigned> getIntegerBitWidth(DialectBytecodeReader &reader,
+                                                  Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth();
+  if (llvm::isa<IndexType>(type))
+    return IndexType::kInternalStorageBitWidth;
+  reader.emitError()
+      << "expected integer or index type for IntegerAttr, but got: " << type;
+  return std::nullopt;
 }
 
-LogicalResult BuiltinDialectBytecodeInterface::writeAttribute(
-    Attribute attr, DialectBytecodeWriter &writer) const {
-  return TypeSwitch<Attribute, LogicalResult>(attr)
-      .Case<ArrayAttr, DenseArrayAttr, DenseIntOrFPElementsAttr,
-            DenseStringElementsAttr, DenseResourceElementsAttr, DictionaryAttr,
-            FloatAttr, IntegerAttr, SparseElementsAttr, StringAttr,
-            SymbolRefAttr, TypeAttr>([&](auto attr) {
-        write(attr, writer);
-        return success();
-      })
-      .Case<CallSiteLoc, FileLineColLoc, FusedLoc, NameLoc>([&](auto attr) {
-        write(attr, writer);
-        return success();
-      })
-      .Case([&](OpaqueLoc attr) { return write(attr, writer); })
-      .Case([&](UnitAttr) {
-        writer.writeVarInt(builtin_encoding::kUnitAttr);
-        return success();
-      })
-      .Case([&](UnknownLoc) {
-        writer.writeVarInt(builtin_encoding::kUnknownLoc);
-        return success();
-      })
-      .Default([&](Attribute) { return failure(); });
+static LogicalResult readAPIntWithKnownWidth(DialectBytecodeReader &reader,
+                                             Type type, FailureOr<APInt> &val) {
+  std::optional<unsigned> bitWidth = getIntegerBitWidth(reader, type);
+  // getIntegerBitWidth returns std::nullopt and emits an error for unsupported
+  // types. Bail out early to avoid creating a zero-width APInt with a non-zero
+  // value.
+  if (!bitWidth)
+    return failure();
+  val = reader.readAPIntWithKnownWidth(*bitWidth);
+  return val;
 }
 
-//===----------------------------------------------------------------------===//
-// ArrayAttr
-
-ArrayAttr BuiltinDialectBytecodeInterface::readArrayAttr(
-    DialectBytecodeReader &reader) const {
-  SmallVector<Attribute> elements;
-  if (failed(reader.readAttributes(elements)))
-    return ArrayAttr();
-  return ArrayAttr::get(getContext(), elements);
+static LogicalResult
+readAPFloatWithKnownSemantics(DialectBytecodeReader &reader, Type type,
+                              FailureOr<APFloat> &val) {
+  auto ftype = dyn_cast<FloatType>(type);
+  if (!ftype)
+    return failure();
+  val = reader.readAPFloatWithKnownSemantics(ftype.getFloatSemantics());
+  return success();
 }
 
-void BuiltinDialectBytecodeInterface::write(
-    ArrayAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kArrayAttr);
-  writer.writeAttributes(attr.getValue());
-}
-
-//===----------------------------------------------------------------------===//
-// DenseArrayAttr
-
-DenseArrayAttr BuiltinDialectBytecodeInterface::readDenseArrayAttr(
-    DialectBytecodeReader &reader) const {
-  Type elementType;
-  uint64_t size;
-  ArrayRef<char> blob;
-  if (failed(reader.readType(elementType)) || failed(reader.readVarInt(size)) ||
-      failed(reader.readBlob(blob)))
-    return DenseArrayAttr();
-  return DenseArrayAttr::get(elementType, size, blob);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    DenseArrayAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kDenseArrayAttr);
-  writer.writeType(attr.getElementType());
-  writer.writeVarInt(attr.getSize());
-  writer.writeOwnedBlob(attr.getRawData());
-}
-
-//===----------------------------------------------------------------------===//
-// DenseIntOrFPElementsAttr
-
-DenseElementsAttr BuiltinDialectBytecodeInterface::readDenseIntOrFPElementsAttr(
-    DialectBytecodeReader &reader) const {
-  ShapedType type;
-  ArrayRef<char> blob;
-  if (failed(reader.readType(type)) || failed(reader.readBlob(blob)))
-    return DenseIntOrFPElementsAttr();
-  return DenseIntOrFPElementsAttr::getFromRawBuffer(type, blob);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    DenseIntOrFPElementsAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kDenseIntOrFPElementsAttr);
-  writer.writeType(attr.getType());
-  writer.writeOwnedBlob(attr.getRawData());
-}
-
-//===----------------------------------------------------------------------===//
-// DenseStringElementsAttr
-
-DenseStringElementsAttr
-BuiltinDialectBytecodeInterface::readDenseStringElementsAttr(
-    DialectBytecodeReader &reader) const {
-  ShapedType type;
-  uint64_t isSplat;
-  if (failed(reader.readType(type)) || failed(reader.readVarInt(isSplat)))
-    return DenseStringElementsAttr();
-
-  SmallVector<StringRef> values(isSplat ? 1 : type.getNumElements());
-  for (StringRef &value : values)
+LogicalResult
+readPotentiallySplatString(DialectBytecodeReader &reader, ShapedType type,
+                           bool isSplat,
+                           SmallVectorImpl<StringRef> &rawStringData) {
+  rawStringData.resize(isSplat ? 1 : type.getNumElements());
+  for (StringRef &value : rawStringData)
     if (failed(reader.readString(value)))
-      return DenseStringElementsAttr();
-  return DenseStringElementsAttr::get(type, values);
+      return failure();
+  return success();
 }
 
-void BuiltinDialectBytecodeInterface::write(
-    DenseStringElementsAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kDenseStringElementsAttr);
-  writer.writeType(attr.getType());
-
+static void writePotentiallySplatString(DialectBytecodeWriter &writer,
+                                        DenseStringElementsAttr attr) {
   bool isSplat = attr.isSplat();
-  writer.writeVarInt(isSplat);
-
-  // If the attribute is a splat, only write out the single value.
   if (isSplat)
     return writer.writeOwnedString(attr.getRawStringData().front());
 
@@ -565,613 +92,526 @@ void BuiltinDialectBytecodeInterface::write(
 }
 
 //===----------------------------------------------------------------------===//
-// DenseResourceElementsAttr
-
-DenseResourceElementsAttr
-BuiltinDialectBytecodeInterface::readDenseResourceElementsAttr(
-    DialectBytecodeReader &reader) const {
-  ShapedType type;
-  if (failed(reader.readType(type)))
-    return DenseResourceElementsAttr();
-
-  FailureOr<DenseResourceElementsHandle> handle =
-      reader.readResourceHandle<DenseResourceElementsHandle>();
-  if (failed(handle))
-    return DenseResourceElementsAttr();
-
-  return DenseResourceElementsAttr::get(type, *handle);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    DenseResourceElementsAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kDenseResourceElementsAttr);
-  writer.writeType(attr.getType());
-  writer.writeResourceHandle(attr.getRawHandle());
-}
-
+// AffineExpr / AffineMap bytecode helpers
 //===----------------------------------------------------------------------===//
-// DictionaryAttr
 
-DictionaryAttr BuiltinDialectBytecodeInterface::readDictionaryAttr(
-    DialectBytecodeReader &reader) const {
-  auto readNamedAttr = [&]() -> FailureOr<NamedAttribute> {
-    StringAttr name;
-    Attribute value;
-    if (failed(reader.readAttribute(name)) ||
-        failed(reader.readAttribute(value)))
-      return failure();
-    return NamedAttribute(name, value);
+// AffineExpr kind encoding:
+// Extra kinds may be appended here but the existing ones and their ordering
+// should not be changed.
+enum class AffineExprBytecodeKind : uint64_t {
+  DimId = 0,
+  SymbolId = 1,
+  Constant = 2,
+  Add = 3,
+  Mul = 4,
+  Mod = 5,
+  FloorDiv = 6,
+  CeilDiv = 7
+};
+
+// AffineMap kind encoding. These are packed into the low 2 bits of the header
+// varint and fixed.
+enum class AffineMapBytecodeKind : unsigned {
+  Identity = 0,
+  Permutation = 1,
+  ProjectedPermutation = 2,
+  General = 3
+};
+
+/// Convert a binary AffineExprKind to its bytecode wire encoding.
+static AffineExprBytecodeKind toBytecodeKind(AffineExprKind k) {
+  switch (k) {
+  case AffineExprKind::Add:
+    return AffineExprBytecodeKind::Add;
+  case AffineExprKind::Mul:
+    return AffineExprBytecodeKind::Mul;
+  case AffineExprKind::Mod:
+    return AffineExprBytecodeKind::Mod;
+  case AffineExprKind::FloorDiv:
+    return AffineExprBytecodeKind::FloorDiv;
+  case AffineExprKind::CeilDiv:
+    return AffineExprBytecodeKind::CeilDiv;
+  default:
+    llvm_unreachable("not a binary AffineExprKind");
+  }
+}
+
+/// Convert a bytecode wire value back to a binary AffineExprKind.
+/// Caller must guarantee `kind` is one of the binary operator values.
+static AffineExprKind fromBytecodeKind(uint64_t kind) {
+  switch (kind) {
+  case static_cast<uint64_t>(AffineExprBytecodeKind::Add):
+    return AffineExprKind::Add;
+  case static_cast<uint64_t>(AffineExprBytecodeKind::Mul):
+    return AffineExprKind::Mul;
+  case static_cast<uint64_t>(AffineExprBytecodeKind::Mod):
+    return AffineExprKind::Mod;
+  case static_cast<uint64_t>(AffineExprBytecodeKind::FloorDiv):
+    return AffineExprKind::FloorDiv;
+  case static_cast<uint64_t>(AffineExprBytecodeKind::CeilDiv):
+    return AffineExprKind::CeilDiv;
+  }
+  llvm_unreachable("not a binary AffineExprBytecodeKind");
+}
+
+/// Read a single AffineExpr using iterative prefix decoding. The wire format
+/// is prefix order (operator and then children), which is self-delimiting.
+/// Instead of C++ recursion the reader uses an explicit work stack, bounding
+/// memory to O(depth) and eliminating stack-overflow risk on malicious input.
+static LogicalResult readAffineExpr(DialectBytecodeReader &reader,
+                                    MLIRContext *context, AffineExpr &expr) {
+  // A work-stack item is either ReadOperand (0) or a combine marker whose
+  // payload is an AffineExprKind.
+  struct WorkItem {
+    bool isCombine;
+    AffineExprKind combineKind; // only valid when isCombine == true
+    static WorkItem read() { return {false, {}}; }
+    static WorkItem combine(AffineExprKind k) { return {true, k}; }
   };
-  SmallVector<NamedAttribute> attrs;
-  if (failed(reader.readList(attrs, readNamedAttr)))
-    return DictionaryAttr();
-  return DictionaryAttr::get(getContext(), attrs);
-}
 
-void BuiltinDialectBytecodeInterface::write(
-    DictionaryAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kDictionaryAttr);
-  writer.writeList(attr.getValue(), [&](NamedAttribute attr) {
-    writer.writeAttribute(attr.getName());
-    writer.writeAttribute(attr.getValue());
-  });
-}
+  SmallVector<WorkItem, 16> work;
+  SmallVector<AffineExpr, 8> operands;
+  work.push_back(WorkItem::read());
 
-//===----------------------------------------------------------------------===//
-// FloatAttr
+  while (!work.empty()) {
+    // Bound total iterations to catch malformed input.
+    if (work.size() > 128)
+      return reader.emitError("AffineExpr work stack overflow");
 
-FloatAttr BuiltinDialectBytecodeInterface::readFloatAttr(
-    DialectBytecodeReader &reader) const {
-  FloatType type;
-  if (failed(reader.readType(type)))
-    return FloatAttr();
-  FailureOr<APFloat> value =
-      reader.readAPFloatWithKnownSemantics(type.getFloatSemantics());
-  if (failed(value))
-    return FloatAttr();
-  return FloatAttr::get(type, *value);
-}
+    WorkItem item = work.pop_back_val();
 
-void BuiltinDialectBytecodeInterface::write(
-    FloatAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kFloatAttr);
-  writer.writeType(attr.getType());
-  writer.writeAPFloatWithKnownSemantics(attr.getValue());
-}
+    if (item.isCombine) {
+      // Pop two operands and combine.
+      if (operands.size() < 2)
+        return reader.emitError("malformed AffineExpr: operand underflow");
+      AffineExpr rhs = operands.pop_back_val();
+      AffineExpr lhs = operands.pop_back_val();
+      operands.push_back(getAffineBinaryOpExpr(item.combineKind, lhs, rhs));
+      continue;
+    }
 
-//===----------------------------------------------------------------------===//
-// IntegerAttr
-
-IntegerAttr BuiltinDialectBytecodeInterface::readIntegerAttr(
-    DialectBytecodeReader &reader) const {
-  Type type;
-  if (failed(reader.readType(type)))
-    return IntegerAttr();
-
-  // Extract the value storage width from the type.
-  unsigned bitWidth;
-  if (auto intType = type.dyn_cast<IntegerType>()) {
-    bitWidth = intType.getWidth();
-  } else if (type.isa<IndexType>()) {
-    bitWidth = IndexType::kInternalStorageBitWidth;
-  } else {
-    reader.emitError()
-        << "expected integer or index type for IntegerAttr, but got: " << type;
-    return IntegerAttr();
-  }
-
-  FailureOr<APInt> value = reader.readAPIntWithKnownWidth(bitWidth);
-  if (failed(value))
-    return IntegerAttr();
-  return IntegerAttr::get(type, *value);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    IntegerAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kIntegerAttr);
-  writer.writeType(attr.getType());
-  writer.writeAPIntWithKnownWidth(attr.getValue());
-}
-
-//===----------------------------------------------------------------------===//
-// SparseElementsAttr
-
-SparseElementsAttr BuiltinDialectBytecodeInterface::readSparseElementsAttr(
-    DialectBytecodeReader &reader) const {
-  ShapedType type;
-  DenseIntElementsAttr indices;
-  DenseElementsAttr values;
-  if (failed(reader.readType(type)) || failed(reader.readAttribute(indices)) ||
-      failed(reader.readAttribute(values)))
-    return SparseElementsAttr();
-  return SparseElementsAttr::get(type, indices, values);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    SparseElementsAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kSparseElementsAttr);
-  writer.writeType(attr.getType());
-  writer.writeAttribute(attr.getIndices());
-  writer.writeAttribute(attr.getValues());
-}
-
-//===----------------------------------------------------------------------===//
-// StringAttr
-
-StringAttr
-BuiltinDialectBytecodeInterface::readStringAttr(DialectBytecodeReader &reader,
-                                                bool hasType) const {
-  StringRef string;
-  if (failed(reader.readString(string)))
-    return StringAttr();
-
-  // Read the type if present.
-  Type type;
-  if (!hasType)
-    type = NoneType::get(getContext());
-  else if (failed(reader.readType(type)))
-    return StringAttr();
-  return StringAttr::get(string, type);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    StringAttr attr, DialectBytecodeWriter &writer) const {
-  // We only encode the type if it isn't NoneType, which is significantly less
-  // common.
-  Type type = attr.getType();
-  if (!type.isa<NoneType>()) {
-    writer.writeVarInt(builtin_encoding::kStringAttrWithType);
-    writer.writeOwnedString(attr.getValue());
-    writer.writeType(type);
-    return;
-  }
-  writer.writeVarInt(builtin_encoding::kStringAttr);
-  writer.writeOwnedString(attr.getValue());
-}
-
-//===----------------------------------------------------------------------===//
-// SymbolRefAttr
-
-SymbolRefAttr BuiltinDialectBytecodeInterface::readSymbolRefAttr(
-    DialectBytecodeReader &reader, bool hasNestedRefs) const {
-  StringAttr rootReference;
-  if (failed(reader.readAttribute(rootReference)))
-    return SymbolRefAttr();
-  SmallVector<FlatSymbolRefAttr> nestedReferences;
-  if (hasNestedRefs && failed(reader.readAttributes(nestedReferences)))
-    return SymbolRefAttr();
-  return SymbolRefAttr::get(rootReference, nestedReferences);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    SymbolRefAttr attr, DialectBytecodeWriter &writer) const {
-  ArrayRef<FlatSymbolRefAttr> nestedRefs = attr.getNestedReferences();
-  writer.writeVarInt(nestedRefs.empty() ? builtin_encoding::kFlatSymbolRefAttr
-                                        : builtin_encoding::kSymbolRefAttr);
-
-  writer.writeAttribute(attr.getRootReference());
-  if (!nestedRefs.empty())
-    writer.writeAttributes(nestedRefs);
-}
-
-//===----------------------------------------------------------------------===//
-// TypeAttr
-
-TypeAttr BuiltinDialectBytecodeInterface::readTypeAttr(
-    DialectBytecodeReader &reader) const {
-  Type type;
-  if (failed(reader.readType(type)))
-    return TypeAttr();
-  return TypeAttr::get(type);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    TypeAttr attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kTypeAttr);
-  writer.writeType(attr.getValue());
-}
-
-//===----------------------------------------------------------------------===//
-// CallSiteLoc
-
-LocationAttr BuiltinDialectBytecodeInterface::readCallSiteLoc(
-    DialectBytecodeReader &reader) const {
-  LocationAttr callee, caller;
-  if (failed(reader.readAttribute(callee)) ||
-      failed(reader.readAttribute(caller)))
-    return LocationAttr();
-  return CallSiteLoc::get(callee, caller);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    CallSiteLoc attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kCallSiteLoc);
-  writer.writeAttribute(attr.getCallee());
-  writer.writeAttribute(attr.getCaller());
-}
-
-//===----------------------------------------------------------------------===//
-// FileLineColLoc
-
-LocationAttr BuiltinDialectBytecodeInterface::readFileLineColLoc(
-    DialectBytecodeReader &reader) const {
-  StringAttr filename;
-  uint64_t line, column;
-  if (failed(reader.readAttribute(filename)) ||
-      failed(reader.readVarInt(line)) || failed(reader.readVarInt(column)))
-    return LocationAttr();
-  return FileLineColLoc::get(filename, line, column);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    FileLineColLoc attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kFileLineColLoc);
-  writer.writeAttribute(attr.getFilename());
-  writer.writeVarInt(attr.getLine());
-  writer.writeVarInt(attr.getColumn());
-}
-
-//===----------------------------------------------------------------------===//
-// FusedLoc
-
-LocationAttr
-BuiltinDialectBytecodeInterface::readFusedLoc(DialectBytecodeReader &reader,
-                                              bool hasMetadata) const {
-  // Parse the child locations.
-  auto readLoc = [&]() -> FailureOr<Location> {
-    LocationAttr locAttr;
-    if (failed(reader.readAttribute(locAttr)))
+    // ReadOperand: read the next token.
+    uint64_t kind;
+    if (failed(reader.readVarInt(kind)))
       return failure();
-    return Location(locAttr);
-  };
-  SmallVector<Location> locations;
-  if (failed(reader.readList(locations, readLoc)))
-    return LocationAttr();
 
-  // Parse the metadata if present.
-  Attribute metadata;
-  if (hasMetadata && failed(reader.readAttribute(metadata)))
-    return LocationAttr();
+    // Switch on the raw uint64_t to keep the default case valid for
+    // unknown/future wire values without triggering -Wcovered-switch-default.
+    switch (kind) {
+    case static_cast<uint64_t>(AffineExprBytecodeKind::DimId): {
+      uint64_t position;
+      if (failed(reader.readVarInt(position)))
+        return failure();
+      operands.push_back(getAffineDimExpr(position, context));
+      break;
+    }
+    case static_cast<uint64_t>(AffineExprBytecodeKind::SymbolId): {
+      uint64_t position;
+      if (failed(reader.readVarInt(position)))
+        return failure();
+      operands.push_back(getAffineSymbolExpr(position, context));
+      break;
+    }
+    case static_cast<uint64_t>(AffineExprBytecodeKind::Constant): {
+      int64_t value;
+      if (failed(reader.readSignedVarInt(value)))
+        return failure();
+      operands.push_back(getAffineConstantExpr(value, context));
+      break;
+    }
+    case static_cast<uint64_t>(AffineExprBytecodeKind::Add):
+    case static_cast<uint64_t>(AffineExprBytecodeKind::Mul):
+    case static_cast<uint64_t>(AffineExprBytecodeKind::Mod):
+    case static_cast<uint64_t>(AffineExprBytecodeKind::FloorDiv):
+    case static_cast<uint64_t>(AffineExprBytecodeKind::CeilDiv): {
+      // Schedule: read RHS, read LHS, then combine.
+      // Work stack is LIFO, so push in reverse order.
+      work.push_back(WorkItem::combine(fromBytecodeKind(kind)));
+      work.push_back(WorkItem::read()); // RHS
+      work.push_back(WorkItem::read()); // LHS
+      break;
+    }
+    default:
+      return reader.emitError("unknown AffineExpr kind: ") << kind, failure();
+    }
+  }
 
-  return FusedLoc::get(locations, metadata, getContext());
+  if (operands.size() != 1)
+    return reader.emitError("malformed AffineExpr: expected single result"),
+           failure();
+
+  expr = operands.front();
+  return success();
 }
 
-void BuiltinDialectBytecodeInterface::write(
-    FusedLoc attr, DialectBytecodeWriter &writer) const {
-  if (Attribute metadata = attr.getMetadata()) {
-    writer.writeVarInt(builtin_encoding::kFusedLocWithMetadata);
-    writer.writeAttributes(attr.getLocations());
-    writer.writeAttribute(metadata);
-  } else {
-    writer.writeVarInt(builtin_encoding::kFusedLoc);
-    writer.writeAttributes(attr.getLocations());
+/// Write an AffineExpr in prefix order (operator first, then children).
+static void writeAffineExpr(DialectBytecodeWriter &writer, AffineExpr expr) {
+  switch (expr.getKind()) {
+  case AffineExprKind::DimId:
+    writer.writeVarInt(static_cast<uint64_t>(AffineExprBytecodeKind::DimId));
+    writer.writeVarInt(cast<AffineDimExpr>(expr).getPosition());
+    break;
+  case AffineExprKind::SymbolId:
+    writer.writeVarInt(static_cast<uint64_t>(AffineExprBytecodeKind::SymbolId));
+    writer.writeVarInt(cast<AffineSymbolExpr>(expr).getPosition());
+    break;
+  case AffineExprKind::Constant:
+    writer.writeVarInt(static_cast<uint64_t>(AffineExprBytecodeKind::Constant));
+    writer.writeSignedVarInt(cast<AffineConstantExpr>(expr).getValue());
+    break;
+  case AffineExprKind::Add:
+  case AffineExprKind::Mul:
+  case AffineExprKind::Mod:
+  case AffineExprKind::FloorDiv:
+  case AffineExprKind::CeilDiv: {
+    // Write operator first (prefix order).
+    writer.writeVarInt(static_cast<uint64_t>(toBytecodeKind(expr.getKind())));
+    auto binExpr = cast<AffineBinaryOpExpr>(expr);
+    writeAffineExpr(writer, binExpr.getLHS());
+    writeAffineExpr(writer, binExpr.getRHS());
+    break;
+  }
   }
 }
 
-//===----------------------------------------------------------------------===//
-// NameLoc
+/// Read an AffineMap with packed kind header.
+///
+/// AffineMap :=
+///   header(varint)        // (numDims << 2) | mapKind
+///   payload               // depends on mapKind
+///
+/// The header is there for concise encoding of the most common occuring cases.
+///
+/// mapKind = header & 0x3:
+///   Identity(0): no further data
+///   Permutation(1): positions(varint*)
+///   ProjectedPermutation(2): numResults(varint), positions(varint*)
+///   General(3): numSymbols(varint), numResults(varint), results(AffineExpr*)
+static LogicalResult readAffineMap(DialectBytecodeReader &reader,
+                                   MLIRContext *context, AffineMap &map) {
+  uint64_t header;
+  if (failed(reader.readVarInt(header)))
+    return failure();
 
-LocationAttr BuiltinDialectBytecodeInterface::readNameLoc(
-    DialectBytecodeReader &reader) const {
-  StringAttr name;
-  LocationAttr childLoc;
-  if (failed(reader.readAttribute(name)) ||
-      failed(reader.readAttribute(childLoc)))
-    return LocationAttr();
-  return NameLoc::get(name, childLoc);
-}
+  // Keep as unsigned to avoid -Wcovered-switch-default below.
+  unsigned mapKind = header & 0x3;
+  unsigned numDims = header >> 2;
 
-void BuiltinDialectBytecodeInterface::write(
-    NameLoc attr, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kNameLoc);
-  writer.writeAttribute(attr.getName());
-  writer.writeAttribute(attr.getChildLoc());
-}
+  switch (mapKind) {
+  case static_cast<unsigned>(AffineMapBytecodeKind::Identity):
+    map = AffineMap::getMultiDimIdentityMap(numDims, context);
+    return success();
 
-//===----------------------------------------------------------------------===//
-// OpaqueLoc
+  case static_cast<unsigned>(AffineMapBytecodeKind::Permutation): {
+    SmallVector<unsigned> perm(numDims);
+    for (unsigned i = 0; i < numDims; ++i) {
+      uint64_t pos;
+      if (failed(reader.readVarInt(pos)))
+        return failure();
+      perm[i] = pos;
+    }
+    map = AffineMap::getPermutationMap(perm, context);
+    return success();
+  }
 
-LogicalResult
-BuiltinDialectBytecodeInterface::write(OpaqueLoc attr,
-                                       DialectBytecodeWriter &writer) const {
-  // We can't encode an OpaqueLoc directly given that it is in-memory only, so
-  // encode the fallback instead.
-  return writeAttribute(attr.getFallbackLocation(), writer);
-}
+  case static_cast<unsigned>(AffineMapBytecodeKind::ProjectedPermutation): {
+    uint64_t numResults;
+    if (failed(reader.readVarInt(numResults)))
+      return failure();
+    SmallVector<AffineExpr> results;
+    results.reserve(numResults);
+    for (uint64_t i = 0; i < numResults; ++i) {
+      uint64_t pos;
+      if (failed(reader.readVarInt(pos)))
+        return failure();
+      results.push_back(getAffineDimExpr(pos, context));
+    }
+    map = AffineMap::get(numDims, /*numSymbols=*/0, results, context);
+    return success();
+  }
 
-//===----------------------------------------------------------------------===//
-// Types
-//===----------------------------------------------------------------------===//
-
-Type BuiltinDialectBytecodeInterface::readType(
-    DialectBytecodeReader &reader) const {
-  uint64_t code;
-  if (failed(reader.readVarInt(code)))
-    return Type();
-  switch (code) {
-  case builtin_encoding::kIntegerType:
-    return readIntegerType(reader);
-  case builtin_encoding::kIndexType:
-    return IndexType::get(getContext());
-  case builtin_encoding::kFunctionType:
-    return readFunctionType(reader);
-  case builtin_encoding::kBFloat16Type:
-    return BFloat16Type::get(getContext());
-  case builtin_encoding::kFloat16Type:
-    return Float16Type::get(getContext());
-  case builtin_encoding::kFloat32Type:
-    return Float32Type::get(getContext());
-  case builtin_encoding::kFloat64Type:
-    return Float64Type::get(getContext());
-  case builtin_encoding::kFloat80Type:
-    return Float80Type::get(getContext());
-  case builtin_encoding::kFloat128Type:
-    return Float128Type::get(getContext());
-  case builtin_encoding::kComplexType:
-    return readComplexType(reader);
-  case builtin_encoding::kMemRefType:
-    return readMemRefType(reader, /*hasMemSpace=*/false);
-  case builtin_encoding::kMemRefTypeWithMemSpace:
-    return readMemRefType(reader, /*hasMemSpace=*/true);
-  case builtin_encoding::kNoneType:
-    return NoneType::get(getContext());
-  case builtin_encoding::kRankedTensorType:
-    return readRankedTensorType(reader, /*hasEncoding=*/false);
-  case builtin_encoding::kRankedTensorTypeWithEncoding:
-    return readRankedTensorType(reader, /*hasEncoding=*/true);
-  case builtin_encoding::kTupleType:
-    return readTupleType(reader);
-  case builtin_encoding::kUnrankedMemRefType:
-    return readUnrankedMemRefType(reader, /*hasMemSpace=*/false);
-  case builtin_encoding::kUnrankedMemRefTypeWithMemSpace:
-    return readUnrankedMemRefType(reader, /*hasMemSpace=*/true);
-  case builtin_encoding::kUnrankedTensorType:
-    return readUnrankedTensorType(reader);
-  case builtin_encoding::kVectorType:
-    return readVectorType(reader, /*hasScalableDims=*/false);
-  case builtin_encoding::kVectorTypeWithScalableDims:
-    return readVectorType(reader, /*hasScalableDims=*/true);
+  case static_cast<unsigned>(AffineMapBytecodeKind::General): {
+    uint64_t numSymbols, numResults;
+    if (failed(reader.readVarInt(numSymbols)) ||
+        failed(reader.readVarInt(numResults)))
+      return failure();
+    SmallVector<AffineExpr> results;
+    results.reserve(numResults);
+    for (uint64_t i = 0; i < numResults; ++i) {
+      AffineExpr expr;
+      if (failed(readAffineExpr(reader, context, expr)))
+        return failure();
+      results.push_back(expr);
+    }
+    map = AffineMap::get(numDims, numSymbols, results, context);
+    return success();
+  }
 
   default:
-    reader.emitError() << "unknown builtin type code: " << code;
-    return Type();
+    return reader.emitError("unknown AffineMap kind: ")
+               << static_cast<unsigned>(mapKind),
+           failure();
   }
 }
 
-LogicalResult BuiltinDialectBytecodeInterface::writeType(
-    Type type, DialectBytecodeWriter &writer) const {
-  return TypeSwitch<Type, LogicalResult>(type)
-      .Case<ComplexType, IntegerType, FunctionType, MemRefType,
-            RankedTensorType, TupleType, UnrankedMemRefType, UnrankedTensorType,
-            VectorType>([&](auto type) {
-        write(type, writer);
-        return success();
-      })
-      .Case([&](IndexType) {
-        return writer.writeVarInt(builtin_encoding::kIndexType), success();
-      })
-      .Case([&](BFloat16Type) {
-        return writer.writeVarInt(builtin_encoding::kBFloat16Type), success();
-      })
-      .Case([&](Float16Type) {
-        return writer.writeVarInt(builtin_encoding::kFloat16Type), success();
-      })
-      .Case([&](Float32Type) {
-        return writer.writeVarInt(builtin_encoding::kFloat32Type), success();
-      })
-      .Case([&](Float64Type) {
-        return writer.writeVarInt(builtin_encoding::kFloat64Type), success();
-      })
-      .Case([&](Float80Type) {
-        return writer.writeVarInt(builtin_encoding::kFloat80Type), success();
-      })
-      .Case([&](Float128Type) {
-        return writer.writeVarInt(builtin_encoding::kFloat128Type), success();
-      })
-      .Case([&](NoneType) {
-        return writer.writeVarInt(builtin_encoding::kNoneType), success();
-      })
-      .Default([&](Type) { return failure(); });
-}
+/// Write an AffineMap with packed kind header (see readAffineMap for format).
+static void writeAffineMap(DialectBytecodeWriter &writer, AffineMapAttr attr) {
+  AffineMap map = attr.getValue();
+  unsigned numDims = map.getNumDims();
 
-//===----------------------------------------------------------------------===//
-// ComplexType
-
-ComplexType BuiltinDialectBytecodeInterface::readComplexType(
-    DialectBytecodeReader &reader) const {
-  Type elementType;
-  if (failed(reader.readType(elementType)))
-    return ComplexType();
-  return ComplexType::get(elementType);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    ComplexType type, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kComplexType);
-  writer.writeType(type.getElementType());
-}
-
-//===----------------------------------------------------------------------===//
-// IntegerType
-
-IntegerType BuiltinDialectBytecodeInterface::readIntegerType(
-    DialectBytecodeReader &reader) const {
-  uint64_t encoding;
-  if (failed(reader.readVarInt(encoding)))
-    return IntegerType();
-  return IntegerType::get(
-      getContext(), encoding >> 2,
-      static_cast<IntegerType::SignednessSemantics>(encoding & 0x3));
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    IntegerType type, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kIntegerType);
-  writer.writeVarInt((type.getWidth() << 2) | type.getSignedness());
-}
-
-//===----------------------------------------------------------------------===//
-// FunctionType
-
-FunctionType BuiltinDialectBytecodeInterface::readFunctionType(
-    DialectBytecodeReader &reader) const {
-  SmallVector<Type> inputs, results;
-  if (failed(reader.readTypes(inputs)) || failed(reader.readTypes(results)))
-    return FunctionType();
-  return FunctionType::get(getContext(), inputs, results);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    FunctionType type, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kFunctionType);
-  writer.writeTypes(type.getInputs());
-  writer.writeTypes(type.getResults());
-}
-
-//===----------------------------------------------------------------------===//
-// MemRefType
-
-MemRefType
-BuiltinDialectBytecodeInterface::readMemRefType(DialectBytecodeReader &reader,
-                                                bool hasMemSpace) const {
-  Attribute memorySpace;
-  if (hasMemSpace && failed(reader.readAttribute(memorySpace)))
-    return MemRefType();
-  SmallVector<int64_t> shape;
-  Type elementType;
-  MemRefLayoutAttrInterface layout;
-  if (failed(reader.readSignedVarInts(shape)) ||
-      failed(reader.readType(elementType)) ||
-      failed(reader.readAttribute(layout)))
-    return MemRefType();
-  return MemRefType::get(shape, elementType, layout, memorySpace);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    MemRefType type, DialectBytecodeWriter &writer) const {
-  if (Attribute memSpace = type.getMemorySpace()) {
-    writer.writeVarInt(builtin_encoding::kMemRefTypeWithMemSpace);
-    writer.writeAttribute(memSpace);
-  } else {
-    writer.writeVarInt(builtin_encoding::kMemRefType);
+  // Identity maps: (d0, d1, ..., d_{n-1}) -> (d0, d1, ..., d_{n-1})
+  // Note: isIdentity() does not check numSymbols, so guard explicitly.
+  if (map.getNumSymbols() == 0 && map.isIdentity()) {
+    writer.writeVarInt((numDims << 2) |
+                       static_cast<unsigned>(AffineMapBytecodeKind::Identity));
+    return;
   }
-  writer.writeSignedVarInts(type.getShape());
-  writer.writeType(type.getElementType());
-  writer.writeAttribute(type.getLayout());
-}
 
-//===----------------------------------------------------------------------===//
-// RankedTensorType
-
-RankedTensorType BuiltinDialectBytecodeInterface::readRankedTensorType(
-    DialectBytecodeReader &reader, bool hasEncoding) const {
-  Attribute encoding;
-  if (hasEncoding && failed(reader.readAttribute(encoding)))
-    return RankedTensorType();
-  SmallVector<int64_t> shape;
-  Type elementType;
-  if (failed(reader.readSignedVarInts(shape)) ||
-      failed(reader.readType(elementType)))
-    return RankedTensorType();
-  return RankedTensorType::get(shape, elementType, encoding);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    RankedTensorType type, DialectBytecodeWriter &writer) const {
-  if (Attribute encoding = type.getEncoding()) {
-    writer.writeVarInt(builtin_encoding::kRankedTensorTypeWithEncoding);
-    writer.writeAttribute(encoding);
-  } else {
-    writer.writeVarInt(builtin_encoding::kRankedTensorType);
+  // Permutation maps: numResults == numDims, each result is a unique dim
+  if (map.isPermutation()) {
+    writer.writeVarInt(
+        (numDims << 2) |
+        static_cast<unsigned>(AffineMapBytecodeKind::Permutation));
+    for (unsigned i = 0; i < map.getNumResults(); ++i)
+      writer.writeVarInt(map.getDimPosition(i));
+    return;
   }
-  writer.writeSignedVarInts(type.getShape());
-  writer.writeType(type.getElementType());
-}
 
-//===----------------------------------------------------------------------===//
-// TupleType
-
-TupleType BuiltinDialectBytecodeInterface::readTupleType(
-    DialectBytecodeReader &reader) const {
-  SmallVector<Type> elements;
-  if (failed(reader.readTypes(elements)))
-    return TupleType();
-  return TupleType::get(getContext(), elements);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    TupleType type, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kTupleType);
-  writer.writeTypes(type.getTypes());
-}
-
-//===----------------------------------------------------------------------===//
-// UnrankedMemRefType
-
-UnrankedMemRefType BuiltinDialectBytecodeInterface::readUnrankedMemRefType(
-    DialectBytecodeReader &reader, bool hasMemSpace) const {
-  Attribute memorySpace;
-  if (hasMemSpace && failed(reader.readAttribute(memorySpace)))
-    return UnrankedMemRefType();
-  Type elementType;
-  if (failed(reader.readType(elementType)))
-    return UnrankedMemRefType();
-  return UnrankedMemRefType::get(elementType, memorySpace);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    UnrankedMemRefType type, DialectBytecodeWriter &writer) const {
-  if (Attribute memSpace = type.getMemorySpace()) {
-    writer.writeVarInt(builtin_encoding::kUnrankedMemRefTypeWithMemSpace);
-    writer.writeAttribute(memSpace);
-  } else {
-    writer.writeVarInt(builtin_encoding::kUnrankedMemRefType);
+  // Projected permutation maps (symbol-less): subset of dims
+  if (map.getNumSymbols() == 0 && map.isProjectedPermutation()) {
+    writer.writeVarInt(
+        (numDims << 2) |
+        static_cast<unsigned>(AffineMapBytecodeKind::ProjectedPermutation));
+    writer.writeVarInt(map.getNumResults());
+    for (unsigned i = 0; i < map.getNumResults(); ++i)
+      writer.writeVarInt(map.getDimPosition(i));
+    return;
   }
-  writer.writeType(type.getElementType());
+
+  // General case
+  writer.writeVarInt((numDims << 2) |
+                     static_cast<unsigned>(AffineMapBytecodeKind::General));
+  writer.writeVarInt(map.getNumSymbols());
+  writer.writeVarInt(map.getNumResults());
+  for (AffineExpr expr : map.getResults())
+    writeAffineExpr(writer, expr);
 }
 
-//===----------------------------------------------------------------------===//
-// UnrankedTensorType
-
-UnrankedTensorType BuiltinDialectBytecodeInterface::readUnrankedTensorType(
-    DialectBytecodeReader &reader) const {
-  Type elementType;
-  if (failed(reader.readType(elementType)))
-    return UnrankedTensorType();
-  return UnrankedTensorType::get(elementType);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    UnrankedTensorType type, DialectBytecodeWriter &writer) const {
-  writer.writeVarInt(builtin_encoding::kUnrankedTensorType);
-  writer.writeType(type.getElementType());
-}
-
-//===----------------------------------------------------------------------===//
-// VectorType
-
-VectorType
-BuiltinDialectBytecodeInterface::readVectorType(DialectBytecodeReader &reader,
-                                                bool hasScalableDims) const {
-  uint64_t numScalableDims = 0;
-  if (hasScalableDims && failed(reader.readVarInt(numScalableDims)))
-    return VectorType();
-  SmallVector<int64_t> shape;
-  Type elementType;
-  if (failed(reader.readSignedVarInts(shape)) ||
-      failed(reader.readType(elementType)))
-    return VectorType();
-  return VectorType::get(shape, elementType, numScalableDims);
-}
-
-void BuiltinDialectBytecodeInterface::write(
-    VectorType type, DialectBytecodeWriter &writer) const {
-  if (unsigned numScalableDims = type.getNumScalableDims()) {
-    writer.writeVarInt(builtin_encoding::kVectorTypeWithScalableDims);
-    writer.writeVarInt(numScalableDims);
-  } else {
-    writer.writeVarInt(builtin_encoding::kVectorType);
+static FileLineColRange getFileLineColRange(MLIRContext *context,
+                                            StringAttr filename,
+                                            ArrayRef<uint64_t> lineCols) {
+  switch (lineCols.size()) {
+  case 0:
+    return FileLineColRange::get(filename);
+  case 1:
+    return FileLineColRange::get(filename, lineCols[0]);
+  case 2:
+    return FileLineColRange::get(filename, lineCols[0], lineCols[1]);
+  case 3:
+    return FileLineColRange::get(filename, lineCols[0], lineCols[1],
+                                 lineCols[2]);
+  case 4:
+    return FileLineColRange::get(filename, lineCols[0], lineCols[1],
+                                 lineCols[2], lineCols[3]);
+  default:
+    return {};
   }
-  writer.writeSignedVarInts(type.getShape());
-  writer.writeType(type.getElementType());
+}
+
+static LogicalResult
+readFileLineColRangeLocs(DialectBytecodeReader &reader,
+                         SmallVectorImpl<uint64_t> &lineCols) {
+  return reader.readList(
+      lineCols, [&reader](uint64_t &val) { return reader.readVarInt(val); });
+}
+
+static void writeFileLineColRangeLocs(DialectBytecodeWriter &writer,
+                                      FileLineColRange range) {
+  if (range.getStartLine() == 0 && range.getStartColumn() == 0 &&
+      range.getEndLine() == 0 && range.getEndColumn() == 0) {
+    writer.writeVarInt(0);
+    return;
+  }
+  if (range.getStartColumn() == 0 &&
+      range.getStartLine() == range.getEndLine()) {
+    writer.writeVarInt(1);
+    writer.writeVarInt(range.getStartLine());
+    return;
+  }
+  // The single file:line:col is handled by other writer, but checked here for
+  // completeness.
+  if (range.getEndColumn() == range.getStartColumn() &&
+      range.getStartLine() == range.getEndLine()) {
+    writer.writeVarInt(2);
+    writer.writeVarInt(range.getStartLine());
+    writer.writeVarInt(range.getStartColumn());
+    return;
+  }
+  if (range.getStartLine() == range.getEndLine()) {
+    writer.writeVarInt(3);
+    writer.writeVarInt(range.getStartLine());
+    writer.writeVarInt(range.getStartColumn());
+    writer.writeVarInt(range.getEndColumn());
+    return;
+  }
+  writer.writeVarInt(4);
+  writer.writeVarInt(range.getStartLine());
+  writer.writeVarInt(range.getStartColumn());
+  writer.writeVarInt(range.getEndLine());
+  writer.writeVarInt(range.getEndColumn());
+}
+
+static LogicalResult
+readDenseTypedElementsAttr(DialectBytecodeReader &reader, ShapedType type,
+                           SmallVectorImpl<char> &rawData) {
+  // Validate that the element type implements DenseElementTypeInterface.
+  // Without this check, downstream code unconditionally calls
+  // getDenseElementBitWidth() which asserts on unsupported types.
+  if (!llvm::isa<DenseElementType>(type.getElementType())) {
+    reader.emitError() << "DenseTypedElementsAttr element type must implement "
+                          "DenseElementTypeInterface, but got: "
+                       << type.getElementType();
+    return failure();
+  }
+
+  ArrayRef<char> blob;
+  if (failed(reader.readBlob(blob)))
+    return failure();
+
+  // If the type is not i1, just copy the blob.
+  if (!type.getElementType().isInteger(1)) {
+    rawData.append(blob.begin(), blob.end());
+    return success();
+  }
+
+  // Check to see if this is using the packed format.
+  // Note: this could be asserted instead as this should be the case. But we
+  // did have period where the unpacked was being serialized, this enables
+  // consuming those still and the check for which case we are in is pretty
+  // cheap.
+  size_t numElements = type.getNumElements();
+  size_t packedSize = llvm::divideCeil(numElements, 8);
+
+  // Unpack splats to single element 0x01 to match unpacked splat format.
+  if (blob.size() == 1 && blob[0] == static_cast<char>(~0x00)) {
+    rawData.resize(1);
+    rawData[0] = 0x01;
+    return success();
+  }
+
+  // Unpack the blob if it's packed.
+  // Splat and blob.size() == packedSize for all N<=8 elements are ambiguous,
+  // non 0xFF means not splat so must be unpacked.
+  if (blob.size() == packedSize && blob.size() != numElements) {
+    rawData.resize(numElements);
+    for (size_t i = 0; i < numElements; ++i)
+      rawData[i] = (blob[i / 8] & (1 << (i % 8))) ? 1 : 0;
+    return success();
+  }
+  // Otherwise, fallback to the default behavior.
+  rawData.append(blob.begin(), blob.end());
+  return success();
+}
+
+static void writeDenseTypedElementsAttr(DialectBytecodeWriter &writer,
+                                        DenseTypedElementsAttr attr) {
+  // Check to see if this is an i1 dense attribute.
+  if (attr.getElementType().isInteger(1)) {
+    // Pack the data.
+    SmallVector<char> data;
+    ArrayRef<char> rawData = attr.getRawData();
+
+    // If the attribute is a splat, we can just splat the value directly.
+    // Use 0xFF to avoid ambiguity with packed format of <=8 elements,
+    // written ~0x00 to ensure proper compilation with signed chars.
+    if (attr.isSplat()) {
+      data.resize(1);
+      data[0] = rawData[0] ? ~0x00 : 0x00;
+      writer.writeUnownedBlob(data);
+      return;
+    }
+
+    size_t numElements = attr.getNumElements();
+    data.resize(llvm::divideCeil(numElements, 8));
+    // Otherwise, pack the data manually.
+    for (size_t i = 0; i < numElements; ++i)
+      if (rawData[i])
+        data[i / 8] |= (1 << (i % 8));
+    writer.writeUnownedBlob(data);
+    return;
+  }
+
+  writer.writeOwnedBlob(attr.getRawData());
+}
+
+#include "mlir/IR/BuiltinDialectBytecode.cpp.inc"
+
+/// This class implements the bytecode interface for the builtin dialect.
+struct BuiltinDialectBytecodeInterface : public BytecodeDialectInterface {
+  BuiltinDialectBytecodeInterface(Dialect *dialect)
+      : BytecodeDialectInterface(dialect) {}
+
+  //===--------------------------------------------------------------------===//
+  // Attributes
+
+  Attribute readAttribute(DialectBytecodeReader &reader) const override {
+    return ::readAttribute(getContext(), reader);
+  }
+
+  LogicalResult writeAttribute(Attribute attr,
+                               DialectBytecodeWriter &writer) const override {
+    return ::writeAttribute(attr, writer);
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Types
+
+  Type readType(DialectBytecodeReader &reader) const override {
+    return ::readType(getContext(), reader);
+  }
+
+  LogicalResult writeType(Type type,
+                          DialectBytecodeWriter &writer) const override {
+    return ::writeType(type, writer);
+  }
+
+  //===--------------------------------------------------------------------===//
+  // Version
+
+  void writeVersion(DialectBytecodeWriter &writer) const override {
+    auto configVersion = writer.getDialectVersion(getDialect()->getNamespace());
+    // Write version set in config.
+    if (succeeded(configVersion)) {
+      auto *version =
+          static_cast<const BuiltinDialectVersion *>(*configVersion);
+      writer.writeVarInt(static_cast<uint64_t>(version->getVersion()));
+      return;
+    }
+    // Else, write current set version version if not 0.
+    if (auto version = cast<BuiltinDialect>(getDialect())->getVersion();
+        version && version->getVersion() > 0) {
+      writer.writeVarInt(static_cast<uint64_t>(version->getVersion()));
+    }
+  }
+
+  std::unique_ptr<DialectVersion>
+  readVersion(DialectBytecodeReader &reader) const override {
+    uint64_t version;
+    if (failed(reader.readVarInt(version)))
+      return nullptr;
+
+    auto dialectVersion = std::make_unique<BuiltinDialectVersion>(version);
+    if (BuiltinDialectVersion::getCurrentVersion() < *dialectVersion) {
+      reader.emitError()
+          << "reading newer builtin dialect version than supported";
+      return nullptr;
+    }
+
+    return dialectVersion;
+  }
+};
+} // namespace
+
+void builtin_dialect_detail::addBytecodeInterface(BuiltinDialect *dialect) {
+  dialect->addInterfaces<BuiltinDialectBytecodeInterface>();
 }

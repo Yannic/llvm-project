@@ -1,4 +1,4 @@
-//===--- HeaderGuard.h - clang-tidy -----------------------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -10,29 +10,15 @@
 #define LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_UTILS_HEADERGUARD_H
 
 #include "../ClangTidyCheck.h"
-#include "../utils/FileExtensionsUtils.h"
 
 namespace clang::tidy::utils {
 
 /// Finds and fixes header guards.
-/// The check supports these options:
-///   - `HeaderFileExtensions`: a semicolon-separated list of filename
-///     extensions of header files (The filename extension should not contain
-///     "." prefix). ";h;hh;hpp;hxx" by default.
-///
-///     For extension-less header files, using an empty string or leaving an
-///     empty string between ";" if there are other filename extensions.
 class HeaderGuardCheck : public ClangTidyCheck {
 public:
   HeaderGuardCheck(StringRef Name, ClangTidyContext *Context)
-      : ClangTidyCheck(Name, Context),
-        RawStringHeaderFileExtensions(Options.getLocalOrGlobal(
-            "HeaderFileExtensions", utils::defaultHeaderFileExtensions())) {
-    utils::parseFileExtensions(RawStringHeaderFileExtensions,
-                               HeaderFileExtensions,
-                               utils::defaultFileExtensionDelimiters());
-  }
-  void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
+      : ClangTidyCheck(Name, Context) {}
+
   void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
                            Preprocessor *ModuleExpanderPP) override;
 
@@ -55,10 +41,6 @@ public:
   /// Gets the canonical header guard for a file.
   virtual std::string getHeaderGuard(StringRef Filename,
                                      StringRef OldGuard = StringRef()) = 0;
-
-private:
-  std::string RawStringHeaderFileExtensions;
-  utils::FileExtensionsSet HeaderFileExtensions;
 };
 
 } // namespace clang::tidy::utils

@@ -11,28 +11,33 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/SampleProfileProbe.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/Analysis/EHUtils.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassInstrumentation.h"
 #include "llvm/IR/PseudoProbe.h"
 #include "llvm/ProfileData/SampleProf.h"
 #include "llvm/Support/CRC.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/Instrumentation.h"
+#include "llvm/Transforms/Utils/Instrumentation.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
-#include <unordered_set>
 #include <vector>
 
 using namespace llvm;
-#define DEBUG_TYPE "sample-profile-probe"
+#define DEBUG_TYPE "pseudo-probe"
 
 STATISTIC(ArtificialDbgLine,
           "Number of probes that have an artificial debug line");
@@ -55,11 +60,7 @@ static uint64_t getCallStackHash(const DILocation *DIL) {
   while (InlinedAt) {
     Hash ^= MD5Hash(std::to_string(InlinedAt->getLine()));
     Hash ^= MD5Hash(std::to_string(InlinedAt->getColumn()));
-    const DISubprogram *SP = InlinedAt->getScope()->getSubprogram();
-    // Use linkage name for C++ if possible.
-    auto Name = SP->getLinkageName();
-    if (Name.empty())
-      Name = SP->getName();
+    auto Name = InlinedAt->getSubprogramLinkageName();
     Hash ^= MD5Hash(Name);
     InlinedAt = InlinedAt->getInlinedAt();
   }
@@ -79,33 +80,33 @@ bool PseudoProbeVerifier::shouldVerifyFunction(const Function *F) {
   if (F->hasAvailableExternallyLinkage())
     return false;
   // Do a name matching.
-  static std::unordered_set<std::string> VerifyFuncNames(
-      VerifyPseudoProbeFuncList.begin(), VerifyPseudoProbeFuncList.end());
-  return VerifyFuncNames.empty() || VerifyFuncNames.count(F->getName().str());
+  static const StringSet<> VerifyFuncNames(llvm::from_range,
+                                           VerifyPseudoProbeFuncList);
+  return VerifyFuncNames.empty() || VerifyFuncNames.contains(F->getName());
 }
 
 void PseudoProbeVerifier::registerCallbacks(PassInstrumentationCallbacks &PIC) {
   if (VerifyPseudoProbe) {
     PIC.registerAfterPassCallback(
-        [this](StringRef P, Any IR, const PreservedAnalyses &) {
+        [this](StringRef P, IRUnitRef IR, const PreservedAnalyses &) {
           this->runAfterPass(P, IR);
         });
   }
 }
 
 // Callback to run after each transformation for the new pass manager.
-void PseudoProbeVerifier::runAfterPass(StringRef PassID, Any IR) {
+void PseudoProbeVerifier::runAfterPass(StringRef PassID, IRUnitRef IR) {
   std::string Banner =
       "\n*** Pseudo Probe Verification After " + PassID.str() + " ***\n";
   dbgs() << Banner;
-  if (const auto **M = any_cast<const Module *>(&IR))
-    runAfterPass(*M);
-  else if (const auto **F = any_cast<const Function *>(&IR))
-    runAfterPass(*F);
-  else if (const auto **C = any_cast<const LazyCallGraph::SCC *>(&IR))
-    runAfterPass(*C);
-  else if (const auto **L = any_cast<const Loop *>(&IR))
-    runAfterPass(*L);
+  if (const auto *M = dyn_cast<Module>(IR))
+    runAfterPass(M);
+  else if (const auto *F = dyn_cast<Function>(IR))
+    runAfterPass(F);
+  else if (const auto *C = dyn_cast<LazyCallGraph::SCC>(IR))
+    runAfterPass(C);
+  else if (const auto *L = dyn_cast<Loop>(IR))
+    runAfterPass(L);
   else
     llvm_unreachable("Unknown IR unit");
 }
@@ -150,8 +151,9 @@ void PseudoProbeVerifier::verifyProbeFactors(
   auto &PrevProbeFactors = FunctionProbeFactors[F->getName()];
   for (const auto &I : ProbeFactors) {
     float CurProbeFactor = I.second;
-    if (PrevProbeFactors.count(I.first)) {
-      float PrevProbeFactor = PrevProbeFactors[I.first];
+    auto [It, Inserted] = PrevProbeFactors.try_emplace(I.first);
+    if (!Inserted) {
+      float PrevProbeFactor = It->second;
       if (std::abs(CurProbeFactor - PrevProbeFactor) >
           DistributionFactorVariance) {
         if (!BannerPrinted) {
@@ -165,74 +167,176 @@ void PseudoProbeVerifier::verifyProbeFactors(
     }
 
     // Update
-    PrevProbeFactors[I.first] = I.second;
+    It->second = I.second;
   }
 }
 
-PseudoProbeManager::PseudoProbeManager(const Module &M) {
-  if (NamedMDNode *FuncInfo = M.getNamedMetadata(PseudoProbeDescMetadataName)) {
-    for (const auto *Operand : FuncInfo->operands()) {
-      const auto *MD = cast<MDNode>(Operand);
-      auto GUID =
-          mdconst::dyn_extract<ConstantInt>(MD->getOperand(0))->getZExtValue();
-      auto Hash =
-          mdconst::dyn_extract<ConstantInt>(MD->getOperand(1))->getZExtValue();
-      GUIDToProbeDescMap.try_emplace(GUID, PseudoProbeDescriptor(GUID, Hash));
-    }
-  }
-}
-
-const PseudoProbeDescriptor *
-PseudoProbeManager::getDesc(const Function &F) const {
-  auto I = GUIDToProbeDescMap.find(
-      Function::getGUID(FunctionSamples::getCanonicalFnName(F)));
-  return I == GUIDToProbeDescMap.end() ? nullptr : &I->second;
-}
-
-bool PseudoProbeManager::moduleIsProbed(const Module &M) const {
-  return M.getNamedMetadata(PseudoProbeDescMetadataName);
-}
-
-bool PseudoProbeManager::profileIsValid(const Function &F,
-                                        const FunctionSamples &Samples) const {
-  const auto *Desc = getDesc(F);
-  if (!Desc) {
-    LLVM_DEBUG(dbgs() << "Probe descriptor missing for Function " << F.getName()
-                      << "\n");
-    return false;
-  } else {
-    if (Desc->getFunctionHash() != Samples.getFunctionHash()) {
-      LLVM_DEBUG(dbgs() << "Hash mismatch for Function " << F.getName()
-                        << "\n");
-      return false;
-    }
-  }
-  return true;
-}
-
-SampleProfileProber::SampleProfileProber(Function &Func,
-                                         const std::string &CurModuleUniqueId)
-    : F(&Func), CurModuleUniqueId(CurModuleUniqueId) {
+SampleProfileProber::SampleProfileProber(Function &Func) : F(&Func) {
   BlockProbeIds.clear();
   CallProbeIds.clear();
   LastProbeId = (uint32_t)PseudoProbeReservedId::Last;
-  computeProbeIdForBlocks();
-  computeProbeIdForCallsites();
-  computeCFGHash();
+
+  DenseSet<BasicBlock *> BlocksToIgnore;
+  DenseSet<BasicBlock *> BlocksAndCallsToIgnore;
+  computeBlocksToIgnore(BlocksToIgnore, BlocksAndCallsToIgnore);
+
+  computeProbeId(BlocksToIgnore, BlocksAndCallsToIgnore);
+  computeCFGHash(BlocksToIgnore);
+}
+
+// Two purposes to compute the blocks to ignore:
+// 1. Reduce the IR size.
+// 2. Make the instrumentation(checksum) stable. e.g. the frondend may
+// generate unstable IR while optimizing nounwind attribute, some versions are
+// optimized with the call-to-invoke conversion, while other versions do not.
+// This discrepancy in probe ID could cause profile mismatching issues.
+// Note that those ignored blocks are either cold blocks or new split blocks
+// whose original blocks are instrumented, so it shouldn't degrade the profile
+// quality.
+void SampleProfileProber::computeBlocksToIgnore(
+    DenseSet<BasicBlock *> &BlocksToIgnore,
+    DenseSet<BasicBlock *> &BlocksAndCallsToIgnore) {
+  // Ignore the cold EH and unreachable blocks and calls.
+  computeEHOnlyBlocks(*F, BlocksAndCallsToIgnore);
+  findUnreachableBlocks(BlocksAndCallsToIgnore);
+
+  BlocksToIgnore.insert_range(BlocksAndCallsToIgnore);
+
+  // Handle the call-to-invoke conversion case: make sure that the probe id and
+  // callsite id are consistent before and after the block split. For block
+  // probe, we only keep the head block probe id and ignore the block ids of the
+  // normal dests. For callsite probe, it's different to block probe, there is
+  // no additional callsite in the normal dests, so we don't ignore the
+  // callsites.
+  findInvokeNormalDests(BlocksToIgnore);
+}
+
+// Unreachable blocks and calls are always cold, ignore them.
+void SampleProfileProber::findUnreachableBlocks(
+    DenseSet<BasicBlock *> &BlocksToIgnore) {
+  for (auto &BB : *F) {
+    if (&BB != &F->getEntryBlock() && pred_size(&BB) == 0)
+      BlocksToIgnore.insert(&BB);
+  }
+}
+
+// Follow invoke normal-dest edges and record blocks that sit on a cycle.
+static void
+findInvokeNormalDestCycles(const Function &F,
+                           DenseSet<const BasicBlock *> &CycleBlocks) {
+  DenseSet<const BasicBlock *> Processed;
+  DenseSet<const BasicBlock *> OnCurrentPath;
+  SmallVector<const BasicBlock *, 16> CurrentPath;
+
+  for (const BasicBlock &Start : F) {
+    if (Processed.contains(&Start))
+      continue;
+
+    CurrentPath.clear();
+    OnCurrentPath.clear();
+    const BasicBlock *Cur = &Start;
+    while (Cur) {
+      if (OnCurrentPath.contains(Cur)) {
+        // Back-edge onto CurrentPath: the cycle is the suffix starting at Cur.
+        auto CycleStart = llvm::find(CurrentPath, Cur);
+        assert(CycleStart != CurrentPath.end() &&
+               "OnCurrentPath must hold exactly the blocks in CurrentPath");
+        CycleBlocks.insert(CycleStart, CurrentPath.end());
+        break;
+      }
+      if (Processed.contains(Cur))
+        break;
+      OnCurrentPath.insert(Cur);
+      CurrentPath.push_back(Cur);
+      if (const auto *II = dyn_cast<InvokeInst>(Cur->getTerminator()))
+        Cur = II->getNormalDest();
+      else
+        Cur = nullptr;
+    }
+    for (const BasicBlock *B : CurrentPath)
+      Processed.insert(B);
+  }
+}
+
+// In call-to-invoke conversion, basic block can be split into multiple blocks,
+// only instrument probe in the head block, ignore the normal dests.
+void SampleProfileProber::findInvokeNormalDests(
+    DenseSet<BasicBlock *> &InvokeNormalDests) {
+  DenseSet<const BasicBlock *> CycleBlocks;
+  findInvokeNormalDestCycles(*F, CycleBlocks);
+
+  for (auto &BB : *F) {
+    auto *TI = BB.getTerminator();
+    if (auto *II = dyn_cast<InvokeInst>(TI)) {
+      auto *ND = II->getNormalDest();
+      // Cycle members are original loop blocks, not split continuations.
+      if (!CycleBlocks.contains(ND))
+        InvokeNormalDests.insert(ND);
+
+      // The normal dest and the try/catch block are connected by an
+      // unconditional branch.
+      while (pred_size(ND) == 1) {
+        auto *Pred = *pred_begin(ND);
+        if (succ_size(Pred) == 1) {
+          InvokeNormalDests.insert(Pred);
+          ND = Pred;
+        } else
+          break;
+      }
+    }
+  }
+}
+
+// The call-to-invoke conversion splits the original block into a list of block,
+// we need to compute the hash using the original block's successors to keep the
+// CFG Hash consistent. For a given head block, we keep searching the
+// succesor(normal dest or unconditional branch dest) to find the tail block,
+// the tail block's successors are the original block's successors.
+const Instruction *SampleProfileProber::getOriginalTerminator(
+    const BasicBlock *Head, const DenseSet<BasicBlock *> &BlocksToIgnore) {
+  // Follow invoke dests and ignored blocks to the original terminator. Stop
+  // if a block repeats; a cycle of invokes has no unique tail.
+  DenseSet<const BasicBlock *> Visited;
+  const BasicBlock *BB = Head;
+  Visited.insert(BB);
+  while (true) {
+    auto *TI = BB->getTerminator();
+    const BasicBlock *Next = nullptr;
+    if (const auto *II = dyn_cast<InvokeInst>(TI))
+      Next = II->getNormalDest();
+    else if (succ_size(BB) == 1 && BlocksToIgnore.contains(*succ_begin(BB)))
+      Next = *succ_begin(BB);
+    else
+      return TI;
+
+    // A cycle has no tail block whose terminator represents the original
+    // block. Stop at the terminator that closes the cycle.
+    if (!Visited.insert(Next).second)
+      return TI;
+
+    BB = Next;
+  }
 }
 
 // Compute Hash value for the CFG: the lower 32 bits are CRC32 of the index
 // value of each BB in the CFG. The higher 32 bits record the number of edges
 // preceded by the number of indirect calls.
 // This is derived from FuncPGOInstrumentation<Edge, BBInfo>::computeCFGHash().
-void SampleProfileProber::computeCFGHash() {
+void SampleProfileProber::computeCFGHash(
+    const DenseSet<BasicBlock *> &BlocksToIgnore) {
   std::vector<uint8_t> Indexes;
   JamCRC JC;
   for (auto &BB : *F) {
-    auto *TI = BB.getTerminator();
+    if (BlocksToIgnore.contains(&BB))
+      continue;
+
+    auto *TI = getOriginalTerminator(&BB, BlocksToIgnore);
     for (unsigned I = 0, E = TI->getNumSuccessors(); I != E; ++I) {
       auto *Succ = TI->getSuccessor(I);
       auto Index = getBlockId(Succ);
+      // Ingore ignored-block(zero ID) to avoid unstable checksum.
+      if (Index == 0)
+        continue;
       for (int J = 0; J < 4; J++)
         Indexes.push_back((uint8_t)(Index >> (J * 8)));
     }
@@ -252,19 +356,32 @@ void SampleProfileProber::computeCFGHash() {
                     << ", Hash = " << FunctionHash << "\n");
 }
 
-void SampleProfileProber::computeProbeIdForBlocks() {
-  for (auto &BB : *F) {
-    BlockProbeIds[&BB] = ++LastProbeId;
-  }
-}
+void SampleProfileProber::computeProbeId(
+    const DenseSet<BasicBlock *> &BlocksToIgnore,
+    const DenseSet<BasicBlock *> &BlocksAndCallsToIgnore) {
+  LLVMContext &Ctx = F->getContext();
+  Module *M = F->getParent();
 
-void SampleProfileProber::computeProbeIdForCallsites() {
   for (auto &BB : *F) {
+    if (!BlocksToIgnore.contains(&BB))
+      BlockProbeIds[&BB] = ++LastProbeId;
+
+    if (BlocksAndCallsToIgnore.contains(&BB))
+      continue;
     for (auto &I : BB) {
-      if (!isa<CallBase>(I))
+      if (!isa<CallBase>(I) || isa<IntrinsicInst>(&I))
         continue;
-      if (isa<IntrinsicInst>(&I))
-        continue;
+
+      // The current implementation uses the lower 16 bits of the discriminator
+      // so anything larger than 0xFFFF will be ignored.
+      if (LastProbeId >= 0xFFFF) {
+        std::string Msg = "Pseudo instrumentation incomplete for " +
+                          std::string(F->getName()) + " because it's too large";
+        Ctx.diagnose(
+            DiagnosticInfoSampleProfile(M->getName().data(), Msg, DS_Warning));
+        return;
+      }
+
       CallProbeIds[&I] = ++LastProbeId;
     }
   }
@@ -283,9 +400,16 @@ uint32_t SampleProfileProber::getCallsiteId(const Instruction *Call) const {
 void SampleProfileProber::instrumentOneFunc(Function &F, TargetMachine *TM) {
   Module *M = F.getParent();
   MDBuilder MDB(F.getContext());
-  // Compute a GUID without considering the function's linkage type. This is
-  // fine since function name is the only key in the profile database.
-  uint64_t Guid = Function::getGUID(F.getName());
+  // Since the GUID from probe desc and inline stack are computed separately, we
+  // need to make sure their names are consistent, so here also use the name
+  // from debug info.
+  StringRef FName = F.getName();
+  if (auto *SP = F.getSubprogram()) {
+    FName = SP->getLinkageName();
+    if (FName.empty())
+      FName = SP->getName();
+  }
+  uint64_t Guid = Function::getGUIDAssumingExternalLinkage(FName);
 
   // Assign an artificial debug line to a probe that doesn't come with a real
   // line. A probe not having a debug line will get an incomplete inline
@@ -320,8 +444,7 @@ void SampleProfileProber::instrumentOneFunc(Function &F, TargetMachine *TM) {
     // line number. Real instructions generated by optimizations may not come
     // with a line number either.
     auto HasValidDbgLine = [](Instruction *J) {
-      return !isa<PHINode>(J) && !isa<DbgInfoIntrinsic>(J) &&
-             !J->isLifetimeStartOrEnd() && J->getDebugLoc();
+      return !isa<PHINode>(J) && !J->isLifetimeStartOrEnd() && J->getDebugLoc();
     };
 
     Instruction *J = &*BB->getFirstInsertionPt();
@@ -329,16 +452,36 @@ void SampleProfileProber::instrumentOneFunc(Function &F, TargetMachine *TM) {
       J = J->getNextNode();
     }
 
+    // A pseudo probe must not be inserted between a `musttail` or
+    // `llvm.experimental.deoptimize` call and its following `ret`, as this
+    // produces invalid IR. Such a call is required to immediately precede the
+    // block's `ret`, so only that position needs to be checked. Insert the
+    // probe before the call instead.
+    if (auto *Ret = dyn_cast<ReturnInst>(BB->getTerminator()))
+      if (auto *CI = dyn_cast_or_null<CallInst>(Ret->getPrevNode()))
+        if ((CI->isMustTailCall() ||
+             CI->getIntrinsicID() == Intrinsic::experimental_deoptimize) &&
+            !J->comesBefore(CI))
+          J = CI;
+
     IRBuilder<> Builder(J);
     assert(Builder.GetInsertPoint() != BB->end() &&
            "Cannot get the probing point");
     Function *ProbeFn =
-        llvm::Intrinsic::getDeclaration(M, Intrinsic::pseudoprobe);
+        llvm::Intrinsic::getOrInsertDeclaration(M, Intrinsic::pseudoprobe);
     Value *Args[] = {Builder.getInt64(Guid), Builder.getInt64(Index),
                      Builder.getInt32(0),
                      Builder.getInt64(PseudoProbeFullDistributionFactor)};
     auto *Probe = Builder.CreateCall(ProbeFn, Args);
     AssignDebugLoc(Probe);
+    // Reset the dwarf discriminator if the debug location comes with any. The
+    // discriminator field may be used by FS-AFDO later in the pipeline.
+    if (auto DIL = Probe->getDebugLoc()) {
+      if (DIL->getDiscriminator()) {
+        DIL = DIL->cloneWithDiscriminator(0);
+        Probe->setDebugLoc(DIL);
+      }
+    }
   }
 
   // Probe both direct calls and indirect calls. Direct calls are probed so that
@@ -351,12 +494,13 @@ void SampleProfileProber::instrumentOneFunc(Function &F, TargetMachine *TM) {
                         ? (uint32_t)PseudoProbeType::DirectCall
                         : (uint32_t)PseudoProbeType::IndirectCall;
     AssignDebugLoc(Call);
-    // Levarge the 32-bit discriminator field of debug data to store the ID and
-    // type of a callsite probe. This gets rid of the dependency on plumbing a
-    // customized metadata through the codegen pipeline.
-    uint32_t V = PseudoProbeDwarfDiscriminator::packProbeData(
-        Index, Type, 0, PseudoProbeDwarfDiscriminator::FullDistributionFactor);
     if (auto DIL = Call->getDebugLoc()) {
+      // Levarge the 32-bit discriminator field of debug data to store the ID
+      // and type of a callsite probe. This gets rid of the dependency on
+      // plumbing a customized metadata through the codegen pipeline.
+      uint32_t V = PseudoProbeDwarfDiscriminator::packProbeData(
+          Index, Type, 0, PseudoProbeDwarfDiscriminator::FullDistributionFactor,
+          DIL->getBaseDiscriminator());
       DIL = DIL->cloneWithDiscriminator(V);
       Call->setDebugLoc(DIL);
     }
@@ -368,33 +512,14 @@ void SampleProfileProber::instrumentOneFunc(Function &F, TargetMachine *TM) {
   // - FunctionHash.
   // - FunctionName
   auto Hash = getFunctionHash();
-  auto *MD = MDB.createPseudoProbeDesc(Guid, Hash, &F);
+  auto *MD = MDB.createPseudoProbeDesc(Guid, Hash, FName);
   auto *NMD = M->getNamedMetadata(PseudoProbeDescMetadataName);
   assert(NMD && "llvm.pseudo_probe_desc should be pre-created");
   NMD->addOperand(MD);
-
-  // Preserve a comdat group to hold all probes materialized later. This
-  // allows that when the function is considered dead and removed, the
-  // materialized probes are disposed too.
-  // Imported functions are defined in another module. They do not need
-  // the following handling since same care will be taken for them in their
-  // original module. The pseudo probes inserted into an imported functions
-  // above will naturally not be emitted since the imported function is free
-  // from object emission. However they will be emitted together with the
-  // inliner functions that the imported function is inlined into. We are not
-  // creating a comdat group for an import function since it's useless anyway.
-  if (!F.isDeclarationForLinker()) {
-    if (TM) {
-      auto Triple = TM->getTargetTriple();
-      if (Triple.supportsCOMDAT() && TM->getFunctionSections())
-        getOrCreateFunctionComdat(F, Triple);
-    }
-  }
 }
 
 PreservedAnalyses SampleProfileProbePass::run(Module &M,
                                               ModuleAnalysisManager &AM) {
-  auto ModuleId = getUniqueModuleId(&M);
   // Create the pseudo probe desc metadata beforehand.
   // Note that modules with only data but no functions will require this to
   // be set up so that they will be known as probed later.
@@ -403,7 +528,7 @@ PreservedAnalyses SampleProfileProbePass::run(Module &M,
   for (auto &F : M) {
     if (F.isDeclaration())
       continue;
-    SampleProfileProber ProbeManager(F, ModuleId);
+    SampleProfileProber ProbeManager(F);
     ProbeManager.instrumentOneFunc(F, TM);
   }
 

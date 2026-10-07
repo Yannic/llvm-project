@@ -17,7 +17,7 @@
     push   {r4, r7, lr}    ;\
     add     r7,     sp, #4
 #define CLEAR_FRAME_AND_RETURN \
-    pop    {r4, r7, pc}
+    POP_PC_WITH_REGS r4, r7
 
    .syntax unified
    .text
@@ -37,7 +37,8 @@ DEFINE_COMPILERRT_FUNCTION(__divsi3)
    sdiv    r0, r0, r1
    bx      lr
 LOCAL_LABEL(divzero):
-   mov     r0,#0
+   // Use movs for compatibility with v8-m.base.
+   movs    r0,#0
    bx      lr
 #else
 ESTABLISH_FRAME

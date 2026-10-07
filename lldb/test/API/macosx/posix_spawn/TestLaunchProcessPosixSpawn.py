@@ -9,16 +9,22 @@ from lldbsuite.test import lldbutil
 
 def haswell():
     features = subprocess.check_output(["sysctl", "machdep.cpu"])
-    return "AVX2" in features.decode('utf-8')
+    return "AVX2" in features.decode("utf-8")
 
 
 def apple_silicon():
     features = subprocess.check_output(["sysctl", "machdep.cpu"])
-    return "Apple M" in features.decode('utf-8')
+    return "Apple M" in features.decode("utf-8")
 
 
 def rosetta_debugserver_installed():
+    import platform
+    version = platform.mac_ver()
+    # Workaround for an undiagnosed problem on green dragon.
+    if version[0] == '15.5':
+        return False
     return exists("/Library/Apple/usr/libexec/oah/debugserver")
+
 
 class TestLaunchProcessPosixSpawn(TestBase):
     NO_DEBUG_INFO_TESTCASE = True
@@ -34,14 +40,16 @@ class TestLaunchProcessPosixSpawn(TestBase):
         return None
 
     def run_arch(self, exe, arch):
-        self.runCmd('target create -arch {} {}'.format(arch, exe))
-        self.runCmd('run')
-
-        process = self.dbg.GetSelectedTarget().process
+        self.runCmd("target create -arch {} {}".format(arch, exe))
+        target = self.dbg.GetSelectedTarget()
+        launch_info = target.GetLaunchInfo()
+        error = lldb.SBError()
+        process = target.Launch(launch_info, error)
+        self.assertTrue(error.Success(), str(error))
         self.assertState(process.GetState(), lldb.eStateExited)
-        self.assertIn('slice: {}'.format(arch), process.GetSTDOUT(1000))
+        self.assertIn("slice: {}".format(arch), process.GetSTDOUT(1000))
 
-    @skipUnlessDarwin
+    @requireDarwin
     @skipIfDarwinEmbedded
     @skipIfLLVMTargetMissing("AArch64")
     @skipIfLLVMTargetMissing("X86")
@@ -49,10 +57,11 @@ class TestLaunchProcessPosixSpawn(TestBase):
     def test_haswell(self):
         self.build()
         exe = self.getBuildArtifact("fat.out")
-        self.run_arch(exe, 'x86_64')
-        self.run_arch(exe, 'x86_64h')
+        self.run_arch(exe, "x86_64")
+        self.run_arch(exe, "x86_64h")
 
-    @skipUnlessDarwin
+    @requireDarwin
+    @skipIf(bugnumber="rdar://170040996")
     @skipIfDarwinEmbedded
     @skipIfLLVMTargetMissing("AArch64")
     @skipIfLLVMTargetMissing("X86")
@@ -61,5 +70,5 @@ class TestLaunchProcessPosixSpawn(TestBase):
         self.build()
         exe = self.getBuildArtifact("fat.out")
         if rosetta_debugserver_installed():
-            self.run_arch(exe, 'x86_64')
-        self.run_arch(exe, 'arm64')
+            self.run_arch(exe, "x86_64")
+        self.run_arch(exe, "arm64")

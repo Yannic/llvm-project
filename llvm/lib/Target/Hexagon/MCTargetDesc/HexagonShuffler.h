@@ -16,7 +16,6 @@
 
 #include "MCTargetDesc/HexagonMCInstrInfo.h"
 #include "MCTargetDesc/HexagonMCTargetDesc.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -173,7 +172,6 @@ protected:
                              const bool DoShuffle);
   void restrictSlot1AOK(HexagonPacketSummary const &Summary);
   void restrictNoSlot1Store(HexagonPacketSummary const &Summary);
-  void restrictNoSlot1();
   bool restrictStoreLoadOrder(HexagonPacketSummary const &Summary);
   void restrictBranchOrder(HexagonPacketSummary const &Summary);
   void restrictPreferSlot3(HexagonPacketSummary const &Summary,

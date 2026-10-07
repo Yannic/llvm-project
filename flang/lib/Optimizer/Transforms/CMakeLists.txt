@@ -1,33 +1,100 @@
 add_flang_library(FIRTransforms
   AbstractResult.cpp
-  AffinePromotion.cpp
+  AddAliasTags.cpp
+  AddDebugInfo.cpp
   AffineDemotion.cpp
+  AffinePromotion.cpp
+  AlgebraicSimplification.cpp
+  AllocationPlacement.cpp
   AnnotateConstant.cpp
+  AssumedRankOpConversion.cpp
+  CUDA/CUFAddConstructor.cpp
+  CUDA/CUFAllocationConversion.cpp
+  CUDA/CUFAllocationConversion.cpp
+  CUDA/CUFAllocDelay.cpp
+  CUDA/CUFComputeSharedMemoryOffsetsAndSize.cpp
+  CUDA/CUFDeviceFuncTransform.cpp
+  CUDA/CUFDeviceGlobal.cpp
+  CUDA/CUFDuplicateDeviceFunc.cpp
+  CUDA/CUFGPUToLLVMConversion.cpp
+  CUDA/CUFLaunchAttachAttr.cpp
+  CUDA/CUFOpConversion.cpp
+  CUDA/CUFOpConversionLate.cpp
+  CUDA/CUFPredefinedVarToGPU.cpp
   CharacterConversion.cpp
+  CompilerGeneratedNames.cpp
+  ConstantArgumentGlobalisation.cpp
   ControlFlowConverter.cpp
-  ArrayValueCopy.cpp
+  ConvertComplexPow.cpp
+  CudaHeapAllocPromotion.cpp
+  DebugTypeGenerator.cpp
+  EmitMIFGlobalCtors.cpp
   ExternalNameConversion.cpp
+  FIRToSCF.cpp
+  FIRToMemRef.cpp
+  MemoryUtils.cpp
   MemoryAllocation.cpp
+  StackArrays.cpp
   MemRefDataFlowOpt.cpp
   SimplifyRegionLite.cpp
   AlgebraicSimplification.cpp
   SimplifyIntrinsics.cpp
-  AddDebugFoundation.cpp
+  AddDebugInfo.cpp
+  PolymorphicOpConversion.cpp
+  FunctionAttr.cpp
+  GenRuntimeCallsForTest.cpp
+  LoopInvariantCodeMotion.cpp
+  LoopVersioning.cpp
+  SelectOpsConversion.cpp
+  MIFOpConversion.cpp
+  MemRefDataFlowOpt.cpp
+  MemoryAllocation.cpp
+  MemoryUtils.cpp
+  OptimizeArrayRepacking.cpp
+  O0CanonicalizerPass.cpp
+  PolymorphicOpConversion.cpp
+  SetRuntimeCallAttributes.cpp
+  SimplifyFIROperations.cpp
+  SimplifyIntrinsics.cpp
+  SimplifyRegionLite.cpp
+  StackArrays.cpp
+  StackReclaim.cpp
+  VScaleAttr.cpp
 
   DEPENDS
-  FIRBuilder
+  CUFAttrs
+  CUFDialect
   FIRDialect
-  FIRSupport
   FIROptTransformsPassIncGen
+  HLFIROpsIncGen
+  MIFDialect
 
   LINK_LIBS
+  CUFAttrs
+  CUFDialect
+  FIRAnalysis
   FIRBuilder
+  FIRCodeGen
+  FIRCodeGenDialect
   FIRDialect
+  FIRDialectSupport
+  FIRSupport
+  FortranSupport
+  HLFIRDialect
+  MIFDialect
+
+  MLIR_LIBS
   MLIRAffineUtils
+  MLIRAnalysis
+  MLIRControlFlowDialect
   MLIRFuncDialect
+  MLIRGPUDialect
+  MLIRLLVMCommonConversion
   MLIRLLVMDialect
   MLIRMathTransforms
+  MLIRNVVMDialect
   MLIROpenACCDialect
+  MLIROpenACCUtils
   MLIROpenMPDialect
-  FIRSupport
+  MLIRTransformUtils
 )

@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 %s -Wno-pointer-to-int-cast -verify -fsyntax-only -ffreestanding
+// RUN: %clang_cc1 %s -Wno-pointer-to-int-cast -verify -fsyntax-only -ffreestanding -fexperimental-new-constant-interpreter
 
 #include <stddef.h>
 #include <stdint.h>
@@ -66,10 +67,8 @@ int pbool(void) {
 }
 
 
-// rdar://5870981
 union { float f; unsigned u; } u = { 1.0f };
 
-// rdar://6156694
 int f3(int x) { return x; }
 typedef void (*vfunc)(void);
 void *bar = (vfunc) f3;
@@ -94,7 +93,6 @@ struct s1 s2 = { // expected-error {{variable has incomplete type 'struct s1'}} 
 // PR3382
 char t[] = ("Hello");
 
-// <rdar://problem/6094855>
 typedef struct { } empty;
 
 typedef struct {
@@ -104,7 +102,6 @@ typedef struct {
 
 st st1 = { .i2 = 1 };
 
-// <rdar://problem/6096826>
 struct {
   int a;
   int z[2];
@@ -157,10 +154,107 @@ int PR4386_b = ((void *) PR4386_foo) != 0; // expected-error{{initializer elemen
 int PR4386_c = ((void *) PR4386_zed) != 0;
 int PR4386_zed(void) __attribute((weak));
 
-// <rdar://problem/10185490> (derived from SPEC vortex benchmark)
+// (derived from SPEC vortex benchmark)
 typedef char strty[10];
 struct vortexstruct { strty s; };
 struct vortexstruct vortexvar = { "asdf" };
 
 typedef struct { uintptr_t x : 2; } StructWithBitfield;
 StructWithBitfield bitfieldvar = { (uintptr_t)&bitfieldvar }; // expected-error {{initializer element is not a compile-time constant}}
+
+// PR45157
+struct PR4517_foo {
+  int x;
+};
+struct PR4517_bar {
+  struct PR4517_foo foo;
+};
+const struct PR4517_foo my_foo = {.x = 42};
+struct PR4517_bar my_bar = {
+    .foo = my_foo, // no-warning
+};
+struct PR4517_bar my_bar2 = (struct PR4517_bar){
+    .foo = my_foo, // no-warning
+};
+struct PR4517_bar my_bar3 = {
+    my_foo, // no-warning
+};
+struct PR4517_bar my_bar4 = (struct PR4517_bar){
+    my_foo // no-warning
+};
+extern const struct PR4517_foo my_foo2;
+struct PR4517_bar my_bar5 = {
+  .foo = my_foo2, // expected-error {{initializer element is not a compile-time constant}}
+};
+const struct PR4517_foo my_foo3 = {.x = my_foo.x};
+int PR4517_a[2] = {0, 1};
+const int PR4517_ca[2] = {0, 1};
+int PR4517_idx = 0;
+const int PR4517_idxc = 1;
+int PR4517_x1 = PR4517_a[PR4517_idx]; // expected-error {{initializer element is not a compile-time constant}}
+int PR4517_x2 = PR4517_a[PR4517_idxc]; // expected-error {{initializer element is not a compile-time constant}}
+int PR4517_x3 = PR4517_a[0]; // expected-error {{initializer element is not a compile-time constant}}
+int PR4517_y1 = PR4517_ca[PR4517_idx]; // expected-error {{initializer element is not a compile-time constant}}
+int PR4517_y2 = PR4517_ca[PR4517_idxc]; // no-warning
+int PR4517_y3 = PR4517_ca[0]; // no-warning
+union PR4517_u {
+    int x;
+    float y;
+};
+const union PR4517_u u1 = {4.0f};
+const union PR4517_u u2 = u1; // no-warning
+const union PR4517_u u3 = {u1.y}; // expected-error {{initializer element is not a compile-time constant}}
+
+int PR192471_1 = {{}, {}, {}}; // expected-warning {{too many braces around scalar initializer}} expected-warning {{excess elements in scalar initializer}}
+char PR192471_2[] = {
+    "1110",
+#embed __FILE__ // expected-warning {{#embed is a C23 extension}} \
+                   expected-warning {{excess elements in char array initializer}}
+};
+char PR192471_3[1] = {
+#embed __FILE__ limit(1) // expected-warning {{#embed is a C23 extension}}
+, 49, 49, 49, 48 // expected-warning {{excess elements in array initializer}}
+};
+
+void PR192471_4(int *ptr) {
+  *ptr = (int){{}, // expected-warning {{too many braces around scalar initializer}}
+#embed __FILE__ limit(1) // expected-warning {{#embed is a C23 extension}} \
+                           expected-warning {{excess elements in scalar initializer}}
+  };
+}
+
+// GH137845
+struct GH137845_Data; // expected-note 2 {{forward declaration of 'struct GH137845_Data'}}
+double GH137845_swap(struct GH137845_Data *, struct GH137845_Data *);
+void GH137845(void) {
+  GH137845_swap(
+      (struct GH137845_Data[5]){{}, 1}, // expected-error {{array has incomplete element type 'struct GH137845_Data'}} \
+                                             expected-warning {{too many braces around scalar initializer}} \
+                                             expected-warning {{excess elements in scalar initializer}}
+      (struct GH137845_Data[5]){{}, 4}); // expected-error {{array has incomplete element type 'struct GH137845_Data'}} \
+                                              expected-warning {{too many braces around scalar initializer}} \
+                                              expected-warning {{excess elements in scalar initializer}}
+}
+
+// GH69213
+int GH69213_ptr;
+void GH69213(void) {
+  *GH69213_ptr = (int){{}, 0}; // expected-error {{indirection requires pointer operand ('int' invalid)}} \
+                                      expected-warning {{too many braces around scalar initializer}} \
+                                      expected-warning {{excess elements in scalar initializer}}
+}
+
+// GH198767
+void GH198767(void) {
+  static __thread static char buffer[128] = {{{}, 0}}; // expected-warning {{duplicate 'static' declaration specifier}} \
+                                                             expected-warning {{too many braces around scalar initializer}} \
+                                                             expected-warning {{excess elements in scalar initializer}}
+}
+
+struct GH207566 {};
+struct GH207566 **GH207566_s = {{}, NULL}; // expected-warning {{too many braces around scalar initializer}} \
+                                                 expected-warning {{excess elements in scalar initializer}}
+
+GH106180 = {{}, 1}; // expected-error {{type specifier missing, defaults to 'int'; ISO C99 and later do not support implicit int}} \
+                           expected-warning {{too many braces around scalar initializer}} \
+                           expected-warning {{excess elements in scalar initializer}}

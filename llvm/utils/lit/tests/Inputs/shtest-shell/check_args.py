@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
 import platform
@@ -8,7 +8,8 @@ parser.add_argument("--my_arg", "-a")
 
 args = parser.parse_args()
 
-answer = (platform.system() == "Windows" and
-          args.my_arg == "/dev/null" and "ERROR") or "OK"
+answer = (
+    platform.system() == "Windows" and args.my_arg == "/dev/null" and "ERROR"
+) or "OK"
 
 print(answer)

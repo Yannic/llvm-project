@@ -18,8 +18,8 @@ end:
   ret i64 %a
 
 ; CHECK-LABEL: @test1
-; CHECK: mfcr [[REG1:[0-9]+]]
-; CHECK-DAG: cmpd
+; CHECK: cmpd
+; CHECK-DAG: mfcr [[REG1:[0-9]+]]
 ; CHECK-DAG: mfocrf [[REG2:[0-9]+]],
 ; CHECK-DAG: stw [[REG1]], 8(1)
 ; CHECK-DAG: stw [[REG2]], -4(1)
@@ -29,9 +29,7 @@ end:
 ; CHECK: mtocrf 128, [[REG3]]
 
 ; CHECK: lwz [[REG4:[0-9]+]], 8(1)
-; CHECK-DAG: mtocrf 32, [[REG4]]
-; CHECK-DAG: mtocrf 16, [[REG4]]
-; CHECK-DAG: mtocrf 8, [[REG4]]
+; CHECK-DAG: mtcrf 56, [[REG4]]
 ; CHECK: blr
 }
 
@@ -51,8 +49,8 @@ end:
   ret i64 %a
 
 ; CHECK-LABEL: @test2
-; CHECK: mfcr [[REG1:[0-9]+]]
-; CHECK-DAG: cmpd
+; CHECK: cmpd
+; CHECK-DAG: mfcr [[REG1:[0-9]+]]
 ; CHECK-DAG: mfocrf [[REG2:[0-9]+]],
 ; CHECK-DAG: stw [[REG1]], 8(1)
 ; CHECK-DAG: stw [[REG2]], -4(1)
@@ -62,9 +60,7 @@ end:
 ; CHECK: mtocrf 128, [[REG3]]
 
 ; CHECK: lwz [[REG4:[0-9]+]], 8(1)
-; CHECK-DAG: mtocrf 32, [[REG4]]
-; CHECK-DAG: mtocrf 16, [[REG4]]
-; CHECK-DAG: mtocrf 8, [[REG4]]
+; CHECK-DAG: mtcrf 56, [[REG4]]
 ; CHECK: blr
 }
 

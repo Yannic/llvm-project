@@ -31,8 +31,8 @@ define void @test(ptr %arg, i64 %arg1) {
 ; CHECK-NEXT:    [[C_1_LVER_ORIG:%.*]] = icmp eq i64 [[IV_1_LVER_ORIG]], 1
 ; CHECK-NEXT:    br i1 [[C_1_LVER_ORIG]], label [[INNER_1_EXIT_LOOPEXIT:%.*]], label [[INNER_1_LVER_ORIG]]
 ; CHECK:       inner.1.ph:
-; CHECK-NEXT:    [[UGLYGEP:%.*]] = getelementptr i8, ptr [[PTR_PHI]], i64 16
-; CHECK-NEXT:    [[LOAD_INITIAL:%.*]] = load double, ptr [[UGLYGEP]], align 8
+; CHECK-NEXT:    [[SCEVGEP:%.*]] = getelementptr i8, ptr [[PTR_PHI]], i64 16
+; CHECK-NEXT:    [[LOAD_INITIAL:%.*]] = load double, ptr [[SCEVGEP]], align 8
 ; CHECK-NEXT:    br label [[INNER_1:%.*]]
 ; CHECK:       inner.1:
 ; CHECK-NEXT:    [[STORE_FORWARDED:%.*]] = phi double [ [[LOAD_INITIAL]], [[INNER_1_PH]] ], [ 0.000000e+00, [[INNER_1]] ]
@@ -59,21 +59,16 @@ define void @test(ptr %arg, i64 %arg1) {
 ; CHECK-NEXT:    [[GEP_5:%.*]] = getelementptr inbounds double, ptr [[LCSSA_PTR_IV_1]], i64 1
 ; CHECK-NEXT:    br label [[INNER_2:%.*]]
 ; CHECK:       inner.2:
-; CHECK-NEXT:    [[INDVAR:%.*]] = phi i64 [ [[INDVAR_NEXT:%.*]], [[INNER_2]] ], [ 0, [[INNER_1_EXIT]] ]
 ; CHECK-NEXT:    [[PTR_IV_2:%.*]] = phi ptr [ [[GEP_5]], [[INNER_1_EXIT]] ], [ [[PTR_IV_2_NEXT:%.*]], [[INNER_2]] ]
 ; CHECK-NEXT:    [[PTR_IV_2_NEXT]] = getelementptr inbounds double, ptr [[PTR_IV_2]], i64 1
-; CHECK-NEXT:    [[INDVAR_NEXT]] = add i64 [[INDVAR]], 1
 ; CHECK-NEXT:    br i1 false, label [[INNER_3_LVER_CHECK:%.*]], label [[INNER_2]]
 ; CHECK:       inner.3.lver.check:
-; CHECK-NEXT:    [[INDVAR_LCSSA:%.*]] = phi i64 [ [[INDVAR]], [[INNER_2]] ]
 ; CHECK-NEXT:    [[LCSSA_PTR_IV_2:%.*]] = phi ptr [ [[PTR_IV_2]], [[INNER_2]] ]
 ; CHECK-NEXT:    [[GEP_6:%.*]] = getelementptr inbounds double, ptr [[PTR_PHI]], i64 1
 ; CHECK-NEXT:    [[GEP_7:%.*]] = getelementptr inbounds double, ptr [[LCSSA_PTR_IV_2]], i64 1
-; CHECK-NEXT:    [[TMP0:%.*]] = shl i64 [[INDVAR_LCSSA]], 3
-; CHECK-NEXT:    [[TMP1:%.*]] = add i64 [[TMP0]], 24
-; CHECK-NEXT:    [[UGLYGEP3:%.*]] = getelementptr i8, ptr [[LCSSA_PTR_IV_1]], i64 [[TMP1]]
+; CHECK-NEXT:    [[SCEVGEP3:%.*]] = getelementptr i8, ptr [[LCSSA_PTR_IV_2]], i64 16
 ; CHECK-NEXT:    [[BOUND0:%.*]] = icmp ult ptr [[GEP_7]], [[GEP_1]]
-; CHECK-NEXT:    [[BOUND1:%.*]] = icmp ult ptr [[PTR_PHI]], [[UGLYGEP3]]
+; CHECK-NEXT:    [[BOUND1:%.*]] = icmp ult ptr [[PTR_PHI]], [[SCEVGEP3]]
 ; CHECK-NEXT:    [[FOUND_CONFLICT:%.*]] = and i1 [[BOUND0]], [[BOUND1]]
 ; CHECK-NEXT:    br i1 [[FOUND_CONFLICT]], label [[INNER_3_PH_LVER_ORIG:%.*]], label [[INNER_3_PH:%.*]]
 ; CHECK:       inner.3.ph.lver.orig:
@@ -104,7 +99,7 @@ define void @test(ptr %arg, i64 %arg1) {
 ; CHECK-NEXT:    br i1 [[C_2]], label [[OUTER_LATCH_LOOPEXIT4:%.*]], label [[INNER_3]]
 ; CHECK:       outer.latch.loopexit:
 ; CHECK-NEXT:    br label [[OUTER_LATCH]]
-; CHECK:       outer.latch.loopexit4:
+; CHECK:       outer.latch.loopexit3:
 ; CHECK-NEXT:    br label [[OUTER_LATCH]]
 ; CHECK:       outer.latch:
 ; CHECK-NEXT:    br label [[INNER_1_LVER_CHECK]]

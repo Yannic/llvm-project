@@ -18,8 +18,9 @@
 #include "asan_mapping.h"
 #include "interception/interception.h"
 
-DECLARE_REAL(void *, memcpy, void *to, const void *from, uptr size)
-DECLARE_REAL(void *, memset, void *block, int c, uptr size)
+DECLARE_REAL(void *, memcpy, void *to, const void *from, SIZE_T size)
+DECLARE_REAL(void *, memset, void *block, int c, SIZE_T size)
+DECLARE_REAL(void *, memmove, void *to, const void *from, SIZE_T size)
 
 namespace __asan {
 
@@ -52,68 +53,31 @@ struct AsanInterceptorContext {
 // that no extra frames are created, and stack trace contains
 // relevant information only.
 // We check all shadow bytes.
-#define ACCESS_MEMORY_RANGE(ctx, offset, size, isWrite)                   \
-  do {                                                                    \
-    uptr __offset = (uptr)(offset);                                       \
-    uptr __size = (uptr)(size);                                           \
-    uptr __bad = 0;                                                       \
-    if (UNLIKELY(__offset > __offset + __size)) {                         \
-      GET_STACK_TRACE_FATAL_HERE;                                         \
-      ReportStringFunctionSizeOverflow(__offset, __size, &stack);         \
-    }                                                                     \
-    if (UNLIKELY(!QuickCheckForUnpoisonedRegion(__offset, __size)) &&     \
-        (__bad = __asan_region_is_poisoned(__offset, __size))) {          \
-      AsanInterceptorContext *_ctx = (AsanInterceptorContext *)ctx;       \
-      bool suppressed = false;                                            \
-      if (_ctx) {                                                         \
-        suppressed = IsInterceptorSuppressed(_ctx->interceptor_name);     \
-        if (!suppressed && HaveStackTraceBasedSuppressions()) {           \
-          GET_STACK_TRACE_FATAL_HERE;                                     \
-          suppressed = IsStackTraceSuppressed(&stack);                    \
-        }                                                                 \
-      }                                                                   \
-      if (!suppressed) {                                                  \
-        GET_CURRENT_PC_BP_SP;                                             \
-        ReportGenericError(pc, bp, sp, __bad, isWrite, __size, 0, false); \
-      }                                                                   \
-    }                                                                     \
-  } while (0)
-
-// memcpy is called during __asan_init() from the internals of printf(...).
-// We do not treat memcpy with to==from as a bug.
-// See http://llvm.org/bugs/show_bug.cgi?id=11763.
-#define ASAN_MEMCPY_IMPL(ctx, to, from, size)                 \
-  do {                                                        \
-    if (LIKELY(replace_intrin_cached)) {                      \
-      if (LIKELY(to != from)) {                               \
-        CHECK_RANGES_OVERLAP("memcpy", to, size, from, size); \
-      }                                                       \
-      ASAN_READ_RANGE(ctx, from, size);                       \
-      ASAN_WRITE_RANGE(ctx, to, size);                        \
-    } else if (UNLIKELY(!asan_inited)) {                      \
-      return internal_memcpy(to, from, size);                 \
-    }                                                         \
-    return REAL(memcpy)(to, from, size);                      \
-  } while (0)
-
-// memset is called inside Printf.
-#define ASAN_MEMSET_IMPL(ctx, block, c, size) \
-  do {                                        \
-    if (LIKELY(replace_intrin_cached)) {      \
-      ASAN_WRITE_RANGE(ctx, block, size);     \
-    } else if (UNLIKELY(!asan_inited)) {      \
-      return internal_memset(block, c, size); \
-    }                                         \
-    return REAL(memset)(block, c, size);      \
-  } while (0)
-
-#define ASAN_MEMMOVE_IMPL(ctx, to, from, size) \
-  do {                                         \
-    if (LIKELY(replace_intrin_cached)) {       \
-      ASAN_READ_RANGE(ctx, from, size);        \
-      ASAN_WRITE_RANGE(ctx, to, size);         \
-    }                                          \
-    return internal_memmove(to, from, size);   \
+#define ACCESS_MEMORY_RANGE(ctx, offset, size, isWrite)                    \
+  do {                                                                     \
+    uptr __offset = (uptr)(offset);                                        \
+    uptr __size = (uptr)(size);                                            \
+    uptr __bad = 0;                                                        \
+    if (UNLIKELY(__offset > __offset + __size)) {                          \
+      GET_STACK_TRACE_FATAL_HERE;                                          \
+      ReportStringFunctionSizeOverflow(__offset, __size, isWrite, &stack); \
+    }                                                                      \
+    if (UNLIKELY(!QuickCheckForUnpoisonedRegion(__offset, __size)) &&      \
+        (__bad = __asan_region_is_poisoned(__offset, __size))) {           \
+      AsanInterceptorContext* _ctx = (AsanInterceptorContext*)ctx;         \
+      bool suppressed = false;                                             \
+      if (_ctx) {                                                          \
+        suppressed = IsInterceptorSuppressed(_ctx->interceptor_name);      \
+        if (!suppressed && HaveStackTraceBasedSuppressions()) {            \
+          GET_STACK_TRACE_FATAL_HERE;                                      \
+          suppressed = IsStackTraceSuppressed(&stack);                     \
+        }                                                                  \
+      }                                                                    \
+      if (!suppressed) {                                                   \
+        GET_CURRENT_PC_BP_SP;                                              \
+        ReportGenericError(pc, bp, sp, __bad, isWrite, __size, 0, false);  \
+      }                                                                    \
+    }                                                                      \
   } while (0)
 
 #define ASAN_READ_RANGE(ctx, offset, size) \

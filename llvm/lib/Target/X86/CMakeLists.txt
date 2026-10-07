@@ -8,7 +8,7 @@ tablegen(LLVM X86GenAsmWriter1.inc -gen-asm-writer -asmwriternum=1)
 tablegen(LLVM X86GenCallingConv.inc -gen-callingconv)
 tablegen(LLVM X86GenDAGISel.inc -gen-dag-isel)
 tablegen(LLVM X86GenDisassemblerTables.inc -gen-disassembler)
-tablegen(LLVM X86GenEVEX2VEXTables.inc -gen-x86-EVEX2VEX-tables)
+tablegen(LLVM X86GenInstrMapping.inc -gen-x86-instr-mapping)
 tablegen(LLVM X86GenExegesis.inc -gen-exegesis)
 tablegen(LLVM X86GenFastISel.inc -gen-fast-isel)
 tablegen(LLVM X86GenGlobalISel.inc -gen-global-isel)
@@ -17,26 +17,35 @@ tablegen(LLVM X86GenInstrInfo.inc -gen-instr-info
 tablegen(LLVM X86GenMnemonicTables.inc -gen-x86-mnemonic-tables -asmwriternum=1)
 tablegen(LLVM X86GenRegisterBank.inc -gen-register-bank)
 tablegen(LLVM X86GenRegisterInfo.inc -gen-register-info)
+tablegen(LLVM X86GenSDNodeInfo.inc -gen-sd-node-info)
 tablegen(LLVM X86GenSubtargetInfo.inc -gen-subtarget)
+tablegen(LLVM X86GenFoldTables.inc -gen-x86-fold-tables -asmwriternum=1)
+tablegen(LLVM X86GenPreLegalizeGICombiner.inc -gen-global-isel-combiner
+              -combiners="X86PreLegalizerCombiner")
+tablegen(LLVM X86GenPostLegalizeGICombiner.inc -gen-global-isel-combiner
+              -combiners="X86PostLegalizerCombiner")
 
-if (X86_GEN_FOLD_TABLES)
-  tablegen(LLVM X86GenFoldTables.inc -gen-x86-fold-tables -asmwriternum=1)
-endif()
+set(LLVM_TARGET_DEFINITIONS X86Options.td)
+tablegen(LLVM X86Options.inc -gen-opt-parser-defs)
+
+set(LLVM_TARGET_DEFINITIONS MCTargetDesc/X86MCOptions.td)
+tablegen(LLVM X86MCOptions.inc -gen-opt-parser-defs)
 
 add_public_tablegen_target(X86CommonTableGen)
 
 set(sources
+  X86ArgumentStackSlotRebase.cpp
   X86AsmPrinter.cpp
   X86AvoidTrailingCall.cpp
   X86CallFrameOptimization.cpp
   X86CallingConv.cpp
-  X86CallLowering.cpp
+  X86CleanupLocalDynamicTLS.cpp
   X86CmovConversion.cpp
+  X86CodeGenPassBuilder.cpp
   X86DomainReassignment.cpp
-  X86DiscriminateMemOps.cpp
+  X86GlobalBaseReg.cpp
   X86LowerTileCopy.cpp
   X86LowerAMXType.cpp
-  X86PreAMXConfig.cpp
   X86LowerAMXIntrinsics.cpp
   X86TileConfig.cpp
   X86FastPreTileConfig.cpp
@@ -46,26 +55,28 @@ set(sources
   X86FastISel.cpp
   X86FixupBWInsts.cpp
   X86FixupLEAs.cpp
+  X86FixupInstTuning.cpp
+  X86FixupVectorConstants.cpp
   X86AvoidStoreForwardingBlocks.cpp
   X86DynAllocaExpander.cpp
   X86FixupSetCC.cpp
   X86FlagsCopyLowering.cpp
   X86FloatingPoint.cpp
   X86FrameLowering.cpp
-  X86InstructionSelector.cpp
   X86ISelDAGToDAG.cpp
   X86ISelLowering.cpp
+  X86ISelLoweringCall.cpp
   X86IndirectBranchTracking.cpp
   X86IndirectThunks.cpp
+  X86InsertVZeroUpper.cpp
+  X86InsertX87Wait.cpp
   X86InterleavedAccess.cpp
-  X86InsertPrefetch.cpp
   X86InstCombineIntrinsic.cpp
   X86InstrFMA3Info.cpp
   X86InstrFoldTables.cpp
   X86InstrInfo.cpp
-  X86EvexToVex.cpp
-  X86KCFI.cpp
-  X86LegalizerInfo.cpp
+  X86CompressEVEX.cpp
+  X86LFIRewritePass.cpp
   X86LoadValueInjectionLoadHardening.cpp
   X86LoadValueInjectionRetHardening.cpp
   X86MCInstLower.cpp
@@ -74,7 +85,6 @@ set(sources
   X86OptimizeLEAs.cpp
   X86PadShortFunction.cpp
   X86PartialReduction.cpp
-  X86RegisterBankInfo.cpp
   X86RegisterInfo.cpp
   X86ReturnThunks.cpp
   X86SelectionDAGInfo.cpp
@@ -82,22 +92,36 @@ set(sources
   X86SpeculativeLoadHardening.cpp
   X86SpeculativeExecutionSideEffectSuppression.cpp
   X86Subtarget.cpp
+  X86SuppressAPXForReloc.cpp
   X86TargetMachine.cpp
   X86TargetObjectFile.cpp
   X86TargetTransformInfo.cpp
-  X86VZeroUpper.cpp
   X86WinEHState.cpp
-  X86InsertWait.cpp
+  X86WinEHUnwindV2.cpp
+  X86WinEHUnwindV3.cpp
+  GISel/X86CallLowering.cpp
+  GISel/X86InstructionSelector.cpp
+  GISel/X86LegalizerInfo.cpp
+  GISel/X86PostLegalizerCombiner.cpp
+  GISel/X86PreLegalizerCombiner.cpp
+  GISel/X86RegisterBankInfo.cpp
   )
 
 add_llvm_target(X86CodeGen ${sources}
   LINK_COMPONENTS
   Analysis
   AsmPrinter
+  CFGuard
   CodeGen
+  CodeGenTypes
   Core
+  GlobalISel
   Instrumentation
   MC
+  ObjCARC
+  Option
+  Passes
+  ProfileData
   SelectionDAG
   Support
   Target
@@ -105,13 +129,10 @@ add_llvm_target(X86CodeGen ${sources}
   TransformUtils
   X86Desc
   X86Info
-  GlobalISel
-  ProfileData
-  CFGuard
 
   ADD_TO_COMPONENT
   X86
-)
+  )
 
 add_subdirectory(AsmParser)
 add_subdirectory(Disassembler)

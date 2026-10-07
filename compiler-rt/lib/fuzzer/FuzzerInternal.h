@@ -29,12 +29,11 @@ namespace fuzzer {
 
 using namespace std::chrono;
 
-class Fuzzer {
+class Fuzzer final {
 public:
-
   Fuzzer(UserCallback CB, InputCorpus &Corpus, MutationDispatcher &MD,
-         FuzzingOptions Options);
-  ~Fuzzer();
+         const FuzzingOptions &Options);
+  ~Fuzzer() = delete;
   void Loop(std::vector<SizedFile> &CorporaFiles);
   void ReadAndExecuteSeedCorpora(std::vector<SizedFile> &CorporaFiles);
   void MinimizeCrashLoop(const Unit &U);
@@ -45,10 +44,18 @@ public:
         .count();
   }
 
+  size_t secondsSinceLastNewCorpus() {
+    return duration_cast<seconds>(system_clock::now() - LastNewCorpusTime)
+        .count();
+  }
+
   bool TimedOut() {
-    return Options.MaxTotalTimeSec > 0 &&
-           secondsSinceProcessStartUp() >
-               static_cast<size_t>(Options.MaxTotalTimeSec);
+    return (Options.MaxTotalTimeSec > 0 &&
+            secondsSinceProcessStartUp() >
+                static_cast<size_t>(Options.MaxTotalTimeSec)) ||
+           (Options.StaleCorpusTimeoutSec > 0 &&
+            secondsSinceLastNewCorpus() >
+                static_cast<size_t>(Options.StaleCorpusTimeoutSec));
   }
 
   size_t execPerSec() {
@@ -138,6 +145,7 @@ private:
   DataFlowTrace DFT;
 
   system_clock::time_point ProcessStartTime = system_clock::now();
+  system_clock::time_point LastNewCorpusTime = system_clock::now();
   system_clock::time_point UnitStartTime, UnitStopTime;
   long TimeOfLongestUnitInSeconds = 0;
   long EpochOfLastReadOfOutputCorpus = 0;

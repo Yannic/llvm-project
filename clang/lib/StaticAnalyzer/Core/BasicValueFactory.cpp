@@ -87,38 +87,37 @@ BasicValueFactory::~BasicValueFactory() {
   delete (PersistentSValPairsTy*) PersistentSValPairs;
 }
 
-const llvm::APSInt& BasicValueFactory::getValue(const llvm::APSInt& X) {
+APSIntPtr BasicValueFactory::getValue(const llvm::APSInt &X) {
   llvm::FoldingSetNodeID ID;
-  void *InsertPos;
+  llvm::FoldingSetInsertToken InsertToken;
 
   using FoldNodeTy = llvm::FoldingSetNodeWrapper<llvm::APSInt>;
 
   X.Profile(ID);
-  FoldNodeTy* P = APSIntSet.FindNodeOrInsertPos(ID, InsertPos);
+  FoldNodeTy *P = APSIntSet.lookup(ID, InsertToken);
 
   if (!P) {
-    P = (FoldNodeTy*) BPAlloc.Allocate<FoldNodeTy>();
-    new (P) FoldNodeTy(X);
-    APSIntSet.InsertNode(P, InsertPos);
+    P = new (BPAlloc) FoldNodeTy(X);
+    APSIntSet.insert(P, InsertToken);
   }
 
-  return *P;
+  // We own the APSInt object. It's safe here.
+  return APSIntPtr::unsafeConstructor(&P->getValue());
 }
 
-const llvm::APSInt& BasicValueFactory::getValue(const llvm::APInt& X,
-                                                bool isUnsigned) {
+APSIntPtr BasicValueFactory::getValue(const llvm::APInt &X, bool isUnsigned) {
   llvm::APSInt V(X, isUnsigned);
   return getValue(V);
 }
 
-const llvm::APSInt& BasicValueFactory::getValue(uint64_t X, unsigned BitWidth,
-                                           bool isUnsigned) {
+APSIntPtr BasicValueFactory::getValue(uint64_t X, unsigned BitWidth,
+                                      bool isUnsigned) {
   llvm::APSInt V(BitWidth, isUnsigned);
   V = X;
   return getValue(V);
 }
 
-const llvm::APSInt& BasicValueFactory::getValue(uint64_t X, QualType T) {
+APSIntPtr BasicValueFactory::getValue(uint64_t X, QualType T) {
   return getValue(getAPSIntType(T).getValue(X));
 }
 
@@ -127,14 +126,13 @@ BasicValueFactory::getCompoundValData(QualType T,
                                       llvm::ImmutableList<SVal> Vals) {
   llvm::FoldingSetNodeID ID;
   CompoundValData::Profile(ID, T, Vals);
-  void *InsertPos;
+  llvm::FoldingSetInsertToken InsertToken;
 
-  CompoundValData* D = CompoundValDataSet.FindNodeOrInsertPos(ID, InsertPos);
+  CompoundValData *D = CompoundValDataSet.lookup(ID, InsertToken);
 
   if (!D) {
-    D = (CompoundValData*) BPAlloc.Allocate<CompoundValData>();
-    new (D) CompoundValData(T, Vals);
-    CompoundValDataSet.InsertNode(D, InsertPos);
+    D = new (BPAlloc) CompoundValData(T, Vals);
+    CompoundValDataSet.insert(D, InsertToken);
   }
 
   return D;
@@ -145,15 +143,13 @@ BasicValueFactory::getLazyCompoundValData(const StoreRef &store,
                                           const TypedValueRegion *region) {
   llvm::FoldingSetNodeID ID;
   LazyCompoundValData::Profile(ID, store, region);
-  void *InsertPos;
+  llvm::FoldingSetInsertToken InsertToken;
 
-  LazyCompoundValData *D =
-    LazyCompoundValDataSet.FindNodeOrInsertPos(ID, InsertPos);
+  LazyCompoundValData *D = LazyCompoundValDataSet.lookup(ID, InsertToken);
 
   if (!D) {
-    D = (LazyCompoundValData*) BPAlloc.Allocate<LazyCompoundValData>();
-    new (D) LazyCompoundValData(store, region);
-    LazyCompoundValDataSet.InsertNode(D, InsertPos);
+    D = new (BPAlloc) LazyCompoundValData(store, region);
+    LazyCompoundValDataSet.insert(D, InsertToken);
   }
 
   return D;
@@ -163,21 +159,19 @@ const PointerToMemberData *BasicValueFactory::getPointerToMemberData(
     const NamedDecl *ND, llvm::ImmutableList<const CXXBaseSpecifier *> L) {
   llvm::FoldingSetNodeID ID;
   PointerToMemberData::Profile(ID, ND, L);
-  void *InsertPos;
+  llvm::FoldingSetInsertToken InsertToken;
 
-  PointerToMemberData *D =
-      PointerToMemberDataSet.FindNodeOrInsertPos(ID, InsertPos);
+  PointerToMemberData *D = PointerToMemberDataSet.lookup(ID, InsertToken);
 
   if (!D) {
-    D = (PointerToMemberData *)BPAlloc.Allocate<PointerToMemberData>();
-    new (D) PointerToMemberData(ND, L);
-    PointerToMemberDataSet.InsertNode(D, InsertPos);
+    D = new (BPAlloc) PointerToMemberData(ND, L);
+    PointerToMemberDataSet.insert(D, InsertToken);
   }
 
   return D;
 }
 
-LLVM_ATTRIBUTE_UNUSED bool hasNoRepeatedElements(
+[[maybe_unused]] static bool hasNoRepeatedElements(
     llvm::ImmutableList<const CXXBaseSpecifier *> BaseSpecList) {
   llvm::SmallPtrSet<QualType, 16> BaseSpecSeen;
   for (const CXXBaseSpecifier *BaseSpec : BaseSpecList) {
@@ -200,13 +194,13 @@ const PointerToMemberData *BasicValueFactory::accumCXXBase(
   const NamedDecl *ND = nullptr;
   llvm::ImmutableList<const CXXBaseSpecifier *> BaseSpecList;
 
-  if (PTMDT.isNull() || PTMDT.is<const NamedDecl *>()) {
-    if (PTMDT.is<const NamedDecl *>())
-      ND = PTMDT.get<const NamedDecl *>();
+  if (PTMDT.isNull() || isa<const NamedDecl *>(PTMDT)) {
+    if (const auto *NDP = dyn_cast_if_present<const NamedDecl *>(PTMDT))
+      ND = NDP;
 
     BaseSpecList = CXXBaseListFactory.getEmptyList();
   } else {
-    const PointerToMemberData *PTMD = PTMDT.get<const PointerToMemberData *>();
+    const auto *PTMD = cast<const PointerToMemberData *>(PTMDT);
     ND = PTMD->getDeclaratorDecl();
 
     BaseSpecList = PTMD->getCXXBaseList();
@@ -246,98 +240,106 @@ const PointerToMemberData *BasicValueFactory::accumCXXBase(
   return getPointerToMemberData(ND, BaseSpecList);
 }
 
-const llvm::APSInt*
-BasicValueFactory::evalAPSInt(BinaryOperator::Opcode Op,
-                             const llvm::APSInt& V1, const llvm::APSInt& V2) {
+std::optional<APSIntPtr> BasicValueFactory::evalAPSInt(UnaryOperator::Opcode Op,
+                                                       const llvm::APSInt &V1) {
+  switch (Op) {
+  default:
+    assert(false && "Invalid Opcode.");
+    return std::nullopt;
+
+  case UO_Minus:
+    return getValue(-V1);
+
+  case UO_Not:
+    return getValue(~V1);
+  }
+}
+
+std::optional<APSIntPtr>
+BasicValueFactory::evalAPSInt(BinaryOperator::Opcode Op, const llvm::APSInt &V1,
+                              const llvm::APSInt &V2) {
   switch (Op) {
     default:
-      llvm_unreachable("Invalid Opcode.");
+      assert(false && "Invalid Opcode.");
+      return std::nullopt;
 
     case BO_Mul:
-      return &getValue( V1 * V2 );
+      return getValue(V1 * V2);
 
     case BO_Div:
       if (V2 == 0) // Avoid division by zero
-        return nullptr;
-      return &getValue( V1 / V2 );
+        return std::nullopt;
+      return getValue(V1 / V2);
 
     case BO_Rem:
       if (V2 == 0) // Avoid division by zero
-        return nullptr;
-      return &getValue( V1 % V2 );
+        return std::nullopt;
+      return getValue(V1 % V2);
 
     case BO_Add:
-      return &getValue( V1 + V2 );
+      return getValue(V1 + V2);
 
     case BO_Sub:
-      return &getValue( V1 - V2 );
+      return getValue(V1 - V2);
 
     case BO_Shl: {
       // FIXME: This logic should probably go higher up, where we can
       // test these conditions symbolically.
 
-      if (V2.isSigned() && V2.isNegative())
-        return nullptr;
+      if (V2.isNegative() || V2.getBitWidth() > 64)
+        return std::nullopt;
 
       uint64_t Amt = V2.getZExtValue();
 
       if (Amt >= V1.getBitWidth())
-        return nullptr;
+        return std::nullopt;
 
-      if (!Ctx.getLangOpts().CPlusPlus20) {
-        if (V1.isSigned() && V1.isNegative())
-          return nullptr;
-
-        if (V1.isSigned() && Amt > V1.countLeadingZeros())
-          return nullptr;
-      }
-
-      return &getValue( V1.operator<<( (unsigned) Amt ));
+      return getValue(V1.operator<<((unsigned)Amt));
     }
 
     case BO_Shr: {
       // FIXME: This logic should probably go higher up, where we can
       // test these conditions symbolically.
 
-      if (V2.isSigned() && V2.isNegative())
-        return nullptr;
+      if (V2.isNegative() || V2.getBitWidth() > 64)
+        return std::nullopt;
 
       uint64_t Amt = V2.getZExtValue();
 
       if (Amt >= V1.getBitWidth())
-        return nullptr;
+        return std::nullopt;
 
-      return &getValue( V1.operator>>( (unsigned) Amt ));
+      return getValue(V1.operator>>((unsigned)Amt));
     }
 
     case BO_LT:
-      return &getTruthValue( V1 < V2 );
+      return getTruthValue(V1 < V2);
 
     case BO_GT:
-      return &getTruthValue( V1 > V2 );
+      return getTruthValue(V1 > V2);
 
     case BO_LE:
-      return &getTruthValue( V1 <= V2 );
+      return getTruthValue(V1 <= V2);
 
     case BO_GE:
-      return &getTruthValue( V1 >= V2 );
+      return getTruthValue(V1 >= V2);
 
     case BO_EQ:
-      return &getTruthValue( V1 == V2 );
+      return getTruthValue(V1 == V2);
 
     case BO_NE:
-      return &getTruthValue( V1 != V2 );
+      return getTruthValue(V1 != V2);
 
       // Note: LAnd, LOr, Comma are handled specially by higher-level logic.
 
     case BO_And:
-      return &getValue( V1 & V2 );
+      return getValue(V1 & V2);
 
     case BO_Or:
-      return &getValue( V1 | V2 );
+      return getValue(V1 | V2);
 
     case BO_Xor:
-      return &getValue( V1 ^ V2 );
+      return getValue(V1 ^ V2);
   }
 }
 
@@ -347,7 +349,7 @@ BasicValueFactory::getPersistentSValWithData(const SVal& V, uintptr_t Data) {
   if (!PersistentSVals) PersistentSVals = new PersistentSValsTy();
 
   llvm::FoldingSetNodeID ID;
-  void *InsertPos;
+  llvm::FoldingSetInsertToken InsertToken;
   V.Profile(ID);
   ID.AddPointer((void*) Data);
 
@@ -355,12 +357,11 @@ BasicValueFactory::getPersistentSValWithData(const SVal& V, uintptr_t Data) {
 
   using FoldNodeTy = llvm::FoldingSetNodeWrapper<SValData>;
 
-  FoldNodeTy* P = Map.FindNodeOrInsertPos(ID, InsertPos);
+  FoldNodeTy *P = Map.lookup(ID, InsertToken);
 
   if (!P) {
-    P = (FoldNodeTy*) BPAlloc.Allocate<FoldNodeTy>();
-    new (P) FoldNodeTy(std::make_pair(V, Data));
-    Map.InsertNode(P, InsertPos);
+    P = new (BPAlloc) FoldNodeTy(std::make_pair(V, Data));
+    Map.insert(P, InsertToken);
   }
 
   return P->getValue();
@@ -372,7 +373,7 @@ BasicValueFactory::getPersistentSValPair(const SVal& V1, const SVal& V2) {
   if (!PersistentSValPairs) PersistentSValPairs = new PersistentSValPairsTy();
 
   llvm::FoldingSetNodeID ID;
-  void *InsertPos;
+  llvm::FoldingSetInsertToken InsertToken;
   V1.Profile(ID);
   V2.Profile(ID);
 
@@ -380,12 +381,11 @@ BasicValueFactory::getPersistentSValPair(const SVal& V1, const SVal& V2) {
 
   using FoldNodeTy = llvm::FoldingSetNodeWrapper<SValPair>;
 
-  FoldNodeTy* P = Map.FindNodeOrInsertPos(ID, InsertPos);
+  FoldNodeTy *P = Map.lookup(ID, InsertToken);
 
   if (!P) {
-    P = (FoldNodeTy*) BPAlloc.Allocate<FoldNodeTy>();
-    new (P) FoldNodeTy(std::make_pair(V1, V2));
-    Map.InsertNode(P, InsertPos);
+    P = new (BPAlloc) FoldNodeTy(std::make_pair(V1, V2));
+    Map.insert(P, InsertToken);
   }
 
   return P->getValue();

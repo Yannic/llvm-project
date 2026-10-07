@@ -8,7 +8,7 @@ typedef __attribute__(( ext_vector_type(4) )) unsigned int uint4;
 // CHECK: @foo = {{(dso_local )?}}global <4 x float> <float 1.000000e+00, float 2.000000e+00, float 3.000000e+00, float 4.000000e+00>
 float4 foo = (float4){ 1.0, 2.0, 3.0, 4.0 };
 
-// CHECK: @bar = {{(dso_local )?}}constant <4 x float> <float 1.000000e+00, float 2.000000e+00, float 3.000000e+00, float 0x7FF0000000000000>
+// CHECK: @bar = {{(dso_local )?}}constant <4 x float> <float 1.000000e+00, float 2.000000e+00, float 3.000000e+00, float +inf>
 const float4 bar = (float4){ 1.0, 2.0, 3.0, __builtin_inff() };
 
 // CHECK: @test1
@@ -113,8 +113,8 @@ void test6(float4 *ap, float4 *bp, float c) {
   a *= c;
   a /= c;
 
-  // Vector comparisons can sometimes crash the x86 backend: rdar://6326239,
-  // reject them until the implementation is stable.
+  // Vector comparisons can sometimes crash the x86 backend, reject them until
+  // the implementation is stable.
 #if 0
   int4 cmp;
   cmp = a < b;
@@ -235,7 +235,7 @@ int test11(void) {
 
 // CHECK: @test12
 // CHECK: shufflevector {{.*}} <i32 2, i32 1, i32 0>
-// CHECK: shufflevector {{.*}} <i32 0, i32 1, i32 2, i32 undef>
+// CHECK: shufflevector {{.*}} <i32 0, i32 1, i32 2, i32 poison>
 // CHECK: shufflevector {{.*}} <i32 4, i32 5, i32 6, i32 3>
 int4 test12(int4 V) {
   V.xyz = V.zyx;
@@ -328,7 +328,7 @@ void test_rgba(void) {
   // CHECK: extractelement {{.*}} 0
   f = vec4_2.rg.r;
   // CHECK: shufflevector {{.*}} <i32 2, i32 1, i32 0>
-  // CHECK: shufflevector {{.*}} <i32 0, i32 1, i32 2, i32 undef>
+  // CHECK: shufflevector {{.*}} <i32 0, i32 1, i32 2, i32 poison>
   // CHECK: shufflevector {{.*}} <i32 4, i32 5, i32 6, i32 3>
   vec4.rgb = vec4.bgr;
 

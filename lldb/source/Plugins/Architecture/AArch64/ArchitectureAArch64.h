@@ -22,11 +22,25 @@ public:
 
   llvm::StringRef GetPluginName() override { return GetPluginNameStatic(); }
 
-  void OverrideStopInfo(Thread &thread) const override{};
+  void OverrideStopInfo(Thread &thread) const override {}
 
   const MemoryTagManager *GetMemoryTagManager() const override {
     return &m_memory_tag_manager;
   }
+
+  bool
+  RegisterWriteCausesReconfigure(const llvm::StringRef name) const override {
+    // lldb treats svg as read only, so only vg can be written. This results in
+    // the SVE registers changing size.
+    return name == "vg";
+  }
+
+  bool ReconfigureRegisterInfo(DynamicRegisterInfo &reg_info,
+                               DataExtractor &reg_data,
+                               RegisterContext &reg_context) const override;
+
+  bool IsValidTrapInstruction(llvm::ArrayRef<uint8_t> reference,
+                              llvm::ArrayRef<uint8_t> observed) const override;
 
 private:
   static std::unique_ptr<Architecture> Create(const ArchSpec &arch);

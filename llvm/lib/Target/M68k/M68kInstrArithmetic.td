@@ -13,10 +13,10 @@
 ///  Machine:
 ///
 ///    ADD       [~]   ADDA      [~]   ADDI        [~]   ADDQ [ ]   ADDX [~]
-///    CLR       [ ]   CMP       [~]   CMPA        [~]   CMPI [~]   CMPM [ ]
+///    CLR       [~]   CMP       [~]   CMPA        [~]   CMPI [~]   CMPM [ ]
 ///    CMP2      [ ]   DIVS/DIVU [~]   DIVSL/DIVUL [ ]   EXT  [~]   EXTB [ ]
-///    MULS/MULU [~]   NEG       [~]   NEGX        [~]   SUB  [~]   SUBA [~]
-///    SUBI      [~]   SUBQ      [ ]   SUBX        [~]
+///    MULS/MULU [~]   NEG       [~]   NEGX        [~]   NOT  [~]   SUB  [~]
+///    SUBA      [~]   SUBI      [~]   SUBQ        [ ]   SUBX [~]
 ///
 ///  Map:
 ///
@@ -148,7 +148,7 @@ class MxBiArOp_R_RI<string MN, SDNode NODE, MxType TYPE, bits<4> CMD>
              [(set TYPE.VT:$dst, CCR, (NODE TYPE.VT:$src, TYPE.IPat:$opd))]> {
   let Inst = (ascend
     (descend 0b0000, CMD,
-             !cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+             !cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
              // The destination cannot be address register, so it's always
              // the MODE for data register direct mode.
              /*MODE*/0b000,
@@ -181,7 +181,7 @@ class MxBiArOp_MI<string MN, MxType TYPE,
              MN#"."#TYPE.Prefix#"\t$opd, $dst", []> {
   let Inst = (ascend
     (descend 0b0000, CMD,
-             !cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+             !cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
              DST_ENC.EA),
     // Source (i.e. immediate value) encoding
     MxEncAddrMode_i<"opd", TYPE.Size>.Supplement,
@@ -293,6 +293,8 @@ multiclass MxBiArOp_AF<string MN, SDNode NODE, bits<4> CMD> {
                                   CMD, MxEncAddrMode_p<"opd">>;
   def NAME#"32aj" : MxBiArOp_R_RM<MN, NODE, MxType32a, MxType32.JOp, MxType32.JPat,
                                   CMD, MxEncAddrMode_j<"opd">>;
+  def NAME#"32ab" : MxBiArOp_R_RM<MN, NODE, MxType32a, MxType32.BOp, MxType32.BPat,
+                                  CMD, MxEncAddrMode_abs<"opd", true>>;
   def NAME#"32ai" : MxBiArOp_R_RI_xEA<MN, NODE, MxType32a, CMD>;
 
   def NAME#"32ar" : MxBiArOp_R_RR_xEA<MN, NODE, MxType32a, MxType32r, CMD>;
@@ -310,6 +312,12 @@ defm ADD : MxBiArOp_AF<"adda", MxAdd, 0xD>;
 defm SUB : MxBiArOp_DF<"sub",  MxSub, 0, 0x9, 0x4>;
 defm SUB : MxBiArOp_AF<"suba", MxSub, 0x9>;
 
+// This pattern is used to enable the instruction selector to select ADD32ab
+// for global values that are allocated in thread-local storage, i.e.:
+//   t8: i32 = ISD::ADD GLOBAL_OFFSET_TABLE, TargetGlobalTLSAddress:i32<ptr @myvar>
+//     ====>
+//   t8: i32,i8 = ADD32ab GLOBAL_OFFSET_TABLE, TargetGlobalTLSAddress:i32<ptr @myvar>
+def : Pat<(add MxARD32:$src, tglobaltlsaddr:$opd), (ADD32ab MxARD32:$src, MxAL32:$opd)>;
 
 let Uses = [CCR], Defs = [CCR] in {
 let Constraints = "$src = $dst" in {
@@ -409,7 +417,7 @@ class MxCmp_RI<MxType TYPE>
              [(set CCR, (MxCmp TYPE.IPat:$imm, TYPE.VT:$reg))]> {
   let Inst = (ascend
     (descend 0b00001100,
-             !cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+             !cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
              // The destination cannot be address register, so it's always
              // the MODE for data register direct mode.
              /*MODE*/0b000,
@@ -428,7 +436,7 @@ class MxCmp_MI<MxType TYPE, MxOperand MEMOpd, ComplexPattern MEMPat,
              [(set CCR, (MxCmp TYPE.IPat:$imm, (load MEMPat:$mem)))]> {
   let Inst = (ascend
     (descend 0b00001100,
-             !cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+             !cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
              MEM_ENC.EA),
     // Source (i.e. immediate value) encoding
     MxEncAddrMode_i<"imm", TYPE.Size>.Supplement,
@@ -446,7 +454,7 @@ class MxCmp_BI<MxType TYPE>
   defvar AbsEncoding = MxEncAddrMode_abs<"abs", true>;
   let Inst = (ascend
     (descend 0b00001100,
-             !cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+             !cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
              AbsEncoding.EA),
     // Source (i.e. immediate value) encoding
     MxEncAddrMode_i<"imm", TYPE.Size>.Supplement,
@@ -553,7 +561,7 @@ def EXT32 : MxExt<MxType32d, MxType16d>;
 def : Pat<(sext_inreg i16:$src, i8),  (EXT16 $src)>;
 def : Pat<(sext_inreg i32:$src, i16), (EXT32 $src)>;
 def : Pat<(sext_inreg i32:$src, i8),
-          (EXT32 (MOVXd32d16 (EXT16 (EXTRACT_SUBREG $src, MxSubRegIndex16Lo))))>;
+          (EXT32 (MOVXr32r16 (EXT16 (EXTRACT_SUBREG $src, MxSubRegIndex16Lo))))>;
 
 
 //===----------------------------------------------------------------------===//
@@ -581,6 +589,23 @@ class MxDiMuOp_DD<string MN, bits<4> CMD, bit SIGNED = false,
   );
 }
 
+// $dreg <- $dreg op $dreg
+class MxDiMuOp_DD_Long<string MN, SDNode NODE, bits<10> CMD, bit SIGNED = false>
+    : MxInst<(outs MxDRD32:$dst), (ins MxDRD32:$src, MxDRD32:$opd), MN#"\t$opd, $dst",
+             [(set i32:$dst, CCR, (NODE i32:$src, i32:$opd))]> {
+  let Inst = (ascend
+    (descend CMD,
+      /*MODE*/0b000, /*REGISTER*/(operand "$opd", 3)),
+    (descend 0b0,
+      // REGISTER
+      (operand "$dst", 3),
+      !if(SIGNED, 0b1, 0b0),
+      /*SIZE*/0b0, 0b0000000,
+      // Dr REGISTER
+      0b000)
+  );
+}
+
 // $reg <- $reg op $imm
 class MxDiMuOp_DI<string MN, bits<4> CMD, bit SIGNED = false,
                   MxOperand DST, MxOperand OPD>
@@ -598,11 +623,9 @@ class MxDiMuOp_DI<string MN, bits<4> CMD, bit SIGNED = false,
 } // let Constraints
 } // Defs = [CCR]
 
-multiclass MxDiMuOp<string MN, bits<4> CMD, bit isComm = 0> {
-  let isCommutable = isComm in {
-    def "S"#NAME#"d32d16" : MxDiMuOp_DD<MN#"s", CMD, /*SIGNED*/true, MxDRD32, MxDRD16>;
-    def "U"#NAME#"d32d16" : MxDiMuOp_DD<MN#"u", CMD, /*SIGNED*/false, MxDRD32, MxDRD16>;
-  }
+multiclass MxDiMuOp<string MN, bits<4> CMD> {
+  def "S"#NAME#"d32d16" : MxDiMuOp_DD<MN#"s", CMD, /*SIGNED*/true, MxDRD32, MxDRD16>;
+  def "U"#NAME#"d32d16" : MxDiMuOp_DD<MN#"u", CMD, /*SIGNED*/false, MxDRD32, MxDRD16>;
 
   def "S"#NAME#"d32i16" : MxDiMuOp_DI<MN#"s", CMD, /*SIGNED*/true, MxDRD32, Mxi16imm>;
   def "U"#NAME#"d32i16" : MxDiMuOp_DI<MN#"u", CMD, /*SIGNED*/false, MxDRD32, Mxi16imm>;
@@ -610,11 +633,17 @@ multiclass MxDiMuOp<string MN, bits<4> CMD, bit isComm = 0> {
 
 defm DIV : MxDiMuOp<"div", 0x8>;
 
+def SDIVd32d32 : MxDiMuOp_DD_Long<"divs.l", sdiv, 0x131, /*SIGNED*/true>;
+def UDIVd32d32 : MxDiMuOp_DD_Long<"divu.l", udiv, 0x131, /*SIGNED*/false>;
+
 // This is used to cast immediates to 16-bits for operations which don't
 // support smaller immediate sizes.
 def as_i16imm : SDNodeXForm<imm, [{
   return CurDAG->getTargetConstant(N->getSExtValue(), SDLoc(N), MVT::i16);
 }]>;
+
+// M68k divs/divu outputs the quotient in the lower 16 bits and the remainder
+// in the upper 16 bits of the register.
 
 // RR i8
 def : Pat<(sdiv i8:$dst, i8:$opd),
@@ -629,117 +658,121 @@ def : Pat<(udiv i8:$dst, i8:$opd),
 
 def : Pat<(srem i8:$dst, i8:$opd),
           (EXTRACT_SUBREG
-            (ASR32di (ASR32di (SDIVd32d16 (MOVSXd32d8 $dst), (MOVSXd16d8 $opd)), 8), 8),
+            (SWAP (SDIVd32d16 (MOVSXd32d8 $dst), (MOVSXd16d8 $opd))),
              MxSubRegIndex8Lo)>;
 
 def : Pat<(urem i8:$dst, i8:$opd),
           (EXTRACT_SUBREG
-            (LSR32di (LSR32di (UDIVd32d16 (MOVZXd32d8 $dst), (MOVZXd16d8 $opd)), 8), 8),
+            (SWAP (UDIVd32d16 (MOVZXd32d8 $dst), (MOVZXd16d8 $opd))),
              MxSubRegIndex8Lo)>;
 
 // RR i16
 def : Pat<(sdiv i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (SDIVd32d16 (MOVSXd32d16 $dst), $opd),
+            (SDIVd32d16 (MOVSXr32r16 $dst), $opd),
              MxSubRegIndex16Lo)>;
 
 def : Pat<(udiv i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (UDIVd32d16 (MOVZXd32d16 $dst), $opd),
+            (UDIVd32d16 (MOVZXd32r16 $dst), $opd),
              MxSubRegIndex16Lo)>;
 
 def : Pat<(srem i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (ASR32di (ASR32di (SDIVd32d16 (MOVSXd32d16 $dst), $opd), 8), 8),
+            (SWAP (SDIVd32d16 (MOVSXr32r16 $dst), $opd)),
              MxSubRegIndex16Lo)>;
 
 def : Pat<(urem i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (LSR32di (LSR32di (UDIVd32d16 (MOVZXd32d16 $dst), $opd), 8), 8),
+            (SWAP (UDIVd32d16 (MOVZXd32r16 $dst), $opd)),
              MxSubRegIndex16Lo)>;
 
-
 // RI i8
-def : Pat<(sdiv i8:$dst, MximmSExt8:$opd),
+def : Pat<(sdiv i8:$dst, Mxi8immSExt8:$opd),
           (EXTRACT_SUBREG
             (SDIVd32i16 (MOVSXd32d8 $dst), (as_i16imm $opd)),
              MxSubRegIndex8Lo)>;
 
-def : Pat<(udiv i8:$dst, MximmSExt8:$opd),
+def : Pat<(udiv i8:$dst, Mxi8immSExt8:$opd),
           (EXTRACT_SUBREG
             (UDIVd32i16 (MOVZXd32d8 $dst), (as_i16imm $opd)),
              MxSubRegIndex8Lo)>;
 
-def : Pat<(srem i8:$dst, MximmSExt8:$opd),
+def : Pat<(srem i8:$dst, Mxi8immSExt8:$opd),
           (EXTRACT_SUBREG
-            (ASR32di (ASR32di (SDIVd32i16 (MOVSXd32d8 $dst), (as_i16imm $opd)), 8), 8),
+            (SWAP (SDIVd32i16 (MOVSXd32d8 $dst), (as_i16imm $opd))),
              MxSubRegIndex8Lo)>;
 
-def : Pat<(urem i8:$dst, MximmSExt8:$opd),
+def : Pat<(urem i8:$dst, Mxi8immSExt8:$opd),
           (EXTRACT_SUBREG
-            (LSR32di (LSR32di (UDIVd32i16 (MOVZXd32d8 $dst), (as_i16imm $opd)), 8), 8),
+            (SWAP (UDIVd32i16 (MOVZXd32d8 $dst), (as_i16imm $opd))),
              MxSubRegIndex8Lo)>;
 
 // RI i16
-def : Pat<(sdiv i16:$dst, MximmSExt16:$opd),
+def : Pat<(sdiv i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (SDIVd32i16 (MOVSXd32d16 $dst), imm:$opd),
+            (SDIVd32i16 (MOVSXr32r16 $dst), imm:$opd),
              MxSubRegIndex16Lo)>;
 
-def : Pat<(udiv i16:$dst, MximmSExt16:$opd),
+def : Pat<(udiv i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (UDIVd32i16 (MOVZXd32d16 $dst), imm:$opd),
+            (UDIVd32i16 (MOVZXd32r16 $dst), imm:$opd),
              MxSubRegIndex16Lo)>;
 
-def : Pat<(srem i16:$dst, MximmSExt16:$opd),
+def : Pat<(srem i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (ASR32di (ASR32di (SDIVd32i16 (MOVSXd32d16 $dst), imm:$opd), 8), 8),
+            (SWAP (SDIVd32i16 (MOVSXr32r16 $dst), imm:$opd)),
              MxSubRegIndex16Lo)>;
 
-def : Pat<(urem i16:$dst, MximmSExt16:$opd),
+def : Pat<(urem i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (LSR32di (LSR32di (UDIVd32i16 (MOVZXd32d16 $dst), imm:$opd), 8), 8),
+            (SWAP (UDIVd32i16 (MOVZXd32r16 $dst), imm:$opd)),
              MxSubRegIndex16Lo)>;
 
 
-defm MUL : MxDiMuOp<"mul", 0xC, 1>;
+defm MUL : MxDiMuOp<"mul", 0xC>;
+
+def SMULd32d32 : MxDiMuOp_DD_Long<"muls.l", MxSMul, 0x130, /*SIGNED*/true>;
+def UMULd32d32 : MxDiMuOp_DD_Long<"mulu.l", MxUMul, 0x130, /*SIGNED*/false>;
 
 // RR
 def : Pat<(mul i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (SMULd32d16 (MOVXd32d16 $dst), $opd),
+            (SMULd32d16 (MOVXr32r16 $dst), $opd),
              MxSubRegIndex16Lo)>;
 
 def : Pat<(mulhs i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (ASR32di (ASR32di (SMULd32d16 (MOVXd32d16 $dst), $opd), 8), 8),
+            (SWAP (SMULd32d16 (MOVXr32r16 $dst), $opd)),
              MxSubRegIndex16Lo)>;
 
 def : Pat<(mulhu i16:$dst, i16:$opd),
           (EXTRACT_SUBREG
-            (LSR32di (LSR32di (UMULd32d16 (MOVXd32d16 $dst), $opd), 8), 8),
+            (SWAP (UMULd32d16 (MOVXr32r16 $dst), $opd)),
              MxSubRegIndex16Lo)>;
+
+def : Pat<(mul i32:$dst, i32:$opd), (SMULd32d32 $dst, $opd)>;
 
 
 // RI
-def : Pat<(mul i16:$dst, MximmSExt16:$opd),
+def : Pat<(mul i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (SMULd32i16 (MOVXd32d16 $dst), imm:$opd),
+            (SMULd32i16 (MOVXr32r16 $dst), imm:$opd),
              MxSubRegIndex16Lo)>;
 
-def : Pat<(mulhs i16:$dst, MximmSExt16:$opd),
+def : Pat<(mulhs i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (ASR32di (ASR32di (SMULd32i16 (MOVXd32d16 $dst), imm:$opd), 8), 8),
+            (SWAP (SMULd32i16 (MOVXr32r16 $dst), imm:$opd)),
              MxSubRegIndex16Lo)>;
 
-def : Pat<(mulhu i16:$dst, MximmSExt16:$opd),
+def : Pat<(mulhu i16:$dst, Mxi16immSExt16:$opd),
           (EXTRACT_SUBREG
-            (LSR32di (LSR32di (UMULd32i16 (MOVXd32d16 $dst), imm:$opd), 8), 8),
+            (SWAP (UMULd32i16 (MOVXr32r16 $dst), imm:$opd)),
              MxSubRegIndex16Lo)>;
 
 
 //===----------------------------------------------------------------------===//
-// NEG/NEGX
+// NEG/NEGX/NOT
 //===----------------------------------------------------------------------===//
 
 /// ------------+------------+------+---------+---------
@@ -756,7 +789,7 @@ class MxNeg_D<MxType TYPE>
              "neg."#TYPE.Prefix#"\t$dst",
              [(set TYPE.VT:$dst, (ineg TYPE.VT:$src))]> {
   let Inst = (descend 0b01000100,
-    /*SIZE*/!cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
     //MODE without last bit
     0b00,
     //REGISTER prefixed by D/A bit
@@ -770,7 +803,7 @@ class MxNegX_D<MxType TYPE>
              "negx."#TYPE.Prefix#"\t$dst",
              [(set TYPE.VT:$dst, (MxSubX 0, TYPE.VT:$src, CCR))]> {
   let Inst = (descend 0b01000000,
-    /*SIZE*/!cast<MxNewEncSize>("MxNewEncSize"#TYPE.Size).Value,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
     //MODE without last bit
     0b00,
     //REGISTER prefixed by D/A bit
@@ -779,17 +812,37 @@ class MxNegX_D<MxType TYPE>
 }
 }
 
+class MxNot_D<MxType TYPE>
+    : MxInst<(outs TYPE.ROp:$dst), (ins TYPE.ROp:$src),
+             "not."#TYPE.Prefix#"\t$dst",
+             [(set TYPE.VT:$dst, (not TYPE.VT:$src))]> {
+  let Inst = (descend 0b01000110,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
+    //MODE without last bit
+    0b00,
+    //REGISTER prefixed by D/A bit
+    (operand "$dst", 4)
+  );
+}
+
 } // let Constraints
 } // let Defs = [CCR]
 
 foreach S = [8, 16, 32] in {
   def NEG#S#d  : MxNeg_D<!cast<MxType>("MxType"#S#"d")>;
   def NEGX#S#d : MxNegX_D<!cast<MxType>("MxType"#S#"d")>;
+  def NOT#S#d  : MxNot_D<!cast<MxType>("MxType"#S#"d")>;
 }
 
 def : Pat<(MxSub 0, i8 :$src), (NEG8d  MxDRD8 :$src)>;
 def : Pat<(MxSub 0, i16:$src), (NEG16d MxDRD16:$src)>;
 def : Pat<(MxSub 0, i32:$src), (NEG32d MxDRD32:$src)>;
+// SExt of i1 values.
+// Although we specify `ZeroOrNegativeOneBooleanContent` for boolean content,
+// we're still adding an AND here as we don't know the origin of the i1 value.
+def : Pat<(sext_inreg i8:$src,  i1), (NEG8d  (AND8di  MxDRD8:$src,  1))>;
+def : Pat<(sext_inreg i16:$src, i1), (NEG16d (AND16di MxDRD16:$src, 1))>;
+def : Pat<(sext_inreg i32:$src, i1), (NEG32d (AND32di MxDRD32:$src, 1))>;
 
 //===----------------------------------------------------------------------===//
 // no-CCR Patterns
@@ -837,16 +890,16 @@ foreach N = ["add", "addc"] in {
             (ADD32df MxDRD32:$src, MxType32.FOp:$opd)>;
 
   // add reg, imm
-  def : Pat<(!cast<SDNode>(N) i8: $src, MximmSExt8:$opd),
+  def : Pat<(!cast<SDNode>(N) i8: $src, Mxi8immSExt8:$opd),
             (ADD8di  MxDRD8 :$src, imm:$opd)>;
-  def : Pat<(!cast<SDNode>(N) i16:$src, MximmSExt16:$opd),
+  def : Pat<(!cast<SDNode>(N) i16:$src, Mxi16immSExt16:$opd),
             (ADD16di MxDRD16:$src, imm:$opd)>;
 
   // LEAp is more complex and thus will be selected over normal ADD32ri but it cannot
   // be used with data registers, here by adding complexity to a simple ADD32ri insts
   // we make sure it will be selected over LEAp
   let AddedComplexity = 15 in {
-  def : Pat<(!cast<SDNode>(N) i32:$src, MximmSExt32:$opd),
+  def : Pat<(!cast<SDNode>(N) i32:$src, Mxi32immSExt32:$opd),
             (ADD32di MxDRD32:$src, imm:$opd)>;
   } // AddedComplexity = 15
 
@@ -905,11 +958,11 @@ foreach N = ["sub", "subc"] in {
             (SUB32df MxDRD32:$src, MxType32.FOp:$opd)>;
 
   // sub reg, imm
-  def : Pat<(!cast<SDNode>(N) i8 :$src, MximmSExt8 :$opd),
+  def : Pat<(!cast<SDNode>(N) i8 :$src, Mxi8immSExt8 :$opd),
             (SUB8di  MxDRD8 :$src, imm:$opd)>;
-  def : Pat<(!cast<SDNode>(N) i16:$src, MximmSExt16:$opd),
+  def : Pat<(!cast<SDNode>(N) i16:$src, Mxi16immSExt16:$opd),
             (SUB16di MxDRD16:$src, imm:$opd)>;
-  def : Pat<(!cast<SDNode>(N) i32:$src, MximmSExt32:$opd),
+  def : Pat<(!cast<SDNode>(N) i32:$src, Mxi32immSExt32:$opd),
             (SUB32di MxDRD32:$src, imm:$opd)>;
 
   // sub imm, (An)
@@ -938,14 +991,218 @@ multiclass BitwisePat<string INST, SDNode OP> {
   def : Pat<(OP i32:$src, i32:$opd),
             (!cast<MxInst>(INST#"32dd") MxDRD32:$src, MxDRD32:$opd)>;
   // op reg, imm
-  def : Pat<(OP i8: $src, MximmSExt8 :$opd),
+  def : Pat<(OP i8: $src, Mxi8immSExt8 :$opd),
             (!cast<MxInst>(INST#"8di")  MxDRD8 :$src, imm:$opd)>;
-  def : Pat<(OP i16:$src, MximmSExt16:$opd),
+  def : Pat<(OP i16:$src, Mxi16immSExt16:$opd),
             (!cast<MxInst>(INST#"16di") MxDRD16:$src, imm:$opd)>;
-  def : Pat<(OP i32:$src, MximmSExt32:$opd),
+  def : Pat<(OP i32:$src, Mxi32immSExt32:$opd),
             (!cast<MxInst>(INST#"32di") MxDRD32:$src, imm:$opd)>;
 }
 
 defm : BitwisePat<"AND", and>;
 defm : BitwisePat<"OR",  or>;
 defm : BitwisePat<"XOR", xor>;
+
+//===----------------------------------------------------------------------===//
+// Floating point arithmetic instruction
+//===----------------------------------------------------------------------===//
+
+let Defs = [FPS] in
+class MxFArithBase_FF<dag outs, dag ins, string asm, string rounding,
+                      list<dag> patterns>
+    : MxInst<outs, ins, asm, patterns> {
+  let Uses = !if(!eq(rounding, ""), [FPC], []);
+
+  let Predicates = !if(!eq(rounding, ""), [AtLeastM68881], [AtLeastM68040]);
+}
+
+class MxFPOpModeSelector<string rounding, bits<7> single, bits<7> double,
+                         bits<7> extended> {
+  bits<7> Mode = !cond(!eq(rounding, "s"): single,
+                       !eq(rounding, "d"): double,
+                       !eq(rounding, ""): extended);
+}
+
+//===----------------------------------------------------------------------===//
+// Unary floating point instruction
+//===----------------------------------------------------------------------===//
+
+class MxFUnary_FF<MxOpBundle Opnd, string rounding,
+                  string mnemonic, bits<7> opmode>
+    : MxFArithBase_FF<(outs Opnd.Op:$dst), (ins Opnd.Op:$src),
+                    "f"#rounding#mnemonic#".x\t$src, $dst", rounding, [(null_frag)]> {
+  let Inst = (ascend
+  (descend 0b1111,
+    /*COPROCESSOR ID*/0b001,
+    0b000,
+    /*MODE+REGISTER*/0b000000),
+  (descend 0b0, /* R/M */ 0b0, 0b0,
+    /*SOURCE SPECIFIER*/
+    (operand "$src", 3),
+    /*DESTINATION*/
+    (operand "$dst", 3),
+    /*OPMODE*/
+    opmode)
+  );
+}
+
+multiclass MxFUnaryOp<string mnemonic, bits<7> single, bits<7> double,
+                      bits<7> extended> {
+  foreach rounding = ["", "s", "d"] in {
+    defvar opmode = MxFPOpModeSelector<rounding, single, double, extended>.Mode;
+
+    def F # !toupper(rounding) # !substr(NAME, 1) # "80fp_fp"
+      : MxFUnary_FF<MxOp80AddrMode_fpr, rounding, mnemonic, opmode>;
+  
+    let isCodeGenOnly = 1 in
+    foreach size = [32, 64] in
+      def F # !toupper(rounding) # !substr(NAME, 1) # size # "fp_fp"
+        : MxFUnary_FF<!cast<MxOpBundle>("MxOp"#size#"AddrMode_fpr"),
+                      rounding, mnemonic, opmode>;
+  }
+}
+
+defm FABS : MxFUnaryOp<"abs", 0b1011000, 0b1011100, 0b0011000>;
+defm FNEG : MxFUnaryOp<"neg", 0b1011010, 0b1011110, 0b0011010>;
+
+//===----------------------------------------------------------------------===//
+// Binary floating point instruction
+//===----------------------------------------------------------------------===//
+
+let Constraints = "$src = $dst" in
+class MxFBinary_FF<MxOpBundle Opnd, string rounding,
+                   string mnemonic, bits<7> opmode>
+    : MxFArithBase_FF<(outs Opnd.Op:$dst), (ins Opnd.Op:$src, Opnd.Op:$opd),
+                      "f"#rounding#mnemonic#".x\t$opd, $dst", rounding, [(null_frag)]> {
+  let Inst = (ascend
+  (descend 0b1111,
+    /*COPROCESSOR ID*/0b001,
+    0b000,
+    /*MODE+REGISTER*/0b000000),
+  (descend 0b0, /* R/M */ 0b0, 0b0,
+    /*SOURCE SPECIFIER*/
+    (operand "$opd", 3),
+    /*DESTINATION*/
+    (operand "$dst", 3),
+    /*OPMODE*/
+    opmode)
+  );
+}
+
+multiclass MxFBinaryOp<string mnemonic, bits<7> single, bits<7> double,
+                      bits<7> extended> {
+  foreach rounding = ["", "s", "d"] in {
+    defvar opmode = MxFPOpModeSelector<rounding, single, double, extended>.Mode;
+
+    def F # !toupper(rounding) # !substr(NAME, 1) # "80fp_fp"
+      : MxFBinary_FF<MxOp80AddrMode_fpr, rounding, mnemonic, opmode>;
+
+    let isCodeGenOnly = 1 in
+    foreach size = [32, 64] in
+      def F # !toupper(rounding) # !substr(NAME, 1) # size # "fp_fp"
+        : MxFBinary_FF<!cast<MxOpBundle>("MxOp"#size#"AddrMode_fpr"),
+                        rounding, mnemonic, opmode>;
+  }
+}
+
+defm FADD : MxFBinaryOp<"add", 0b1100010, 0b1100110, 0b0100010>;
+defm FSUB : MxFBinaryOp<"sub", 0b1101000, 0b1101100, 0b0101000>;
+defm FMUL : MxFBinaryOp<"mul", 0b1100011, 0b1100111, 0b0100011>;
+defm FDIV : MxFBinaryOp<"div", 0b1100000, 0b1100100, 0b0100000>;
+
+
+//===----------------------------------------------------------------------===//
+// CLR
+//===----------------------------------------------------------------------===//
+
+/// ---------------------------------------------------
+///  F  E  D  C  B  A  9  8 | 7  6 | 5  4  3 | 2  1  0
+/// ---------------------------------------------------
+///                         |      | EFFECTIVE ADDRESS
+///  0  1  0  0  0  0  1  0 | SIZE |   MODE  |   REG
+/// ---------------------------------------------------
+
+let Defs = [CCR] in {
+
+// No pattern, this instead gets used when expanding the MOVI pseudo.
+class MxClr_D<MxType TYPE>
+    : MxInst<(outs TYPE.ROp:$dst), (ins),
+             "clr."#TYPE.Prefix#"\t$dst", []> {
+  let Inst = (descend 0b01000010,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
+    //MODE without last bit
+    0b00,
+    //REGISTER prefixed by D/A bit
+    (operand "$dst", 4)
+  );
+}
+
+// Identical to the above, but takes a register input for use in DAG selection
+let isCodeGenOnly = 1, Constraints = "$src = $dst" in
+class MxClr_DD<MxType TYPE>
+    : MxInst<(outs TYPE.ROp:$dst), (ins TYPE.ROp:$src),
+             "clr."#TYPE.Prefix#"\t$dst", []> {
+  let Inst = (descend 0b01000010,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
+    //MODE without last bit
+    0b00,
+    //REGISTER prefixed by D/A bit
+    (operand "$dst", 4)
+  );
+}
+
+// NOTE: On M68000 specifically, the memory is (pointlessly) read before
+// written. This isn't modeled via mayLoad, because the 'store' in the pattern
+// is enough to implicitly indicate side effects for all practical purposes.
+class MxClr_M<MxType TYPE, MxOpBundle DST, MxEncMemOp DST_ENC>
+    : MxInst<(outs), (ins DST.Op:$dst),
+             "clr."#TYPE.Prefix#"\t$dst",
+             [(store (TYPE.VT 0), DST.Pat:$dst)]> {
+  let Inst = (ascend
+    (descend 0b01000010,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
+    DST_ENC.EA), DST_ENC.Supplement
+  );
+}
+
+// Mirrors MxCmp_BI for abs.L pattern matching
+class MxClr_B<MxType TYPE>
+    : MxInst<(outs), (ins MxAL32:$dst),
+             "clr."#TYPE.Prefix#"\t$dst",
+             [(store (TYPE.VT 0), (i32 (MxWrapper tglobaladdr:$dst)))]> {
+  defvar AbsEncoding = MxEncAddrMode_abs<"dst", true>;
+  let Inst = (ascend
+    (descend 0b01000010,
+    /*SIZE*/!cast<MxEncSize>("MxEncSize"#TYPE.Size).Value,
+    AbsEncoding.EA), AbsEncoding.Supplement
+  );
+}
+} // let Defs = [CCR]
+
+foreach S = [8, 16, 32] in {
+  defvar DTYPE = !cast<MxType>("MxType"#S#"d");
+  def CLR#S#d : MxClr_D<DTYPE>;
+  def CLR#S#dd : MxClr_DD<DTYPE>;
+  def CLR#S#b : MxClr_B<DTYPE>;
+
+  defvar MTYPE = !cast<MxType>("MxType"#S);
+  def CLR#S#j : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_j"),
+                        MxEncAddrMode_j<"dst">>;
+  def CLR#S#o : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_o"),
+                        MxEncAddrMode_o<"dst">>;
+  def CLR#S#e : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_e"),
+                        MxEncAddrMode_e<"dst">>;
+  def CLR#S#p : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_p"),
+                        MxEncAddrMode_p<"dst">>;
+  def CLR#S#f : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_f"),
+                        MxEncAddrMode_f<"dst">>;
+  def CLR#S#q : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_q"),
+                        MxEncAddrMode_q<"dst">>;
+  def CLR#S#k : MxClr_M<MTYPE, !cast<MxOpBundle>("MxOp"#S#"AddrMode_k"),
+                        MxEncAddrMode_k<"dst">>;
+}
+
+// Left shift 16 bits lowers to: swap dn -> clr.w dn
+def : Pat<(shl i32:$src, (i32 16)),
+  (SUBREG_TO_REG (CLR16dd (EXTRACT_SUBREG (SWAP MxDRD32:$src),
+  MxSubRegIndex16Lo)), MxSubRegIndex16Lo)>;

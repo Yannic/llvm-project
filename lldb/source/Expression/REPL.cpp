@@ -9,10 +9,10 @@
 #include "lldb/Expression/REPL.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/StreamFile.h"
 #include "lldb/Expression/ExpressionVariable.h"
 #include "lldb/Expression/UserExpression.h"
 #include "lldb/Host/HostInfo.h"
+#include "lldb/Host/StreamFile.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Target/Thread.h"
@@ -22,7 +22,9 @@
 
 using namespace lldb_private;
 
-REPL::REPL(LLVMCastKind kind, Target &target) : m_target(target), m_kind(kind) {
+char REPL::ID;
+
+REPL::REPL(Target &target) : m_target(target) {
   // Make sure all option values have sane defaults
   Debugger &debugger = m_target.GetDebugger();
   debugger.SetShowProgress(false);
@@ -36,33 +38,28 @@ REPL::~REPL() = default;
 lldb::REPLSP REPL::Create(Status &err, lldb::LanguageType language,
                           Debugger *debugger, Target *target,
                           const char *repl_options) {
-  uint32_t idx = 0;
   lldb::REPLSP ret;
 
-  while (REPLCreateInstance create_instance =
-             PluginManager::GetREPLCreateCallbackAtIndex(idx)) {
-    LanguageSet supported_languages =
-        PluginManager::GetREPLSupportedLanguagesAtIndex(idx++);
-    if (!supported_languages[language])
+  for (auto &cbs : PluginManager::GetREPLCallbacks()) {
+    if (!cbs.supported_languages[language])
       continue;
-    ret = (*create_instance)(err, language, debugger, target, repl_options);
-    if (ret) {
+    ret = (*cbs.create_callback)(err, language, debugger, target, repl_options);
+    if (ret)
       break;
-    }
   }
 
   return ret;
 }
 
 std::string REPL::GetSourcePath() {
-  ConstString file_basename = GetSourceFileBasename();
+  llvm::StringRef file_basename = GetSourceFileBasename();
   FileSpec tmpdir_file_spec = HostInfo::GetProcessTempDir();
   if (tmpdir_file_spec) {
     tmpdir_file_spec.SetFilename(file_basename);
     m_repl_source_path = tmpdir_file_spec.GetPath();
   } else {
     tmpdir_file_spec = FileSpec("/tmp");
-    tmpdir_file_spec.AppendPathComponent(file_basename.GetStringRef());
+    tmpdir_file_spec.AppendPathComponent(file_basename);
   }
 
   return tmpdir_file_spec.GetPath();
@@ -101,8 +98,8 @@ void REPL::IOHandlerActivated(IOHandler &io_handler, bool interactive) {
   lldb::ProcessSP process_sp = m_target.GetProcessSP();
   if (process_sp && process_sp->IsAlive())
     return;
-  lldb::StreamFileSP error_sp(io_handler.GetErrorStreamFileSP());
-  error_sp->Printf("REPL requires a running target process.\n");
+  LockedStreamFile locked_stream = io_handler.GetErrorStreamFileSP()->Lock();
+  locked_stream.PutCString("REPL requires a running target process.\n");
   io_handler.SetIsDone(true);
 }
 
@@ -115,10 +112,11 @@ const char *REPL::IOHandlerGetFixIndentationCharacters() {
   return (m_enable_auto_indent ? GetAutoIndentCharacters() : nullptr);
 }
 
-ConstString REPL::IOHandlerGetControlSequence(char ch) {
+llvm::StringRef REPL::IOHandlerGetControlSequence(char ch) {
+  static constexpr llvm::StringLiteral control_sequence(":quit\n");
   if (ch == 'd')
-    return ConstString(":quit\n");
-  return ConstString();
+    return control_sequence;
+  return {};
 }
 
 const char *REPL::IOHandlerGetCommandPrefix() { return ":"; }
@@ -186,29 +184,30 @@ int REPL::IOHandlerFixIndentation(IOHandler &io_handler,
 }
 
 static bool ReadCode(const std::string &path, std::string &code,
-                     lldb::StreamFileSP &error_sp) {
+                     lldb::LockableStreamFileSP &error_stream_sp) {
   auto &fs = FileSystem::Instance();
   llvm::Twine pathTwine(path);
   if (!fs.Exists(pathTwine)) {
-    error_sp->Printf("no such file at path '%s'\n", path.c_str());
+    error_stream_sp->Lock().Printf("no such file at path '%s'\n", path.c_str());
     return false;
   }
   if (!fs.Readable(pathTwine)) {
-    error_sp->Printf("could not read file at path '%s'\n", path.c_str());
+    error_stream_sp->Lock().Printf("could not read file at path '%s'\n",
+                                   path.c_str());
     return false;
   }
   const size_t file_size = fs.GetByteSize(pathTwine);
   const size_t max_size = code.max_size();
   if (file_size > max_size) {
-    error_sp->Printf("file at path '%s' too large: "
-                     "file_size = %zu, max_size = %zu\n",
-                     path.c_str(), file_size, max_size);
+    error_stream_sp->Lock().Printf("file at path '%s' too large: "
+                                   "file_size = %zu, max_size = %zu\n",
+                                   path.c_str(), file_size, max_size);
     return false;
   }
   auto data_sp = fs.CreateDataBuffer(pathTwine);
   if (data_sp == nullptr) {
-    error_sp->Printf("could not create buffer for file at path '%s'\n",
-                     path.c_str());
+    error_stream_sp->Lock().Printf(
+        "could not create buffer for file at path '%s'\n", path.c_str());
     return false;
   }
   code.assign((const char *)data_sp->GetBytes(), data_sp->GetByteSize());
@@ -216,8 +215,10 @@ static bool ReadCode(const std::string &path, std::string &code,
 }
 
 void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
-  lldb::StreamFileSP output_sp(io_handler.GetOutputStreamFileSP());
-  lldb::StreamFileSP error_sp(io_handler.GetErrorStreamFileSP());
+  lldb::LockableStreamFileSP output_stream_sp =
+      io_handler.GetOutputStreamFileSP();
+  lldb::LockableStreamFileSP error_stream_sp =
+      io_handler.GetErrorStreamFileSP();
   bool extra_line = false;
   bool did_quit = false;
 
@@ -233,7 +234,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
     ExecutionContext exe_ctx(m_target.GetProcessSP()
                                  ->GetThreadList()
                                  .GetSelectedThread()
-                                 ->GetSelectedFrame()
+                                 ->GetSelectedFrame(DoNoSelectMostRelevantFrame)
                                  .get());
 
     lldb::ProcessSP process_sp(exe_ctx.GetProcessSP());
@@ -253,8 +254,10 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
 
         // Execute the command
         CommandReturnObject result(debugger.GetUseColor());
-        result.SetImmediateOutputStream(output_sp);
-        result.SetImmediateErrorStream(error_sp);
+        result.SetImmediateOutputStream(std::make_shared<StreamFile>(
+            output_stream_sp->GetUnlockedFileSP()));
+        result.SetImmediateErrorStream(
+            std::make_shared<StreamFile>(error_stream_sp->GetUnlockedFileSP()));
         ci.HandleCommand(code.c_str(), eLazyBoolNo, result);
 
         if (saved_prompt_on_quit)
@@ -297,7 +300,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
         // User wants to read code from a file.
         // Interpret rest of line as a literal path.
         auto path = llvm::StringRef(code.substr(1)).trim().str();
-        if (!ReadCode(path, code, error_sp)) {
+        if (!ReadCode(path, code, error_stream_sp)) {
           return;
         }
       }
@@ -308,14 +311,16 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
         Thread *thread = exe_ctx.GetThreadPtr();
         if (thread && thread->UnwindInnermostExpression().Success()) {
           thread->SetSelectedFrameByIndex(0, false);
-          exe_ctx.SetFrameSP(thread->GetSelectedFrame());
+          exe_ctx.SetFrameSP(
+              thread->GetSelectedFrame(DoNoSelectMostRelevantFrame));
         }
       }
 
-      const bool colorize_err = error_sp->GetFile().GetIsTerminalWithColors();
+      const bool colorize_err =
+          error_stream_sp->Lock().GetFile().GetIsTerminalWithColors();
 
       EvaluateExpressionOptions expr_options = m_expr_options;
-      expr_options.SetCoerceToId(m_varobj_options.use_objc);
+      expr_options.SetCoerceToId(m_varobj_options.use_object_desc);
       expr_options.SetKeepInMemory(true);
       expr_options.SetUseDynamic(m_varobj_options.use_dynamic);
       expr_options.SetGenerateDebugInfo(true);
@@ -335,26 +340,26 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
 
       const char *expr_prefix = nullptr;
       lldb::ValueObjectSP result_valobj_sp;
+      lldb::ExpressionResults execution_results = UserExpression::Evaluate(
+          exe_ctx, expr_options, code.c_str(), expr_prefix, result_valobj_sp);
       Status error;
-      lldb::ExpressionResults execution_results =
-          UserExpression::Evaluate(exe_ctx, expr_options, code.c_str(),
-                                   expr_prefix, result_valobj_sp, error,
-                                   nullptr); // fixed expression
-
-      // CommandInterpreter &ci = debugger.GetCommandInterpreter();
-
-      if (process_sp && process_sp->IsAlive()) {
+      if (llvm::Error err = OnExpressionEvaluated(exe_ctx, code, expr_options,
+                                                  execution_results,
+                                                  result_valobj_sp, error)) {
+        error_stream_sp->Lock() << llvm::toString(std::move(err)) << "\n";
+      } else if (process_sp && process_sp->IsAlive()) {
         bool add_to_code = true;
         bool handled = false;
         if (result_valobj_sp) {
           lldb::Format format = m_format_options.GetFormat();
 
           if (result_valobj_sp->GetError().Success()) {
-            handled |= PrintOneVariable(debugger, output_sp, result_valobj_sp);
+            handled |=
+                PrintOneVariable(debugger, output_stream_sp, result_valobj_sp);
           } else if (result_valobj_sp->GetError().GetError() ==
                      UserExpression::kNoResult) {
             if (format != lldb::eFormatVoid && debugger.GetNotifyVoid()) {
-              error_sp->PutCString("(void)\n");
+              error_stream_sp->Lock().PutCString("(void)\n");
               handled = true;
             }
           }
@@ -367,77 +372,89 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
                 persistent_state->GetVariableAtIndex(vi);
             lldb::ValueObjectSP valobj_sp = persistent_var_sp->GetValueObject();
 
-            PrintOneVariable(debugger, output_sp, valobj_sp,
+            PrintOneVariable(debugger, output_stream_sp, valobj_sp,
                              persistent_var_sp.get());
           }
         }
 
+        bool run_command_interpreter = false;
         if (!handled) {
-          bool useColors = error_sp->GetFile().GetIsTerminalWithColors();
+          LockedStreamFile locked_error_stream = error_stream_sp->Lock();
+          bool useColors =
+              locked_error_stream.GetFile().GetIsTerminalWithColors();
           switch (execution_results) {
           case lldb::eExpressionSetupError:
           case lldb::eExpressionParseError:
             add_to_code = false;
             [[fallthrough]];
           case lldb::eExpressionDiscarded:
-            error_sp->Printf("%s\n", error.AsCString());
+            locked_error_stream.Printf("%s\n", error.AsCString());
             break;
 
           case lldb::eExpressionCompleted:
             break;
           case lldb::eExpressionInterrupted:
             if (useColors) {
-              error_sp->Printf(ANSI_ESCAPE1(ANSI_FG_COLOR_RED));
-              error_sp->Printf(ANSI_ESCAPE1(ANSI_CTRL_BOLD));
+              locked_error_stream.Printf(ANSI_ESCAPE1(ANSI_FG_COLOR_RED));
+              locked_error_stream.Printf(ANSI_ESCAPE1(ANSI_CTRL_BOLD));
             }
-            error_sp->Printf("Execution interrupted. ");
+            locked_error_stream.PutCString("Execution interrupted. ");
             if (useColors)
-              error_sp->Printf(ANSI_ESCAPE1(ANSI_CTRL_NORMAL));
-            error_sp->Printf("Enter code to recover and continue.\nEnter LLDB "
-                             "commands to investigate (type :help for "
-                             "assistance.)\n");
+              locked_error_stream.Printf(ANSI_ESCAPE1(ANSI_CTRL_NORMAL));
+            locked_error_stream.Printf(
+                "Enter code to recover and continue.\nEnter LLDB "
+                "commands to investigate (type :help for "
+                "assistance.)\n");
             break;
 
           case lldb::eExpressionHitBreakpoint:
             // Breakpoint was hit, drop into LLDB command interpreter
             if (useColors) {
-              error_sp->Printf(ANSI_ESCAPE1(ANSI_FG_COLOR_RED));
-              error_sp->Printf(ANSI_ESCAPE1(ANSI_CTRL_BOLD));
+              locked_error_stream.Printf(ANSI_ESCAPE1(ANSI_FG_COLOR_RED));
+              locked_error_stream.Printf(ANSI_ESCAPE1(ANSI_CTRL_BOLD));
             }
-            output_sp->Printf("Execution stopped at breakpoint.  ");
+            output_stream_sp->Lock().Printf(
+                "Execution stopped at breakpoint.  ");
             if (useColors)
-              error_sp->Printf(ANSI_ESCAPE1(ANSI_CTRL_NORMAL));
-            output_sp->Printf("Enter LLDB commands to investigate (type help "
-                              "for assistance.)\n");
-            {
-              lldb::IOHandlerSP io_handler_sp(ci.GetIOHandler());
-              if (io_handler_sp) {
-                io_handler_sp->SetIsDone(false);
-                debugger.RunIOHandlerAsync(ci.GetIOHandler());
-              }
-            }
+              locked_error_stream.Printf(ANSI_ESCAPE1(ANSI_CTRL_NORMAL));
+            locked_error_stream.Printf(
+                "Enter LLDB commands to investigate (type help "
+                "for assistance.)\n");
+            run_command_interpreter = true;
             break;
 
           case lldb::eExpressionTimedOut:
-            error_sp->Printf("error: timeout\n");
+            locked_error_stream.PutCString("error: timeout\n");
             if (error.AsCString())
-              error_sp->Printf("error: %s\n", error.AsCString());
+              locked_error_stream.Printf("error: %s\n", error.AsCString());
             break;
           case lldb::eExpressionResultUnavailable:
             // Shoulnd't happen???
-            error_sp->Printf("error: could not fetch result -- %s\n",
-                             error.AsCString());
+            locked_error_stream.Printf("error: could not fetch result -- %s\n",
+                                       error.AsCString());
             break;
           case lldb::eExpressionStoppedForDebug:
             // Shoulnd't happen???
-            error_sp->Printf("error: stopped for debug -- %s\n",
-                             error.AsCString());
+            locked_error_stream.Printf("error: stopped for debug -- %s\n",
+                                       error.AsCString());
             break;
           case lldb::eExpressionThreadVanished:
             // Shoulnd't happen???
-            error_sp->Printf("error: expression thread vanished -- %s\n",
-                             error.AsCString());
+            locked_error_stream.Printf(
+                "error: expression thread vanished -- %s\n", error.AsCString());
             break;
+          }
+        }
+
+        // RunIOHandlerAsync takes the IOHandler stack mutex, and
+        // Debugger::PrintAsync takes that mutex before the mutex shared by the
+        // output and error streams. Don't call RunIOHandlerAsync while holding
+        // the error stream lock.
+        if (run_command_interpreter) {
+          lldb::IOHandlerSP io_handler_sp(ci.GetIOHandler());
+          if (io_handler_sp) {
+            io_handler_sp->SetIsDone(false);
+            debugger.RunIOHandlerAsync(ci.GetIOHandler());
           }
         }
 
@@ -461,27 +478,28 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
               file.get()->Close();
             } else {
               std::string message = llvm::toString(file.takeError());
-              error_sp->Printf("error: couldn't open %s: %s\n",
-                               m_repl_source_path.c_str(), message.c_str());
+              error_stream_sp->Lock().Printf("error: couldn't open %s: %s\n",
+                                             m_repl_source_path.c_str(),
+                                             message.c_str());
             }
 
             // Now set the default file and line to the REPL source file
             m_target.GetSourceManager().SetDefaultFileAndLine(
-                FileSpec(m_repl_source_path), new_default_line);
+                std::make_shared<SupportFile>(FileSpec(m_repl_source_path)),
+                new_default_line);
           }
           static_cast<IOHandlerEditline &>(io_handler)
               .SetBaseLineNumber(m_code.GetSize() + 1);
         }
-        if (extra_line) {
-          output_sp->Printf("\n");
-        }
+        if (extra_line)
+          output_stream_sp->Lock().Printf("\n");
       }
     }
 
     // Don't complain about the REPL process going away if we are in the
     // process of quitting.
     if (!did_quit && (!process_sp || !process_sp->IsAlive())) {
-      error_sp->Printf(
+      error_stream_sp->Lock().Printf(
           "error: REPL process is no longer alive, exiting REPL\n");
       io_handler.SetIsDone(true);
     }
@@ -491,7 +509,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
 void REPL::IOHandlerComplete(IOHandler &io_handler,
                              CompletionRequest &request) {
   // Complete an LLDB command if the first character is a colon...
-  if (request.GetRawLine().startswith(":")) {
+  if (request.GetRawLine().starts_with(":")) {
     Debugger &debugger = m_target.GetDebugger();
 
     // auto complete LLDB commands
@@ -522,17 +540,15 @@ void REPL::IOHandlerComplete(IOHandler &io_handler,
   current_code.append(m_code.CopyList());
 
   IOHandlerEditline &editline = static_cast<IOHandlerEditline &>(io_handler);
-  const StringList *current_lines = editline.GetCurrentLines();
-  if (current_lines) {
-    const uint32_t current_line_idx = editline.GetCurrentLineIndex();
+  StringList current_lines = editline.GetCurrentLines();
+  const uint32_t current_line_idx = editline.GetCurrentLineIndex();
 
-    if (current_line_idx < current_lines->GetSize()) {
-      for (uint32_t i = 0; i < current_line_idx; ++i) {
-        const char *line_cstr = current_lines->GetStringAtIndex(i);
-        if (line_cstr) {
-          current_code.append("\n");
-          current_code.append(line_cstr);
-        }
+  if (current_line_idx < current_lines.GetSize()) {
+    for (uint32_t i = 0; i < current_line_idx; ++i) {
+      const char *line_cstr = current_lines.GetStringAtIndex(i);
+      if (line_cstr) {
+        current_code.append("\n");
+        current_code.append(line_cstr);
       }
     }
   }
@@ -566,13 +582,11 @@ Status REPL::RunLoop() {
 
   lldb::IOHandlerSP io_handler_sp(GetIOHandler());
 
-  FileSpec save_default_file;
-  uint32_t save_default_line = 0;
+  std::optional<SourceManager::SupportFileAndLine> default_file_line;
 
   if (!m_repl_source_path.empty()) {
     // Save the current default file and line
-    m_target.GetSourceManager().GetDefaultFileAndLine(save_default_file,
-                                                      save_default_line);
+    default_file_line = m_target.GetSourceManager().GetDefaultFileAndLine();
   }
 
   debugger.RunIOHandlerAsync(io_handler_sp);
@@ -611,8 +625,8 @@ Status REPL::RunLoop() {
   }
 
   // Restore the default file and line
-  if (save_default_file && save_default_line != 0)
-    m_target.GetSourceManager().SetDefaultFileAndLine(save_default_file,
-                                                      save_default_line);
+  if (default_file_line)
+    m_target.GetSourceManager().SetDefaultFileAndLine(
+        default_file_line->support_file_nsp, default_file_line->line);
   return error;
 }

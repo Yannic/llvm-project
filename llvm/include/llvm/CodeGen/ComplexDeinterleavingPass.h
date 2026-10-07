@@ -15,7 +15,6 @@
 #define LLVM_CODEGEN_COMPLEXDEINTERLEAVING_H
 
 #include "llvm/IR/PassManager.h"
-#include "llvm/IR/PatternMatch.h"
 
 namespace llvm {
 
@@ -23,22 +22,29 @@ class Function;
 class TargetMachine;
 
 struct ComplexDeinterleavingPass
-    : public PassInfoMixin<ComplexDeinterleavingPass> {
+    : public OptionalPassInfoMixin<ComplexDeinterleavingPass> {
 private:
-  TargetMachine *TM;
+  const TargetMachine *TM;
 
 public:
-  ComplexDeinterleavingPass(TargetMachine *TM) : TM(TM) {}
+  ComplexDeinterleavingPass(const TargetMachine &TM) : TM(&TM) {}
 
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+  LLVM_ABI PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
 
 enum class ComplexDeinterleavingOperation {
   CAdd,
   CMulPartial,
+  CDot,
   // The following 'operations' are used to represent internal states. Backends
   // are not expected to try and support these in any capacity.
-  Shuffle
+  Deinterleave,
+  Splat,
+  Symmetric,
+  ReductionPHI,
+  ReductionOperation,
+  ReductionSelect,
+  ReductionSingle
 };
 
 enum class ComplexDeinterleavingRotation {

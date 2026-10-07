@@ -13,8 +13,8 @@
 #include "Symbols.h"
 #include "Target.h"
 
-#include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
+#include "lld/Common/Filesystem.h"
 #include "lld/Common/Strings.h"
 #include "lld/Common/TargetOptionsCommandFlags.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
@@ -24,7 +24,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/ObjCARC.h"
 
 using namespace lld;
 using namespace lld::macho;
@@ -32,48 +31,54 @@ using namespace llvm;
 using namespace llvm::MachO;
 using namespace llvm::sys;
 
-// Creates an empty file to store a list of object files for final
-// linking of distributed ThinLTO.
-static std::unique_ptr<raw_fd_ostream> openFile(StringRef file) {
-  std::error_code ec;
-  auto ret =
-      std::make_unique<raw_fd_ostream>(file, ec, sys::fs::OpenFlags::OF_None);
-  if (ec) {
-    error("cannot open " + file + ": " + ec.message());
-    return nullptr;
-  }
-  return ret;
-}
-
 static std::string getThinLTOOutputFile(StringRef modulePath) {
-  return lto::getThinLTOOutputFile(
-      std::string(modulePath), std::string(config->thinLTOPrefixReplace.first),
-      std::string(config->thinLTOPrefixReplace.second));
+  return lto::getThinLTOOutputFile(modulePath, config->thinLTOPrefixReplaceOld,
+                                   config->thinLTOPrefixReplaceNew);
 }
 
 static lto::Config createConfig() {
   lto::Config c;
   c.Options = initTargetOptionsFromCodeGenFlags();
-  c.Options.EmitAddrsig = config->icfLevel == ICFLevel::safe;
+  c.Options.EmitAddrsig = config->icfLevel == ICFLevel::safe ||
+                          config->icfLevel == ICFLevel::safe_thunks;
   for (StringRef C : config->mllvmOpts)
     c.MllvmArgs.emplace_back(C.str());
+  for (StringRef pluginFn : config->passPlugins)
+    c.PassPluginFilenames.push_back(std::string(pluginFn));
+  c.OptPipeline = std::string(config->ltoNewPmPasses);
   c.CodeModel = getCodeModelFromCMModel();
   c.CPU = getCPUStr();
   c.MAttrs = getMAttrs();
   c.DiagHandler = diagnosticHandler;
-  c.PreCodeGenPassesHook = [](legacy::PassManager &pm) {
-    pm.add(createObjCARCContractPass());
-  };
 
   c.AlwaysEmitRegularLTOObj = !config->ltoObjPath.empty();
 
   c.TimeTraceEnabled = config->timeTraceEnabled;
   c.TimeTraceGranularity = config->timeTraceGranularity;
+  c.DebugPassManager = config->ltoDebugPassManager;
+  c.CSIRProfile = std::string(config->csProfilePath);
+  c.RunCSIRInstr = config->csProfileGenerate;
+  c.PGOWarnMismatch = config->pgoWarnMismatch;
+  c.DisableVerify = config->disableVerify;
   c.OptLevel = config->ltoo;
-  c.CGOptLevel = args::getCGOptLevel(config->ltoo);
+  c.CGOptLevel = config->ltoCgo;
+
+  c.PTO.LoopVectorization = c.OptLevel > 1;
+  c.PTO.SLPVectorization = c.OptLevel > 1;
+
   if (config->saveTemps)
     checkError(c.addSaveTemps(config->outputFile.str() + ".",
                               /*UseInputModulePath=*/true));
+
+  if (config->emitLLVM) {
+    llvm::StringRef outputFile = config->outputFile;
+    c.PreCodeGenModuleHook = [outputFile](size_t task, const Module &m) {
+      if (std::unique_ptr<raw_fd_ostream> os = openLTOOutputFile(outputFile))
+        WriteBitcodeToFile(m, *os, false);
+      return false;
+    };
+  }
+
   return c;
 }
 
@@ -82,6 +87,11 @@ static lto::Config createConfig() {
 static void saveOrHardlinkBuffer(StringRef buffer, const Twine &path,
                                  std::optional<StringRef> originalPath) {
   if (originalPath) {
+    // Delete the hardlink if it exists. Otherwise, it is possible for the
+    // create_hard_link to fail (as the hardlink exists already), and when
+    // saveBuffer is subsequently called the hardlink'd file may get truncated
+    // and reading from it causes a crash.
+    fs::remove(path);
     auto err = fs::create_hard_link(*originalPath, path);
     if (!err)
       return;
@@ -99,8 +109,10 @@ BitcodeCompiler::BitcodeCompiler() {
   auto onIndexWrite = [&](StringRef S) { thinIndices.erase(S); };
   if (config->thinLTOIndexOnly) {
     backend = lto::createWriteIndexesThinBackend(
-        std::string(config->thinLTOPrefixReplace.first),
-        std::string(config->thinLTOPrefixReplace.second),
+        llvm::hardware_concurrency(config->thinLTOJobs),
+        std::string(config->thinLTOPrefixReplaceOld),
+        std::string(config->thinLTOPrefixReplaceNew),
+        std::string(config->thinLTOPrefixReplaceNativeObject),
         config->thinLTOEmitImportsFiles, indexFile.get(), onIndexWrite);
   } else {
     backend = lto::createInProcessThinBackend(
@@ -160,6 +172,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // TODO: set the other resolution configs properly
   }
   checkError(ltoObj->add(std::move(f.obj), resols));
+  hasFiles = true;
 }
 
 // If LazyObjFile has not been added to link, emit empty index files.
@@ -211,12 +224,13 @@ std::vector<ObjFile *> BitcodeCompiler::compile() {
                                files[task] = std::move(mb);
                              }));
 
-  checkError(ltoObj->run(
-      [&](size_t task, const Twine &moduleName) {
-        return std::make_unique<CachedFileStream>(
-            std::make_unique<raw_svector_ostream>(buf[task]));
-      },
-      cache));
+  if (hasFiles)
+    checkError(ltoObj->run(
+        [&](size_t task, const Twine &moduleName) {
+          return std::make_unique<CachedFileStream>(
+              std::make_unique<raw_svector_ostream>(buf[task]));
+        },
+        cache));
 
   // Emit empty index files for non-indexed files
   for (StringRef s : thinIndices) {
@@ -270,7 +284,8 @@ std::vector<ObjFile *> BitcodeCompiler::compile() {
   }
 
   if (!config->thinLTOCacheDir.empty())
-    pruneCache(config->thinLTOCacheDir, config->thinLTOCachePolicy, files);
+    check(
+        pruneCache(config->thinLTOCacheDir, config->thinLTOCachePolicy, files));
 
   std::vector<ObjFile *> ret;
   for (unsigned i = 0; i < maxTasks; ++i) {
@@ -300,7 +315,9 @@ std::vector<ObjFile *> BitcodeCompiler::compile() {
       modTime = getModTime(filePath);
     }
     ret.push_back(make<ObjFile>(
-        MemoryBufferRef(objBuf, saver().save(filePath.str())), modTime, ""));
+        MemoryBufferRef(objBuf, saver().save(filePath.str())), modTime,
+        /*archiveName=*/"", /*lazy=*/false,
+        /*forceHidden=*/false, /*compatArch=*/true, /*builtFromBitcode=*/true));
   }
 
   return ret;

@@ -15,25 +15,46 @@ using namespace mlir;
 using namespace mlir::transform;
 
 void mlir::transform::printPackedOrDynamicIndexList(
-    OpAsmPrinter &printer, Operation *op, Value packed, OperandRange values,
-    ArrayRef<int64_t> integers) {
+    OpAsmPrinter &printer, Operation *op, Value packed, Type packedType,
+    OperandRange values, TypeRange valueTypes, DenseBoolArrayAttr scalableFlags,
+    DenseI64ArrayAttr integers) {
   if (packed) {
-    assert(values.empty() && integers.empty() && "expected no values/integers");
-    printer << packed;
+    assert(values.empty() && (!integers || integers.empty()) &&
+           (!scalableFlags || scalableFlags.empty()) &&
+           "expected no values/integers");
+    printer << "*(" << packed;
+    if (packedType) {
+      printer << " : " << packedType;
+    }
+    printer << ")";
     return;
   }
-  printDynamicIndexList(printer, op, values, integers);
+  printDynamicIndexList(printer, op, values, integers,
+                        scalableFlags ? scalableFlags.asArrayRef()
+                                      : ArrayRef<bool>{},
+                        valueTypes);
 }
 
 ParseResult mlir::transform::parsePackedOrDynamicIndexList(
     OpAsmParser &parser, std::optional<OpAsmParser::UnresolvedOperand> &packed,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &values,
+    Type &packedType, SmallVectorImpl<OpAsmParser::UnresolvedOperand> &values,
+    DenseBoolArrayAttr &scalableFlags, SmallVectorImpl<Type> *valueTypes,
     DenseI64ArrayAttr &integers) {
   OpAsmParser::UnresolvedOperand packedOperand;
-  if (parser.parseOptionalOperand(packedOperand).has_value()) {
+  if (parser.parseOptionalStar().succeeded()) {
+    if (parser.parseLParen().failed() ||
+        parser.parseOperand(packedOperand).failed())
+      return failure();
+    if (packedType && (parser.parseColonType(packedType).failed()))
+      return failure();
+    if (parser.parseRParen().failed())
+      return failure();
     packed.emplace(packedOperand);
     integers = parser.getBuilder().getDenseI64ArrayAttr({});
+    scalableFlags = parser.getBuilder().getDenseBoolArrayAttr({});
     return success();
   }
-  return parseDynamicIndexList(parser, values, integers);
+
+  return parseDynamicIndexList(parser, values, integers, scalableFlags,
+                               valueTypes);
 }

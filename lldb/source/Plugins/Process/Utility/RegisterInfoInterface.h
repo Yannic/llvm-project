@@ -10,7 +10,7 @@
 #define LLDB_SOURCE_PLUGINS_PROCESS_UTILITY_REGISTERINFOINTERFACE_H
 
 #include "lldb/Utility/ArchSpec.h"
-#include "lldb/lldb-private-types.h"
+#include "lldb/Utility/RegisterInfo.h"
 #include <vector>
 
 namespace lldb_private {
@@ -39,26 +39,6 @@ public:
 
   const lldb_private::ArchSpec &GetTargetArchitecture() const {
     return m_target_arch;
-  }
-
-  virtual const lldb_private::RegisterInfo *
-  GetDynamicRegisterInfo(const char *reg_name) const {
-    const std::vector<lldb_private::RegisterInfo> *d_register_infos =
-        GetDynamicRegisterInfoP();
-    if (d_register_infos != nullptr) {
-      std::vector<lldb_private::RegisterInfo>::const_iterator pos =
-          d_register_infos->begin();
-      for (; pos < d_register_infos->end(); pos++) {
-        if (::strcmp(reg_name, pos->name) == 0)
-          return (d_register_infos->data() + (pos - d_register_infos->begin()));
-      }
-    }
-    return nullptr;
-  }
-
-  virtual const std::vector<lldb_private::RegisterInfo> *
-  GetDynamicRegisterInfoP() const {
-    return nullptr;
   }
 
 private:

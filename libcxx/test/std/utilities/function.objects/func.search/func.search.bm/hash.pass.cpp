@@ -33,13 +33,14 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <functional>
+#include <iterator>
 
-#include "test_macros.h"
 #include "test_iterators.h"
 
 template <typename T> struct MyHash {
-    size_t operator () (T t) const { return static_cast<size_t>(t); }
+    std::size_t operator () (T t) const { return static_cast<size_t>(t); }
 };
 
 template <typename Iter1, typename Iter2>

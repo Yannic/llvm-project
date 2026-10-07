@@ -16,13 +16,14 @@
 #define LLVM_CLANG_LIB_FORMAT_TOKENANNOTATOR_H
 
 #include "UnwrappedLineParser.h"
-#include "clang/Format/Format.h"
 
 namespace clang {
 namespace format {
 
 enum LineType {
   LT_Invalid,
+  // Contains public/private/protected followed by TT_InheritanceColon.
+  LT_AccessModifier,
   LT_ImportStatement,
   LT_ObjCDecl, // An @interface, @implementation, or @protocol line.
   LT_ObjCMethodDecl,
@@ -32,18 +33,32 @@ enum LineType {
   LT_VirtualFunctionDecl,
   LT_ArrayOfStructInitializer,
   LT_CommentAbovePPDirective,
+  LT_RequiresExpression,
+  LT_SimpleRequirement,
+};
+
+enum ScopeType {
+  // Contained in class declaration/definition.
+  ST_Class,
+  // Contained in enum declaration/definition.
+  ST_Enum,
+  // Contained in compound requirement.
+  ST_CompoundRequirement,
+  // Contained in other blocks (function, lambda, loop, if/else, child, etc).
+  ST_Other,
 };
 
 class AnnotatedLine {
 public:
   AnnotatedLine(const UnwrappedLine &Line)
-      : First(Line.Tokens.front().Tok), Level(Line.Level),
+      : First(Line.Tokens.front().Tok), Type(LT_Other), Level(Line.Level),
         PPLevel(Line.PPLevel),
         MatchingOpeningBlockLineIndex(Line.MatchingOpeningBlockLineIndex),
         MatchingClosingBlockLineIndex(Line.MatchingClosingBlockLineIndex),
         InPPDirective(Line.InPPDirective),
         InPragmaDirective(Line.InPragmaDirective),
         InMacroBody(Line.InMacroBody),
+        IsModuleOrImportDecl(Line.IsModuleOrImportDecl),
         MustBeDeclaration(Line.MustBeDeclaration), MightBeFunctionDecl(false),
         IsMultiVariableDeclStmt(false), Affected(false),
         LeadingEmptyLinesAffected(false), ChildrenAffected(false),
@@ -56,18 +71,37 @@ public:
     // left them in a different state.
     First->Previous = nullptr;
     FormatToken *Current = First;
+    addChildren(Line.Tokens.front(), Current);
     for (const UnwrappedLineNode &Node : llvm::drop_begin(Line.Tokens)) {
+      if (Node.Tok->MacroParent)
+        ContainsMacroCall = true;
       Current->Next = Node.Tok;
       Node.Tok->Previous = Current;
       Current = Current->Next;
-      Current->Children.clear();
-      for (const auto &Child : Node.Children) {
-        Children.push_back(new AnnotatedLine(Child));
-        Current->Children.push_back(Children.back());
-      }
+      addChildren(Node, Current);
+      // FIXME: if we add children, previous will point to the token before
+      // the children; changing this requires significant changes across
+      // clang-format.
     }
     Last = Current;
     Last->Next = nullptr;
+  }
+
+  void addChildren(const UnwrappedLineNode &Node, FormatToken *Current) {
+    Current->Children.clear();
+    for (const auto &Child : Node.Children) {
+      Children.push_back(new AnnotatedLine(Child));
+      if (Children.back()->ContainsMacroCall)
+        ContainsMacroCall = true;
+      Current->Children.push_back(Children.back());
+    }
+  }
+
+  size_t size() const {
+    size_t Size = 1;
+    for (const auto *Child : Children)
+      Size += Child->size();
+    return Size;
   }
 
   ~AnnotatedLine() {
@@ -123,6 +157,16 @@ public:
            startsWith(tok::kw_export, tok::kw_namespace);
   }
 
+  FormatToken *getFirstNonComment() const {
+    assert(First);
+    return First->is(tok::comment) ? First->getNextNonComment() : First;
+  }
+
+  FormatToken *getLastNonComment() const {
+    assert(Last);
+    return Last->is(tok::comment) ? Last->getPreviousNonComment() : Last;
+  }
+
   FormatToken *First;
   FormatToken *Last;
 
@@ -136,9 +180,16 @@ public:
   bool InPPDirective;
   bool InPragmaDirective;
   bool InMacroBody;
+  bool IsModuleOrImportDecl;
   bool MustBeDeclaration;
   bool MightBeFunctionDecl;
   bool IsMultiVariableDeclStmt;
+
+  /// \c True if this line contains a macro call for which an expansion exists.
+  bool ContainsMacroCall = false;
+
+  /// \c True if calculateFormattingInformation() has been called on this line.
+  bool Computed = false;
 
   /// \c True if this line should be formatted, i.e. intersects directly or
   /// indirectly with one of the input ranges.
@@ -171,14 +222,15 @@ private:
 class TokenAnnotator {
 public:
   TokenAnnotator(const FormatStyle &Style, const AdditionalKeywords &Keywords)
-      : Style(Style), Keywords(Keywords) {}
+      : Style(Style), IsCpp(Style.isCpp()),
+        LangOpts(getFormattingLangOpts(Style)), Keywords(Keywords) {}
 
   /// Adapts the indent levels of comment lines to the indent of the
   /// subsequent line.
   // FIXME: Can/should this be done in the UnwrappedLineParser?
   void setCommentLineLevels(SmallVectorImpl<AnnotatedLine *> &Lines) const;
 
-  void annotate(AnnotatedLine &Line) const;
+  void annotate(AnnotatedLine &Line);
   void calculateFormattingInformation(AnnotatedLine &Line) const;
 
 private:
@@ -194,13 +246,14 @@ private:
   bool spaceRequiredBefore(const AnnotatedLine &Line,
                            const FormatToken &Right) const;
 
-  bool mustBreakBefore(const AnnotatedLine &Line,
-                       const FormatToken &Right) const;
+  bool mustBreakBefore(AnnotatedLine &Line, const FormatToken &Right) const;
 
   bool canBreakBefore(const AnnotatedLine &Line,
                       const FormatToken &Right) const;
 
   bool mustBreakForReturnType(const AnnotatedLine &Line) const;
+
+  bool mustBreakBeforeReturnType(const AnnotatedLine &Line) const;
 
   void printDebugInfo(const AnnotatedLine &Line) const;
 
@@ -219,7 +272,12 @@ private:
 
   const FormatStyle &Style;
 
+  bool IsCpp;
+  LangOptions LangOpts;
+
   const AdditionalKeywords &Keywords;
+
+  SmallVector<ScopeType> Scopes, MacroBodyScopes;
 };
 
 } // end namespace format

@@ -1,4 +1,4 @@
-//===-- Implementation of pow function ------------------------------------===//
+//===-- Double-precision x^y function -------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,18 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/math/pow.h"
-#include "src/math/expf.h"
-#include "src/math/logf.h"
+#include "src/__support/math/pow.h"
 
-#include "src/__support/common.h"
-
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(double, pow, (double x, double y)) {
-  // Place-holder implementation for double precision pow function.
-  // TODO: Implement correctly rounded pow function for double precision.
-  return static_cast<double>(
-      expf(static_cast<float>(y) * logf(static_cast<float>(x))));
+  return math::pow(x, y);
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

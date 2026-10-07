@@ -6,8 +6,7 @@ define i1 @test1(ptr %x) nounwind {
 ; CHECK-LABEL: @test1(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    [[TMP0:%.*]] = ptrtoint ptr [[X:%.*]] to i64
-; CHECK-NEXT:    [[TMP1:%.*]] = and i64 [[TMP0]], 1
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp ne i64 [[TMP1]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = trunc i64 [[TMP0]] to i1
 ; CHECK-NEXT:    ret i1 [[TMP2]]
 ;
 entry:
@@ -86,4 +85,20 @@ define <4 x ptr> @test7(<4 x i128> %arg) nounwind {
 ;
   %p1 = inttoptr <4 x i128> %arg to <4 x ptr>
   ret <4 x ptr> %p1
+}
+
+; Folding this would lose %ptr provenance exposure.
+define i64 @ptrtoint_gep_sub(ptr %ptr, i64 %end.addr) {
+; CHECK-LABEL: @ptrtoint_gep_sub(
+; CHECK-NEXT:    [[PTR_ADDR:%.*]] = ptrtoint ptr [[PTR:%.*]] to i64
+; CHECK-NEXT:    [[SIZE:%.*]] = sub i64 [[END_ADDR1:%.*]], [[PTR_ADDR]]
+; CHECK-NEXT:    [[END:%.*]] = getelementptr i8, ptr [[PTR]], i64 [[SIZE]]
+; CHECK-NEXT:    [[END_ADDR:%.*]] = ptrtoint ptr [[END]] to i64
+; CHECK-NEXT:    ret i64 [[END_ADDR]]
+;
+  %ptr.addr = ptrtoint ptr %ptr to i64
+  %size = sub i64 %end.addr, %ptr.addr
+  %end = getelementptr i8, ptr %ptr, i64 %size
+  %end.addr2 = ptrtoint ptr %end to i64
+  ret i64 %end.addr2
 }

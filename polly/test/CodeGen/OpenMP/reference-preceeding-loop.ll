@@ -1,5 +1,5 @@
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-print-ast -disable-output < %s | FileCheck %s -check-prefix=AST
-; RUN: opt %loadPolly -polly-parallel -polly-parallel-force -polly-codegen -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-parallel -plugin-arg=Polly,-polly-parallel-force '-passes=polly-custom<ast>' -plugin-arg=Polly,-polly-print-ast -disable-output < %s | FileCheck %s -check-prefix=AST
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-parallel -plugin-arg=Polly,-polly-parallel-force '-passes=polly<no-default-opts>' -S -verify-dom-info < %s | FileCheck %s -check-prefix=IR
 
 
 ; - Test the case where scalar evolution references a loop that is outside

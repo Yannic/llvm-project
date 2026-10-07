@@ -59,7 +59,7 @@ using namespace lldb_private;
                               {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,       \
                                LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,       \
                                LLDB_INVALID_REGNUM },                          \
-                               NULL, NULL
+                               NULL, NULL, NULL
 #define REG_CONTEXT_SIZE                                                       \
   (sizeof(RegisterContextDarwin_arm64::GPR) +                                  \
    sizeof(RegisterContextDarwin_arm64::FPU) +                                  \
@@ -768,8 +768,6 @@ uint32_t RegisterContextDarwin_arm64::ConvertRegisterKindToRegisterNumber(
       return gpr_lr;
     case arm64_dwarf::pc:
       return gpr_pc;
-    case arm64_dwarf::cpsr:
-      return gpr_cpsr;
 
     case arm64_dwarf::v0:
       return fpu_v0;
@@ -907,8 +905,6 @@ uint32_t RegisterContextDarwin_arm64::ConvertRegisterKindToRegisterNumber(
       return gpr_lr;
     case arm64_ehframe::pc:
       return gpr_pc;
-    case arm64_ehframe::cpsr:
-      return gpr_cpsr;
     }
   } else if (kind == eRegisterKindLLDB) {
     return reg;

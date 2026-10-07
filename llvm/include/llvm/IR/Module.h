@@ -29,8 +29,11 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/ProfileSummary.h"
 #include "llvm/IR/SymbolTableListTraits.h"
+#include "llvm/IR/ValueMap.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -62,7 +65,7 @@ class VersionTuple;
 /// constant references to global variables in the module.  When a global
 /// variable is destroyed, it should have no entries in the GlobalList.
 /// The main container class for the LLVM Intermediate Representation.
-class LLVM_EXTERNAL_VISIBILITY Module {
+class LLVM_ABI Module {
   /// @name Types And Enumerations
   /// @{
 public:
@@ -158,11 +161,6 @@ public:
   /// converted result in MFB.
   static bool isValidModFlagBehavior(Metadata *MD, ModFlagBehavior &MFB);
 
-  /// Check if the given module flag metadata represents a valid module flag,
-  /// and store the flag behavior, the key string and the value metadata.
-  static bool isValidModuleFlag(const MDNode &ModFlag, ModFlagBehavior &MFB,
-                                MDString *&Key, Metadata *&Val);
-
   struct ModuleFlagEntry {
     ModFlagBehavior Behavior;
     MDString *Key;
@@ -170,6 +168,45 @@ public:
 
     ModuleFlagEntry(ModFlagBehavior B, MDString *K, Metadata *V)
         : Behavior(B), Key(K), Val(V) {}
+  };
+
+  struct GlobalAsmProperties {
+    std::string TargetFeatures;
+    std::string TargetCPU;
+
+    /// Set a property using a string name.
+    /// Returns whether the property name was valid.
+    LLVM_ABI bool set(StringRef Name, std::string Value);
+
+    /// Get a list of set properties as pairs of key and value.
+    LLVM_ABI SmallVector<std::pair<StringRef, StringRef>> getAsStrings() const;
+
+    bool operator==(const GlobalAsmProperties &Other) const {
+      return TargetFeatures == Other.TargetFeatures &&
+             TargetCPU == Other.TargetCPU;
+    }
+
+    bool operator!=(const GlobalAsmProperties &Other) const {
+      return !(*this == Other);
+    }
+  };
+
+  struct GlobalAsmFragment {
+    std::string Asm;
+    GlobalAsmProperties Props;
+
+    GlobalAsmFragment(StringRef Asm) : GlobalAsmFragment(Asm.str()) {}
+    GlobalAsmFragment(std::string AsmArg, GlobalAsmProperties Props = {})
+        : Asm(std::move(AsmArg)), Props(std::move(Props)) {
+      if (!Asm.empty() && Asm.back() != '\n')
+        Asm += '\n';
+    }
+
+    bool empty() const { return Asm.empty(); }
+
+    bool hasSameProperties(const GlobalAsmFragment &Other) const {
+      return Props == Other.Props;
+    }
   };
 
 /// @}
@@ -183,7 +220,8 @@ private:
   AliasListType AliasList;        ///< The Aliases in the module
   IFuncListType IFuncList;        ///< The IFuncs in the module
   NamedMDListType NamedMDList;    ///< The named metadata in the module
-  std::string GlobalScopeAsm;     ///< Inline Asm at global scope.
+  /// Inline Asm at the global scope.
+  SmallVector<GlobalAsmFragment, 0> GlobalScopeAsm;
   std::unique_ptr<ValueSymbolTable> ValSymTab; ///< Symbol table for values
   ComdatSymTabType ComdatSymTab;  ///< Symbol table for COMDATs
   std::unique_ptr<MemoryBuffer>
@@ -194,8 +232,10 @@ private:
   std::string ModuleID;           ///< Human readable identifier for the module
   std::string SourceFileName;     ///< Original source file name for module,
                                   ///< recorded in bitcode.
-  std::string TargetTriple;       ///< Platform target triple Module compiled on
-                                  ///< Format: (arch)(sub)-(vendor)-(sys0-(abi)
+  /// Platform target triple Module compiled on
+  /// Format: (arch)(sub)-(vendor)-(sys)-(abi)
+  // FIXME: Default construction is not the same as empty triple :(
+  Triple TargetTriple = Triple("");
   NamedMDSymTabType NamedMDSymTab;  ///< NamedMDNode names.
   DataLayout DL;                  ///< DataLayout associated with the module
   StringMap<unsigned>
@@ -207,21 +247,52 @@ private:
                              ///< ID and FunctionType maps to the extension that
                              ///< is used to make the intrinsic name unique.
 
+  /// llvm.module.flags metadata
+  NamedMDNode *ModuleFlags = nullptr;
+
   friend class Constant;
 
 /// @}
 /// @name Constructors
 /// @{
 public:
+  /// Used when printing this module in the new debug info format; removes all
+  /// declarations of debug intrinsics that are replaced by non-intrinsic
+  /// records in the new format.
+  void removeDebugIntrinsicDeclarations();
+
+  /// \see BasicBlock::convertToNewDbgValues.
+  void convertToNewDbgValues() {
+    for (auto &F : *this) {
+      F.convertToNewDbgValues();
+    }
+
+    removeDebugIntrinsicDeclarations();
+  }
+
+  /// \see BasicBlock::convertFromNewDbgValues.
+  /// Returns true if any function's conversion modified the module.
+  bool convertFromNewDbgValues() {
+    bool Modified = false;
+    for (auto &F : *this) {
+      if (F.convertFromNewDbgValues())
+        Modified = true;
+    }
+    return Modified;
+  }
+
   /// The Module constructor. Note that there is no default constructor. You
   /// must provide a name for the module upon construction.
   explicit Module(StringRef ModuleID, LLVMContext& C);
   /// The module destructor. This will dropAllReferences.
   ~Module();
 
-/// @}
-/// @name Module Level Accessors
-/// @{
+  /// Move assignment.
+  Module &operator=(Module &&Other);
+
+  /// @}
+  /// @name Module Level Accessors
+  /// @{
 
   /// Get the module identifier which is, essentially, the name of the module.
   /// @returns the module identifier as a string
@@ -251,19 +322,27 @@ public:
   }
 
   /// Get the data layout for the module's target platform.
-  const DataLayout &getDataLayout() const;
+  const DataLayout &getDataLayout() const { return DL; }
 
   /// Get the target triple which is a string describing the target host.
-  /// @returns a string containing the target triple.
-  const std::string &getTargetTriple() const { return TargetTriple; }
+  const Triple &getTargetTriple() const { return TargetTriple; }
 
   /// Get the global data context.
   /// @returns LLVMContext - a container for LLVM's global information
   LLVMContext &getContext() const { return Context; }
 
   /// Get any module-scope inline assembly blocks.
-  /// @returns a string containing the module-scope inline assembly blocks.
-  const std::string &getModuleInlineAsm() const { return GlobalScopeAsm; }
+  ArrayRef<GlobalAsmFragment> getModuleInlineAsm() const {
+    return GlobalScopeAsm;
+  }
+
+  /// Get any module-scope inline assembly blocks.
+  MutableArrayRef<GlobalAsmFragment> getModuleInlineAsm() {
+    return GlobalScopeAsm;
+  }
+
+  /// Return whether there is any module-scope inline assembly.
+  bool hasModuleInlineAsm() const { return !GlobalScopeAsm.empty(); }
 
   /// Get a RandomNumberGenerator salted for use with this module. The
   /// RNG can be seeded via -rng-seed=<uint64> and is salted with the
@@ -298,22 +377,47 @@ public:
   void setDataLayout(const DataLayout &Other);
 
   /// Set the target triple.
-  void setTargetTriple(StringRef T) { TargetTriple = std::string(T); }
+  void setTargetTriple(Triple T) { TargetTriple = std::move(T); }
+
+  void removeModuleInlineAsm() { GlobalScopeAsm.clear(); }
 
   /// Set the module-scope inline assembly blocks.
   /// A trailing newline is added if the input doesn't have one.
-  void setModuleInlineAsm(StringRef Asm) {
-    GlobalScopeAsm = std::string(Asm);
-    if (!GlobalScopeAsm.empty() && GlobalScopeAsm.back() != '\n')
-      GlobalScopeAsm += '\n';
+  void setModuleInlineAsm(GlobalAsmFragment Fragment) {
+    GlobalScopeAsm.clear();
+    appendModuleInlineAsm(std::move(Fragment));
+  }
+
+  void setModuleInlineAsm(ArrayRef<GlobalAsmFragment> Fragments) {
+    GlobalScopeAsm.clear();
+    append_range(GlobalScopeAsm, Fragments);
   }
 
   /// Append to the module-scope inline assembly blocks.
   /// A trailing newline is added if the input doesn't have one.
-  void appendModuleInlineAsm(StringRef Asm) {
-    GlobalScopeAsm += Asm;
-    if (!GlobalScopeAsm.empty() && GlobalScopeAsm.back() != '\n')
-      GlobalScopeAsm += '\n';
+  void appendModuleInlineAsm(GlobalAsmFragment Fragment) {
+    if (Fragment.empty())
+      return;
+
+    if (!GlobalScopeAsm.empty() &&
+        GlobalScopeAsm.back().hasSameProperties(Fragment)) {
+      GlobalScopeAsm.back().Asm += Fragment.Asm;
+    } else {
+      GlobalScopeAsm.emplace_back(std::move(Fragment));
+    }
+  }
+
+  /// Prepend to the module-scope inline assembly blocks.
+  void prependModuleInlineAsm(GlobalAsmFragment Fragment) {
+    if (Fragment.empty())
+      return;
+
+    if (!GlobalScopeAsm.empty() &&
+        GlobalScopeAsm.front().hasSameProperties(Fragment)) {
+      GlobalScopeAsm.front().Asm.insert(0, Fragment.Asm);
+    } else {
+      GlobalScopeAsm.insert(GlobalScopeAsm.begin(), std::move(Fragment));
+    }
   }
 
 /// @}
@@ -352,17 +456,14 @@ public:
 /// @name Function Accessors
 /// @{
 
-  /// Look up the specified function in the module symbol table. Four
-  /// possibilities:
-  ///   1. If it does not exist, add a prototype for the function and return it.
-  ///   2. Otherwise, if the existing function has the correct prototype, return
-  ///      the existing function.
-  ///   3. Finally, the function exists but has the wrong prototype: return the
-  ///      function with a constantexpr cast to the right prototype.
+  /// Look up the specified function in the module symbol table. If it does not
+  /// exist, add a prototype for the function and return it. Otherwise, return
+  /// the existing function.
   ///
   /// In all cases, the returned value is a FunctionCallee wrapper around the
-  /// 'FunctionType *T' passed in, as well as a 'Value*' either of the Function or
-  /// the bitcast to the function.
+  /// 'FunctionType *T' passed in, as well as the 'Value*' of the Function. The
+  /// function type of the function may differ from the function type stored in
+  /// FunctionCallee if it was previously created with a different type.
   ///
   /// Note: For library calls getOrInsertLibFunc() should be used instead.
   FunctionCallee getOrInsertFunction(StringRef Name, FunctionType *T,
@@ -370,12 +471,8 @@ public:
 
   FunctionCallee getOrInsertFunction(StringRef Name, FunctionType *T);
 
-  /// Look up the specified function in the module symbol table. If it does not
-  /// exist, add a prototype for the function and return it. This function
-  /// guarantees to return a constant of pointer to the specified function type
-  /// or a ConstantExpr BitCast of that type if the named function has a
-  /// different type. This version of the method takes a list of
-  /// function arguments, which makes it easier for clients to use.
+  /// Same as above, but takes a list of function arguments, which makes it
+  /// easier for clients to use.
   template <typename... ArgsTy>
   FunctionCallee getOrInsertFunction(StringRef Name,
                                      AttributeList AttributeList, Type *RetTy,
@@ -436,15 +533,14 @@ public:
 
   /// Look up the specified global in the module symbol table.
   /// If it does not exist, invoke a callback to create a declaration of the
-  /// global and return it. The global is constantexpr casted to the expected
-  /// type if necessary.
-  Constant *
+  /// global and return it.
+  GlobalVariable *
   getOrInsertGlobal(StringRef Name, Type *Ty,
                     function_ref<GlobalVariable *()> CreateGlobalCallback);
 
   /// Look up the specified global in the module symbol table. If required, this
   /// overload constructs the global variable using its constructor's defaults.
-  Constant *getOrInsertGlobal(StringRef Name, Type *Ty);
+  GlobalVariable *getOrInsertGlobal(StringRef Name, Type *Ty);
 
 /// @}
 /// @name Global Alias Accessors
@@ -470,7 +566,7 @@ public:
 
   /// Return the first NamedMDNode in the module with the specified name. This
   /// method returns null if a NamedMDNode with the specified name is not found.
-  NamedMDNode *getNamedMetadata(const Twine &Name) const;
+  NamedMDNode *getNamedMetadata(StringRef Name) const;
 
   /// Return the named MDNode in the module with the specified name. This method
   /// returns a new NamedMDNode if a NamedMDNode with the specified name is not
@@ -501,7 +597,7 @@ public:
 
   /// Returns the NamedMDNode in the module that represents module-level flags.
   /// This method returns null if there are no module-level flags.
-  NamedMDNode *getModuleFlagsMetadata() const;
+  NamedMDNode *getModuleFlagsMetadata() const { return ModuleFlags; }
 
   /// Returns the NamedMDNode in the module that represents module-level flags.
   /// If module-level flags aren't found, it creates the named metadata that
@@ -512,10 +608,20 @@ public:
   /// the module-level flags named metadata if it doesn't already exist.
   void addModuleFlag(ModFlagBehavior Behavior, StringRef Key, Metadata *Val);
   void addModuleFlag(ModFlagBehavior Behavior, StringRef Key, Constant *Val);
+  void addModuleFlag(ModFlagBehavior Behavior, StringRef Key, uint64_t Val);
   void addModuleFlag(ModFlagBehavior Behavior, StringRef Key, uint32_t Val);
+  inline void addModuleFlag(ModFlagBehavior Behavior, StringRef Key, int Val) {
+    addModuleFlag(Behavior, Key, static_cast<uint32_t>(Val));
+  }
   void addModuleFlag(MDNode *Node);
   /// Like addModuleFlag but replaces the old module flag if it already exists.
   void setModuleFlag(ModFlagBehavior Behavior, StringRef Key, Metadata *Val);
+  void setModuleFlag(ModFlagBehavior Behavior, StringRef Key, Constant *Val);
+  void setModuleFlag(ModFlagBehavior Behavior, StringRef Key, uint64_t Val);
+  void setModuleFlag(ModFlagBehavior Behavior, StringRef Key, uint32_t Val);
+  inline void setModuleFlag(ModFlagBehavior Behavior, StringRef Key, int Val) {
+    setModuleFlag(Behavior, Key, static_cast<uint32_t>(Val));
+  }
 
   /// @}
   /// @name Materialization
@@ -542,9 +648,56 @@ public:
 
   llvm::Error materializeMetadata();
 
-/// @}
-/// @name Direct access to the globals list, functions list, and symbol table
-/// @{
+  /// Detach global variable \p GV from the list but don't delete it.
+  void removeGlobalVariable(GlobalVariable *GV) { GlobalList.remove(GV); }
+  /// Remove global variable \p GV from the list and delete it.
+  void eraseGlobalVariable(GlobalVariable *GV) { GlobalList.erase(GV); }
+  /// Insert global variable \p GV at the end of the global variable list and
+  /// take ownership.
+  void insertGlobalVariable(GlobalVariable *GV) {
+    insertGlobalVariable(GlobalList.end(), GV);
+  }
+  /// Insert global variable \p GV into the global variable list before \p
+  /// Where and take ownership.
+  void insertGlobalVariable(GlobalListType::iterator Where, GlobalVariable *GV) {
+    GlobalList.insert(Where, GV);
+  }
+  // Use global_size() to get the total number of global variables.
+  // Use globals() to get the range of all global variables.
+
+  std::optional<GlobalValue::GUID> getGUID(const Value *V) const {
+    const auto It = ValueToGUIDMap.find(V);
+    if (It == ValueToGUIDMap.end())
+      return std::nullopt;
+
+    return It->second;
+  }
+
+  void insertGUID(const Value *V, GlobalValue::GUID GUID) {
+    const auto [It, WasInserted] = ValueToGUIDMap.insert({V, GUID});
+
+    (void)It, (void)WasInserted;
+#ifndef NDEBUG
+    if (!WasInserted) {
+      assert((It->second == GUID) && "insertGUID called with different value");
+    }
+#endif
+  }
+
+private:
+  /// Do not transfer GUID of a value to the value it is being RAUWed with.
+  struct GUIDMapConfig : ValueMapConfig<const Value *> {
+    enum { FollowRAUW = false };
+  };
+
+  /// A mapping directly from Value to GUID. Populated from bitcode
+  /// (MODULE_CODE_GUIDLIST). Necessary for lazy-loading modules, where we
+  /// don't load metadata.
+  ValueMap<const Value *, GlobalValue::GUID, GUIDMapConfig> ValueToGUIDMap;
+
+  /// @}
+  /// @name Direct access to the globals list, functions list, and symbol table
+  /// @{
 
   /// Get the Module's list of global variables (constant).
   const GlobalListType   &getGlobalList() const       { return GlobalList; }
@@ -554,7 +707,9 @@ public:
   static GlobalListType Module::*getSublistAccess(GlobalVariable*) {
     return &Module::GlobalList;
   }
+  friend class llvm::SymbolTableListTraits<llvm::GlobalVariable>;
 
+public:
   /// Get the Module's list of functions (constant).
   const FunctionListType &getFunctionList() const     { return FunctionList; }
   /// Get the Module's list of functions.
@@ -563,6 +718,36 @@ public:
     return &Module::FunctionList;
   }
 
+  /// Detach \p Alias from the list but don't delete it.
+  void removeAlias(GlobalAlias *Alias) { AliasList.remove(Alias); }
+  /// Remove \p Alias from the list and delete it.
+  void eraseAlias(GlobalAlias *Alias) { AliasList.erase(Alias); }
+  /// Insert \p Alias at the end of the alias list and take ownership.
+  void insertAlias(GlobalAlias *Alias) { AliasList.insert(AliasList.end(), Alias); }
+  // Use alias_size() to get the size of AliasList.
+  // Use aliases() to get a range of all Alias objects in AliasList.
+
+  /// Detach \p IFunc from the list but don't delete it.
+  void removeIFunc(GlobalIFunc *IFunc) { IFuncList.remove(IFunc); }
+  /// Remove \p IFunc from the list and delete it.
+  void eraseIFunc(GlobalIFunc *IFunc) { IFuncList.erase(IFunc); }
+  /// Insert \p IFunc at the end of the alias list and take ownership.
+  void insertIFunc(GlobalIFunc *IFunc) { IFuncList.push_back(IFunc); }
+  // Use ifunc_size() to get the number of functions in IFuncList.
+  // Use ifuncs() to get the range of all IFuncs.
+
+  /// Detach \p MDNode from the list but don't delete it.
+  void removeNamedMDNode(NamedMDNode *MDNode) { NamedMDList.remove(MDNode); }
+  /// Remove \p MDNode from the list and delete it.
+  void eraseNamedMDNode(NamedMDNode *MDNode) { NamedMDList.erase(MDNode); }
+  /// Insert \p MDNode at the end of the alias list and take ownership.
+  void insertNamedMDNode(NamedMDNode *MDNode) {
+    NamedMDList.push_back(MDNode);
+  }
+  // Use named_metadata_size() to get the size of the named meatadata list.
+  // Use named_metadata() to get the range of all named metadata.
+
+private: // Please use functions like insertAlias(), removeAlias() etc.
   /// Get the Module's list of aliases (constant).
   const AliasListType    &getAliasList() const        { return AliasList; }
   /// Get the Module's list of aliases.
@@ -571,6 +756,7 @@ public:
   static AliasListType Module::*getSublistAccess(GlobalAlias*) {
     return &Module::AliasList;
   }
+  friend class llvm::SymbolTableListTraits<llvm::GlobalAlias>;
 
   /// Get the Module's list of ifuncs (constant).
   const IFuncListType    &getIFuncList() const        { return IFuncList; }
@@ -580,6 +766,7 @@ public:
   static IFuncListType Module::*getSublistAccess(GlobalIFunc*) {
     return &Module::IFuncList;
   }
+  friend class llvm::SymbolTableListTraits<llvm::GlobalIFunc>;
 
   /// Get the Module's list of named metadata (constant).
   const NamedMDListType  &getNamedMDList() const      { return NamedMDList; }
@@ -590,6 +777,7 @@ public:
     return &Module::NamedMDList;
   }
 
+public:
   /// Get the symbol table of global variable and function identifiers
   const ValueSymbolTable &getValueSymbolTable() const { return *ValSymTab; }
   /// Get the Module's symbol table of global variable and function identifiers.
@@ -638,6 +826,17 @@ public:
   }
   iterator_range<const_iterator> functions() const {
     return make_range(begin(), end());
+  }
+
+  /// Get an iterator range over all function definitions (excluding
+  /// declarations).
+  auto getFunctionDefs() {
+    return make_filter_range(functions(),
+                             [](Function &F) { return !F.isDeclaration(); });
+  }
+  auto getFunctionDefs() const {
+    return make_filter_range(
+        functions(), [](const Function &F) { return !F.isDeclaration(); });
   }
 
 /// @}
@@ -728,7 +927,7 @@ public:
     NamedMDNode *CUs;
     unsigned Idx;
 
-    void SkipNoDebugCUs();
+    LLVM_ABI void SkipNoDebugCUs();
 
   public:
     using iterator_category = std::input_iterator_tag;
@@ -762,8 +961,8 @@ public:
       return Idx != I.Idx;
     }
 
-    DICompileUnit *operator*() const;
-    DICompileUnit *operator->() const;
+    LLVM_ABI DICompileUnit *operator*() const;
+    LLVM_ABI DICompileUnit *operator->() const;
   };
 
   debug_compile_units_iterator debug_compile_units_begin() const {
@@ -787,15 +986,6 @@ public:
   }
 /// @}
 
-  /// Destroy ConstantArrays in LLVMContext if they are not used.
-  /// ConstantArrays constructed during linking can cause quadratic memory
-  /// explosion. Releasing all unused constants can cause a 20% LTO compile-time
-  /// slowdown for a large application.
-  ///
-  /// NOTE: Constants are currently owned by LLVMContext. This can then only
-  /// be called where all uses of the LLVMContext are understood.
-  void dropTriviallyDeadConstantArrays();
-
 /// @name Utility functions for printing and dumping Module objects
 /// @{
 
@@ -806,6 +996,11 @@ public:
   void print(raw_ostream &OS, AssemblyAnnotationWriter *AAW,
              bool ShouldPreserveUseListOrder = false,
              bool IsForDebug = false) const;
+
+  /// Renumber the IDs stored in metadata nodes into canonical assembly order.
+  /// This mutates the IDs and should only be used immediately before final
+  /// assembly output.
+  void renumberMetadataForAssembly();
 
   /// Dump the module to stderr (for debugging).
   void dump() const;
@@ -869,6 +1064,59 @@ public:
   void setCodeModel(CodeModel::Model CL);
   /// @}
 
+  /// @}
+  /// @name Utility functions for querying the long double format
+  /// @{
+
+  /// Returns the long double format from the "long-double-type" module flag,
+  /// or the triple default when the flag is absent.
+  LongDoubleFormat getLongDoubleFormat() const;
+
+  /// Set the long double format.
+  void setLongDoubleFormat(LongDoubleFormat Format);
+  /// @}
+
+  /// @}
+  /// @name Utility function for querying the floating-point ABI
+  /// @{
+
+  /// Returns the floating-point ABI recorded by the "float-abi" module flag, or
+  /// the ABI implied by the target triple when the flag is absent.
+  FloatABI::ABIType getFloatABI() const;
+  /// @}
+
+  /// @}
+  /// @name Utility function for querying and setting the thread model
+  /// @{
+
+  /// Returns the thread model recorded by the "thread-model" module flag, or
+  /// the model implied by the target triple when the flag is absent.
+  ThreadModel getThreadModel() const;
+
+  /// Set the thread model.
+  void setThreadModel(ThreadModel Model);
+
+  /// @name Utility function for querying the exception model
+  /// @{
+
+  /// Returns the exception model recorded by the "exception-model" module flag,
+  /// or ExceptionHandling::Default when the flag is absent (meaning
+  /// unspecified; callers with a TargetMachine should fall back to its
+  /// exception model).
+  ExceptionHandling getExceptionModel() const;
+  /// @}
+
+  /// @}
+  /// @name Utility function for querying and setting the large data threshold
+  /// @{
+
+  /// Returns the large data threshold.
+  std::optional<uint64_t> getLargeDataThreshold() const;
+
+  /// Set the large data threshold.
+  void setLargeDataThreshold(uint64_t Threshold);
+  /// @}
+
   /// @name Utility functions for querying and setting PGO summary
   /// @{
 
@@ -891,6 +1139,11 @@ public:
 
   /// Set that PLT should be avoid for RTLib calls.
   void setRtLibUseGOT();
+
+  /// Get/set whether referencing global variables can use direct access
+  /// relocations on ELF targets.
+  bool getDirectAccessExternalData() const;
+  void setDirectAccessExternalData(bool Value);
 
   /// Get/set whether synthesized functions should get the uwtable attribute.
   UWTableKind getUwtable() const;
@@ -919,9 +1172,19 @@ public:
   int getStackProtectorGuardOffset() const;
   void setStackProtectorGuardOffset(int Offset);
 
+  /// Get/set the width in memory of the stack protector guard value.
+  std::optional<unsigned> getStackProtectorGuardValueWidth() const;
+  void setStackProtectorGuardValueWidth(unsigned Width);
+
+  // Get/set flag indicating whether to emit a __stack_protector_loc section.
+  bool hasStackProtectorGuardRecord() const;
+  void setStackProtectorGuardRecord(bool Flag);
+
   /// Get/set the stack alignment overridden from the default.
   unsigned getOverrideStackAlignment() const;
   void setOverrideStackAlignment(unsigned Align);
+
+  unsigned getMaxTLSAlignment() const;
 
   /// @name Utility functions for querying and setting the build SDK version
   /// @{
@@ -959,14 +1222,23 @@ public:
 
   /// Set the target variant version build SDK version metadata.
   void setDarwinTargetVariantSDKVersion(VersionTuple Version);
+
+  /// Returns target-abi from MDString, null if target-abi is absent.
+  StringRef getTargetABIFromMD();
+
+  /// Get how unwind information should be generated for x64 Windows.
+  WinX64EHUnwindMode getWinX64EHUnwindMode() const;
+
+  /// Gets the Control Flow Guard mode.
+  ControlFlowGuardMode getControlFlowGuardMode() const;
 };
 
 /// Given "llvm.used" or "llvm.compiler.used" as a global name, collect the
 /// initializer elements of that global in a SmallVector and return the global
 /// itself.
-GlobalVariable *collectUsedGlobalVariables(const Module &M,
-                                           SmallVectorImpl<GlobalValue *> &Vec,
-                                           bool CompilerUsed);
+LLVM_ABI GlobalVariable *
+collectUsedGlobalVariables(const Module &M, SmallVectorImpl<GlobalValue *> &Vec,
+                           bool CompilerUsed);
 
 /// An raw_ostream inserter for modules.
 inline raw_ostream &operator<<(raw_ostream &O, const Module &M) {

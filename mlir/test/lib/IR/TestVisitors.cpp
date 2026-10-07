@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Iterators.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 using namespace mlir;
@@ -64,6 +66,48 @@ static void testPureCallbacks(Operation *op) {
   llvm::outs() << "Region post-order visits"
                << "\n";
   op->walk<WalkOrder::PostOrder>(regionPure);
+
+  llvm::outs() << "Op reverse post-order visits"
+               << "\n";
+  op->walk<WalkOrder::PostOrder, ReverseIterator>(opPure);
+  llvm::outs() << "Block reverse post-order visits"
+               << "\n";
+  op->walk<WalkOrder::PostOrder, ReverseIterator>(blockPure);
+  llvm::outs() << "Region reverse post-order visits"
+               << "\n";
+  op->walk<WalkOrder::PostOrder, ReverseIterator>(regionPure);
+
+  // This test case tests "SkipGraphRegion = true", so start the walk with
+  // functions.
+  op->walk([&](FunctionOpInterface funcOp) {
+    llvm::outs() << "Op forward dominance post-order visits"
+                 << "\n";
+    funcOp->walk<WalkOrder::PostOrder,
+                 ForwardDominanceIterator</*SkipGraphRegion=*/true>>(opPure);
+    llvm::outs() << "Block forward dominance post-order visits"
+                 << "\n";
+    funcOp->walk<WalkOrder::PostOrder,
+                 ForwardDominanceIterator</*SkipGraphRegion=*/true>>(blockPure);
+    llvm::outs() << "Region forward dominance post-order visits"
+                 << "\n";
+    funcOp->walk<WalkOrder::PostOrder,
+                 ForwardDominanceIterator</*SkipGraphRegion=*/true>>(
+        regionPure);
+
+    llvm::outs() << "Op reverse dominance post-order visits"
+                 << "\n";
+    funcOp->walk<WalkOrder::PostOrder,
+                 ReverseDominanceIterator</*SkipGraphRegion=*/true>>(opPure);
+    llvm::outs() << "Block reverse dominance post-order visits"
+                 << "\n";
+    funcOp->walk<WalkOrder::PostOrder,
+                 ReverseDominanceIterator</*SkipGraphRegion=*/true>>(blockPure);
+    llvm::outs() << "Region reverse dominance post-order visits"
+                 << "\n";
+    funcOp->walk<WalkOrder::PostOrder,
+                 ReverseDominanceIterator</*SkipGraphRegion=*/true>>(
+        regionPure);
+  });
 }
 
 /// Tests erasure callbacks that skip the walk.
@@ -88,11 +132,19 @@ static void testSkipErasureCallbacks(Operation *op) {
     if (isa<ModuleOp>(parentOp) || isa<ModuleOp>(parentOp->getParentOp()))
       return WalkResult::advance();
 
-    llvm::outs() << "Erasing ";
+    if (block->use_empty()) {
+      llvm::outs() << "Erasing ";
+      printBlock(block);
+      llvm::outs() << "\n";
+      block->dropAllDefinedValueUses();
+      block->erase();
+      return WalkResult::skip();
+    }
+    llvm::outs() << "Cannot erase ";
     printBlock(block);
-    llvm::outs() << "\n";
-    block->erase();
-    return WalkResult::skip();
+    llvm::outs() << ", still has uses\n";
+    return WalkResult::advance();
+   
   };
 
   llvm::outs() << "Op pre-order erasures (skip)"
@@ -131,10 +183,45 @@ static void testNoSkipErasureCallbacks(Operation *op) {
     op->erase();
   };
   auto noSkipBlockErasure = [](Block *block) {
-    llvm::outs() << "Erasing ";
-    printBlock(block);
-    llvm::outs() << "\n";
-    block->erase();
+    if (block->use_empty()) {
+      llvm::outs() << "Erasing ";
+      printBlock(block);
+      llvm::outs() << "\n";
+
+      // Only drop uses from operations within the same parent region. This
+      // avoids erasing operations with their uses still intact and eliminates
+      // such crashes.
+      // Note: We do not drop the use when the parent region is different for
+      // it, because this means that the use's region holding op is a child of
+      // the region holding op containing the current block and was expected to
+      // be visited and erased first - we should correctly fail here.
+      Region *blockParentRegion = block->getParent();
+      for (Operation &op : *block) {
+        for (OpOperand &use : llvm::make_early_inc_range(op.getUses())) {
+          // Early continue if the parent regions are not same.
+          if (blockParentRegion != use.getOwner()->getParentRegion())
+            continue;
+          use.drop();
+        }
+      }
+
+      // Also drop uses of block arguments that are consumed within the same
+      // region. This handles cases like function entry blocks whose arguments
+      // are used by ops in sibling blocks.
+      for (BlockArgument arg : block->getArguments()) {
+        for (OpOperand &use : llvm::make_early_inc_range(arg.getUses())) {
+          if (blockParentRegion != use.getOwner()->getParentRegion())
+            continue;
+          use.drop();
+        }
+      }
+
+      block->erase();
+    } else {
+      llvm::outs() << "Cannot erase ";
+      printBlock(block);
+      llvm::outs() << ", still has uses\n";
+    }
   };
 
   llvm::outs() << "Op post-order erasures (no skip)"
@@ -149,6 +236,60 @@ static void testNoSkipErasureCallbacks(Operation *op) {
   cloned->erase();
 }
 
+/// Invoke region/block walks on regions/blocks.
+static void testBlockAndRegionWalkers(Operation *op) {
+  auto blockPure = [](Block *block) {
+    llvm::outs() << "Visiting ";
+    printBlock(block);
+    llvm::outs() << "\n";
+  };
+  auto regionPure = [](Region *region) {
+    llvm::outs() << "Visiting ";
+    printRegion(region);
+    llvm::outs() << "\n";
+  };
+
+  llvm::outs() << "Invoke block pre-order visits on blocks\n";
+  op->walk([&](Operation *op) {
+    if (!op->hasDiscardableAttr("walk_blocks"))
+      return;
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region.getBlocks()) {
+        block.walk<WalkOrder::PreOrder>(blockPure);
+      }
+    }
+  });
+
+  llvm::outs() << "Invoke block post-order visits on blocks\n";
+  op->walk([&](Operation *op) {
+    if (!op->hasDiscardableAttr("walk_blocks"))
+      return;
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region.getBlocks()) {
+        block.walk<WalkOrder::PostOrder>(blockPure);
+      }
+    }
+  });
+
+  llvm::outs() << "Invoke region pre-order visits on region\n";
+  op->walk([&](Operation *op) {
+    if (!op->hasDiscardableAttr("walk_regions"))
+      return;
+    for (Region &region : op->getRegions()) {
+      region.walk<WalkOrder::PreOrder>(regionPure);
+    }
+  });
+
+  llvm::outs() << "Invoke region post-order visits on region\n";
+  op->walk([&](Operation *op) {
+    if (!op->hasDiscardableAttr("walk_regions"))
+      return;
+    for (Region &region : op->getRegions()) {
+      region.walk<WalkOrder::PostOrder>(regionPure);
+    }
+  });
+}
+
 namespace {
 /// This pass exercises the different configurations of the IR visitors.
 struct TestIRVisitorsPass
@@ -160,6 +301,7 @@ struct TestIRVisitorsPass
   void runOnOperation() override {
     Operation *op = getOperation();
     testPureCallbacks(op);
+    testBlockAndRegionWalkers(op);
     testSkipErasureCallbacks(op);
     testNoSkipErasureCallbacks(op);
   }

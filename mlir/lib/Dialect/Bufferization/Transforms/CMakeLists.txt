@@ -1,6 +1,7 @@
 add_mlir_dialect_library(MLIRBufferizationTransforms
+  BufferizableOpInterfaceImpl.cpp
   Bufferize.cpp
-  BufferDeallocation.cpp
+  BufferDeallocationSimplification.cpp
   BufferOptimizations.cpp
   BufferResultsToOutParams.cpp
   BufferUtils.cpp
@@ -9,9 +10,14 @@ add_mlir_dialect_library(MLIRBufferizationTransforms
   EmptyTensorElimination.cpp
   EmptyTensorToAllocTensor.cpp
   FuncBufferizableOpInterfaceImpl.cpp
+  LowerDeallocations.cpp
   OneShotAnalysis.cpp
   OneShotModuleBufferize.cpp
+  OwnershipBasedBufferDeallocation.cpp
   TensorCopyInsertion.cpp
+  OptimizeAllocationLiveness.cpp
+  StaticMemoryPlanning.cpp
+  StaticMemoryPlannerAnalysis.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/Bufferization
@@ -21,16 +27,21 @@ add_mlir_dialect_library(MLIRBufferizationTransforms
   MLIRBufferizationEnumsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRArithDialect
   MLIRBufferizationDialect
+  MLIRCallInterfaces
   MLIRControlFlowInterfaces
   MLIRFuncDialect
+  MLIRFunctionInterfaces
   MLIRInferTypeOpInterface
   MLIRIR
   MLIRMemRefDialect
   MLIRPass
   MLIRTensorDialect
+  MLIRSCFDialect
   MLIRSideEffectInterfaces
+  MLIRSubsetOpInterface
   MLIRTransforms
   MLIRViewLikeInterface
+  MLIRSupport
 )
-

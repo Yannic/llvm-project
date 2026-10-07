@@ -34,7 +34,7 @@ entry:
   call void @llvm.dbg.declare(metadata ptr %agg.tmp.ensured, metadata !11, metadata !DIExpression()), !dbg !24
   %call.i.i = call i32 @"\01?x4@@YAHXZ"(), !dbg !46, !noalias !47
   store i32 0, ptr %agg.tmp.ensured, align 4, !dbg !50, !tbaa !57, !alias.scope !47
-  ; CHECK: call void @llvm.dbg.value(metadata i32 0, metadata ![[A:.*]], metadata !DIExpression())
+  ; CHECK: #dbg_value(i32 0, ![[A:.*]], !DIExpression(),
   ; CHECK: ![[A]] = !DILocalVariable(name: "a",
   ret void, !dbg !62
 }
@@ -97,7 +97,7 @@ attributes #0 = { nounwind readnone speculatable }
 !46 = !DILocation(line: 8, column: 8, scope: !12, inlinedAt: !25)
 !47 = !{!48}
 !48 = distinct !{!48, !49, !"\01?x5@@YA?AUx2@@XZ: %agg.result"}
-!49 = distinct !{!49, !"\01?x5@@YA?AUx2@@XZ"}
+!49 = distinct !{!49, i1 false, !"\01?x5@@YA?AUx2@@XZ"}
 !50 = !DILocation(line: 3, column: 13, scope: !51, inlinedAt: !56)
 !51 = distinct !DISubprogram(name: "x2", linkageName: "\01??0x2@@QEAA@H@Z", scope: !15, file: !1, line: 3, type: !20, isLocal: false, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: true, unit: !0, declaration: !19, retainedNodes: !52)
 !52 = !{!53, !54}

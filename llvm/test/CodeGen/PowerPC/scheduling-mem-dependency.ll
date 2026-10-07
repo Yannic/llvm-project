@@ -4,13 +4,15 @@
 
 define i64 @store_disjoint_memory(ptr nocapture %P, i64 %v) {
 entry:
-; CHECK: ********** MI Scheduling **********
+; CHECK: Current Schedule Region
 ; CHECK-LABEL: store_disjoint_memory:%bb.0
 ; CHECK:SU([[REG2:[0-9]+]]):   STD renamable $x{{[0-9]+}}, 24, renamable $x[[REG5:[0-9]+]]
-; CHECK-NOT: Successors:
+; CHECK-NOT: Predecessors:
+; CHECK: Successors:
 ; CHECK-NOT:    SU([[REG3]]): Ord  Latency=0 Memory
 ; CHECK:SU([[REG3:[0-9]+]]):   STD renamable $x{{[0-9]+}}, 16, renamable $x[[REG5]]
-; CHECK: Predecessors:
+; CHECK-NOT: Predecessors:
+; CHECK: Successors:
 ; CHECK-NOT:    SU([[REG2]]): Ord  Latency=0 Memory
   %arrayidx = getelementptr inbounds i64, ptr %P, i64 3
   store i64 %v, ptr %arrayidx
@@ -48,7 +50,7 @@ entry:
   %add15 = fadd double %add14, %3
   %add16 = fadd double %add15, %4
   ret double %add16
-; CHECK-P9: ********** MI Scheduling **********
+; CHECK-P9: Current Schedule Region
 ; CHECK-P9-LABEL: test_lxsd_no_barrier:%bb.0 entry
 ; CHECK-P9-NOT:Global memory object and new barrier chain: SU({{[0-9]+}}).
 ; CHECK-P9:SU({{[0-9]+}}):   renamable $vf{{[0-9]+}} = LXSD 136

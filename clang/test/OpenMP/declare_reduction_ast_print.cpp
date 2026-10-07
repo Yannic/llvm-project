@@ -1,10 +1,10 @@
 // RUN: %clang_cc1 -verify -fopenmp -ast-print %s | FileCheck %s
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -std=c++11 -include-pch %t -verify %s -ast-print | FileCheck %s
 
 // RUN: %clang_cc1 -verify -fopenmp-simd -ast-print %s | FileCheck %s
 // RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp-simd -std=c++11 -include-pch %t -fsyntax-only -verify %s -ast-print | FileCheck %s
+// RUN: %clang_cc1 -fopenmp-simd -std=c++11 -include-pch %t -verify %s -ast-print | FileCheck %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -38,11 +38,11 @@ public:
 
 // CHECK: template <class T> class SSS {
 // CHECK: #pragma omp declare reduction (fun : T : omp_out += omp_in) initializer(omp_priv = omp_orig + 15)
-// CHECK: #pragma omp declare reduction (fun1 : T : omp_out = 1 , omp_out = foo(omp_in)) initializer(omp_priv = omp_orig + 14)
+// CHECK: #pragma omp declare reduction (fun1 : T : omp_out = 1, omp_out = foo(omp_in)) initializer(omp_priv = omp_orig + 14)
 // CHECK: };
 // CHECK: template<> class SSS<int> {
 // CHECK: #pragma omp declare reduction (fun : int : omp_out += omp_in) initializer(omp_priv = omp_orig + 15)
-// CHECK: #pragma omp declare reduction (fun1 : int : omp_out = 1 , omp_out = foo(omp_in)) initializer(omp_priv = omp_orig + 14)
+// CHECK: #pragma omp declare reduction (fun1 : int : omp_out = 1, omp_out = foo(omp_in)) initializer(omp_priv = omp_orig + 14)
 // CHECK: };
 
 SSS<int> d;

@@ -8,11 +8,11 @@
 
 #include "mlir/Transforms/Passes.h"
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/RegionKindInterface.h"
-#include "mlir/Transforms/TopologicalSortUtils.h"
 
 namespace mlir {
-#define GEN_PASS_DEF_TOPOLOGICALSORT
+#define GEN_PASS_DEF_TOPOLOGICALSORTPASS
 #include "mlir/Transforms/Passes.h.inc"
 } // namespace mlir
 
@@ -20,11 +20,11 @@ using namespace mlir;
 
 namespace {
 struct TopologicalSortPass
-    : public impl::TopologicalSortBase<TopologicalSortPass> {
+    : public impl::TopologicalSortPassBase<TopologicalSortPass> {
   void runOnOperation() override {
     // Topologically sort the regions of the operation without SSA dominance.
     getOperation()->walk([](RegionKindInterface op) {
-      for (auto &it : llvm::enumerate(op->getRegions())) {
+      for (auto it : llvm::enumerate(op->getRegions())) {
         if (op.hasSSADominance(it.index()))
           continue;
         for (Block &block : it.value())
@@ -34,7 +34,3 @@ struct TopologicalSortPass
   }
 };
 } // end anonymous namespace
-
-std::unique_ptr<Pass> mlir::createTopologicalSortPass() {
-  return std::make_unique<TopologicalSortPass>();
-}

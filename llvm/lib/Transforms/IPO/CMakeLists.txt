@@ -11,7 +11,10 @@ add_llvm_component_library(LLVMipo
   CrossDSOCFI.cpp
   DeadArgumentElimination.cpp
   ElimAvailExtern.cpp
+  EmbedBitcodePass.cpp
+  ExpandVariadics.cpp
   ExtractGV.cpp
+  FatLTOCleanup.cpp
   ForceFunctionAttrs.cpp
   FunctionAttrs.cpp
   FunctionImport.cpp
@@ -21,25 +24,26 @@ add_llvm_component_library(LLVMipo
   GlobalSplit.cpp
   HotColdSplitting.cpp
   IPO.cpp
-  IROutliner.cpp
   InferFunctionAttrs.cpp
-  InlineSimple.cpp
   Inliner.cpp
+  Instrumentor.cpp
+  InstrumentorUtils.cpp
+  InstrumentorConfigFile.cpp
+  InstrumentorStubPrinter.cpp
   Internalize.cpp
-  LoopExtractor.cpp
   LowerTypeTests.cpp
+  MemProfContextDisambiguation.cpp
   MergeFunctions.cpp
   ModuleInliner.cpp
   OpenMPOpt.cpp
   PartialInlining.cpp
-  PassManagerBuilder.cpp
   SampleContextTracker.cpp
   SampleProfile.cpp
+  SampleProfileMatcher.cpp
   SampleProfileProbe.cpp
   SCCP.cpp
   StripDeadPrototypes.cpp
   StripSymbols.cpp
-  SyntheticCountsPropagation.cpp
   ThinLTOBitcodeWriter.cpp
   WholeProgramDevirt.cpp
 
@@ -57,12 +61,15 @@ add_llvm_component_library(LLVMipo
   LINK_COMPONENTS
   AggressiveInstCombine
   Analysis
+  AsmParser
   BitReader
   BitWriter
   Core
+  Demangle
   FrontendOpenMP
   InstCombine
   IRReader
+  Demangle
   Linker
   Object
   ProfileData

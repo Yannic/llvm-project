@@ -1,4 +1,4 @@
-; clang -target aarch64-eabi -O2 -march=armv8.5-a+memtag -fsanitize=memtag -S -emit-llvm test.cc
+; clang -target aarch64-eabi -O2 -fsanitize=memtag -S -emit-llvm test.cc
 ; void bar() {
 ;   throw 42;
 ; }
@@ -27,7 +27,7 @@
 ; RUN: opt -S -aarch64-stack-tagging %s -o - | FileCheck %s
 
 target datalayout = "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
-target triple = "aarch64-unknown-unknown-eabi"
+target triple = "aarch64"
 
 @_ZTIi = external dso_local constant ptr
 
@@ -158,10 +158,10 @@ eh.resume:                                        ; preds = %lpad.body
   resume { ptr, i32 } %eh.lpad-body
 }
 
-attributes #0 = { noreturn sanitize_memtag "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "min-legal-vector-width"="0" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+mte,+neon,+v8.5a" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { noreturn sanitize_memtag "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "min-legal-vector-width"="0" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+mte,+neon,+v8.5a" "use-soft-float"="false" }
 attributes #1 = { argmemonly nounwind willreturn }
 attributes #2 = { nounwind readnone }
-attributes #3 = { norecurse sanitize_memtag "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "min-legal-vector-width"="0" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+mte,+neon,+v8.5a" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #3 = { norecurse sanitize_memtag "correctly-rounded-divide-sqrt-fp-math"="false" "disable-tail-calls"="false" "frame-pointer"="all" "less-precise-fpmad"="false" "min-legal-vector-width"="0" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "no-signed-zeros-fp-math"="false" "no-trapping-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="generic" "target-features"="+mte,+neon,+v8.5a" "use-soft-float"="false" }
 attributes #4 = { nounwind }
 attributes #5 = { noreturn }
 

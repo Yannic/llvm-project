@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Affine/Passes.h"
+#include "mlir/Dialect/Affine/Transforms/Passes.h"
 
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -20,13 +20,16 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
+namespace affine {
 #define GEN_PASS_DEF_SIMPLIFYAFFINESTRUCTURES
-#include "mlir/Dialect/Affine/Passes.h.inc"
+#include "mlir/Dialect/Affine/Transforms/Passes.h.inc"
+} // namespace affine
 } // namespace mlir
 
 #define DEBUG_TYPE "simplify-affine-structure"
 
 using namespace mlir;
+using namespace mlir::affine;
 
 namespace {
 
@@ -35,7 +38,8 @@ namespace {
 /// all memrefs with non-trivial layout maps are converted to ones with trivial
 /// identity layout ones.
 struct SimplifyAffineStructures
-    : public impl::SimplifyAffineStructuresBase<SimplifyAffineStructures> {
+    : public affine::impl::SimplifyAffineStructuresBase<
+          SimplifyAffineStructures> {
   void runOnOperation() override;
 
   /// Utility to simplify an affine attribute and update its entry in the parent
@@ -60,7 +64,10 @@ struct SimplifyAffineStructures
     }
 
     // Simplification was successful, so update the attribute.
-    op->setAttr(name, simplified);
+    if (op->getInherentAttr(name).has_value())
+      op->setInherentAttr(name, simplified);
+    else
+      op->setDiscardableAttr(name, simplified);
   }
 
   IntegerSet simplify(IntegerSet set) { return simplifyIntegerSet(set); }
@@ -78,7 +85,7 @@ struct SimplifyAffineStructures
 } // namespace
 
 std::unique_ptr<OperationPass<func::FuncOp>>
-mlir::createSimplifyAffineStructuresPass() {
+mlir::affine::createSimplifyAffineStructuresPass() {
   return std::make_unique<SimplifyAffineStructures>();
 }
 
@@ -95,16 +102,21 @@ void SimplifyAffineStructures::runOnOperation() {
   // fold/apply canonicalization patterns when we have affine dialect ops.
   SmallVector<Operation *> opsToSimplify;
   func.walk([&](Operation *op) {
-    for (auto attr : op->getAttrs()) {
-      if (auto mapAttr = attr.getValue().dyn_cast<AffineMapAttr>())
+    NamedAttrList attrs(op->getDiscardableAttrDictionary());
+    op->getName().walkInherentAttrs(
+        op, [&](StringRef name, Attribute &attr) { attrs.append(name, attr); });
+    for (auto attr : attrs) {
+      if (auto mapAttr = dyn_cast<AffineMapAttr>(attr.getValue()))
         simplifyAndUpdateAttribute(op, attr.getName(), mapAttr);
-      else if (auto setAttr = attr.getValue().dyn_cast<IntegerSetAttr>())
+      else if (auto setAttr = dyn_cast<IntegerSetAttr>(attr.getValue()))
         simplifyAndUpdateAttribute(op, attr.getName(), setAttr);
     }
 
     if (isa<AffineForOp, AffineIfOp, AffineApplyOp>(op))
       opsToSimplify.push_back(op);
   });
-  (void)applyOpPatternsAndFold(opsToSimplify, frozenPatterns,
-                               GreedyRewriteStrictness::ExistingAndNewOps);
+  (void)applyOpPatternsGreedily(
+      opsToSimplify, frozenPatterns,
+      GreedyRewriteConfig().setStrictness(
+          GreedyRewriteStrictness::ExistingAndNewOps));
 }

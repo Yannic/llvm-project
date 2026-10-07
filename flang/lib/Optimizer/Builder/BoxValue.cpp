@@ -191,7 +191,7 @@ bool fir::MutableBoxValue::verify() const {
   mlir::Type type = fir::dyn_cast_ptrEleTy(getAddr().getType());
   if (!type)
     return false;
-  auto box = type.dyn_cast<fir::BaseBoxType>();
+  auto box = mlir::dyn_cast<fir::BaseBoxType>(type);
   if (!box)
     return false;
   // A boxed value always takes a memory reference,
@@ -210,46 +210,13 @@ bool fir::MutableBoxValue::verify() const {
 /// Debug verifier for BoxValue ctor. There is no guarantee this will
 /// always be called.
 bool fir::BoxValue::verify() const {
-  if (!addr.getType().isa<fir::BaseBoxType>())
+  if (!mlir::isa<fir::BaseBoxType>(addr.getType()))
     return false;
   if (!lbounds.empty() && lbounds.size() != rank())
-    return false;
-  // Explicit extents are here to cover cases where an explicit-shape dummy
-  // argument comes as a fir.box. This can only happen with derived types and
-  // unlimited polymorphic.
-  if (!extents.empty() && !(isDerived() || isUnlimitedPolymorphic()))
     return false;
   if (!extents.empty() && extents.size() != rank())
     return false;
   if (isCharacter() && explicitParams.size() > 1)
     return false;
   return true;
-}
-
-/// Get exactly one extent for any array-like extended value, \p exv. If \p exv
-/// is not an array or has rank less then \p dim, the result will be a nullptr.
-mlir::Value fir::factory::getExtentAtDimension(mlir::Location loc,
-                                               fir::FirOpBuilder &builder,
-                                               const fir::ExtendedValue &exv,
-                                               unsigned dim) {
-  auto extents = fir::factory::getExtents(loc, builder, exv);
-  if (dim < extents.size())
-    return extents[dim];
-  return {};
-}
-
-static inline bool isUndefOp(mlir::Value v) {
-  return mlir::isa_and_nonnull<fir::UndefOp>(v.getDefiningOp());
-}
-
-bool fir::ExtendedValue::isAssumedSize() const {
-  return match(
-      [](const fir::ArrayBoxValue &box) -> bool {
-        return !box.getExtents().empty() && isUndefOp(box.getExtents().back());
-        ;
-      },
-      [](const fir::CharArrayBoxValue &box) -> bool {
-        return !box.getExtents().empty() && isUndefOp(box.getExtents().back());
-      },
-      [](const auto &box) -> bool { return false; });
 }

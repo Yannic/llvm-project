@@ -1,4 +1,4 @@
-//===--- NoAutomaticMoveCheck.cpp - clang-tidy ----------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -16,6 +16,12 @@ using namespace clang::ast_matchers;
 
 namespace clang::tidy::performance {
 
+namespace {
+
+AST_MATCHER(VarDecl, isNRVOVariable) { return Node.isNRVOVariable(); }
+
+} // namespace
+
 NoAutomaticMoveCheck::NoAutomaticMoveCheck(StringRef Name,
                                            ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
@@ -23,33 +29,42 @@ NoAutomaticMoveCheck::NoAutomaticMoveCheck(StringRef Name,
           utils::options::parseStringList(Options.get("AllowedTypes", ""))) {}
 
 void NoAutomaticMoveCheck::registerMatchers(MatchFinder *Finder) {
-  const auto ConstLocalVariable =
+  const auto NonNrvoConstLocalVariable =
       varDecl(hasLocalStorage(), unless(hasType(lValueReferenceType())),
+              unless(isNRVOVariable()),
               hasType(qualType(
                   isConstQualified(),
                   hasCanonicalType(matchers::isExpensiveToCopy()),
                   unless(hasDeclaration(namedDecl(
-                      matchers::matchesAnyListedName(AllowedTypes)))))))
+                      matchers::matchesAnyListedRegexName(AllowedTypes)))))))
           .bind("vardecl");
 
   // A matcher for a `DstT::DstT(const Src&)` where DstT also has a
   // `DstT::DstT(Src&&)`.
   const auto LValueRefCtor = cxxConstructorDecl(
-      hasParameter(0,
-                   hasType(lValueReferenceType(pointee(type().bind("SrcT"))))),
+      hasParameter(0, hasType(hasCanonicalType(
+                          lValueReferenceType(pointee(type().bind("SrcT")))))),
       ofClass(cxxRecordDecl(hasMethod(cxxConstructorDecl(
-          hasParameter(0, hasType(rValueReferenceType(
-                              pointee(type(equalsBoundNode("SrcT")))))))))));
+          hasParameter(0, hasType(hasCanonicalType(rValueReferenceType(
+                              pointee(type(equalsBoundNode("SrcT"))))))))))));
+
+  // A matcher for `DstT::DstT(const Src&&)`, which typically comes from an
+  // instantiation of `template <typename U> DstT::DstT(U&&)`.
+  const auto ConstRefRefCtor = cxxConstructorDecl(
+      parameterCountIs(1),
+      hasParameter(0,
+                   hasType(rValueReferenceType(pointee(isConstQualified())))));
 
   Finder->addMatcher(
-      traverse(TK_AsIs,
-               returnStmt(hasReturnValue(
-                   ignoringElidableConstructorCall(ignoringParenImpCasts(
-                       cxxConstructExpr(
-                           hasDeclaration(LValueRefCtor),
-                           hasArgument(0, ignoringParenImpCasts(declRefExpr(
-                                              to(ConstLocalVariable)))))
-                           .bind("ctor_call")))))),
+      traverse(
+          TK_AsIs,
+          returnStmt(hasReturnValue(
+              ignoringElidableConstructorCall(ignoringParenImpCasts(
+                  cxxConstructExpr(
+                      hasDeclaration(anyOf(LValueRefCtor, ConstRefRefCtor)),
+                      hasArgument(0, ignoringParenImpCasts(declRefExpr(
+                                         to(NonNrvoConstLocalVariable)))))
+                      .bind("ctor_call")))))),
       this);
 }
 

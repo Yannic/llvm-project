@@ -1,6 +1,4 @@
-; RUN: opt %loadPolly -polly-print-scops -disable-output < %s \
-; RUN:  -polly-invariant-load-hoisting \
-; RUN:  | FileCheck %s
+; RUN: opt %loadNPMPolly '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output -plugin-arg=Polly,-polly-invariant-load-hoisting < %s 2>&1 | FileCheck %s
 
 ; Verify that arrays with different element types are not coalesced.
 

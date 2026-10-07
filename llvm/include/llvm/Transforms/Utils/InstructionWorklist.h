@@ -83,7 +83,7 @@ public:
 
   /// Remove I from the worklist if it exists.
   void remove(Instruction *I) {
-    DenseMap<Instruction *, unsigned>::iterator It = WorklistMap.find(I);
+    auto It = WorklistMap.find(I);
     if (It != WorklistMap.end()) {
       // Don't bother moving everything down, just null out the slot.
       Worklist[It->second] = nullptr;
@@ -106,6 +106,17 @@ public:
   void pushUsersToWorkList(Instruction &I) {
     for (User *U : I.users())
       push(cast<Instruction>(U));
+  }
+
+  /// Should be called *after* decrementing the use-count on V.
+  void handleUseCountDecrement(Value *V) {
+    if (auto *I = dyn_cast<Instruction>(V)) {
+      add(I);
+      // Many folds have one-use limitations. If there's only one use left,
+      // revisit that use.
+      if (I->hasOneUse())
+        add(cast<Instruction>(*I->user_begin()));
+    }
   }
 
   /// Check that the worklist is empty and nuke the backing store for the map.

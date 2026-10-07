@@ -11,16 +11,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Regex.h"
+#include "regex_impl.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+
 #include <cassert>
 #include <string>
-
-// Important this comes last because it defines "_REGEX_H_". At least on
-// Darwin, if included before any header that (transitively) includes
-// xlocale.h, this will cause trouble, because of missing regex-related types.
-#include "regex_impl.h"
 
 using namespace llvm;
 
@@ -95,6 +93,10 @@ bool Regex::match(StringRef String, SmallVectorImpl<StringRef> *Matches,
 
   unsigned nmatch = Matches ? preg->re_nsub+1 : 0;
 
+  // Update null string to empty string.
+  if (String.data() == nullptr)
+    String = "";
+
   // pmatch needs to have at least one element.
   SmallVector<llvm_regmatch_t, 8> pm;
   pm.resize(nmatch > 0 ? nmatch : 1);
@@ -153,7 +155,7 @@ std::string Regex::sub(StringRef Repl, StringRef String,
     // Add the skipped substring.
     Res += Split.first;
 
-    // Check for terminimation and trailing backslash.
+    // Check for termination and trailing backslash.
     if (Split.second.empty()) {
       if (Repl.size() != Split.first.size() &&
           Error && Error->empty())
@@ -166,6 +168,25 @@ std::string Regex::sub(StringRef Repl, StringRef String,
 
     // FIXME: We should have a StringExtras function for mapping C99 escapes.
     switch (Repl[0]) {
+
+      // Backreference with the "\g<ref>" syntax
+    case 'g':
+      if (Repl.size() >= 4 && Repl[1] == '<') {
+        size_t End = Repl.find('>');
+        StringRef Ref = Repl.slice(2, End);
+        unsigned RefValue;
+        if (End != StringRef::npos && !Ref.getAsInteger(10, RefValue)) {
+          Repl = Repl.substr(End + 1);
+          if (RefValue < Matches.size())
+            Res += Matches[RefValue];
+          else if (Error && Error->empty())
+            *Error =
+                ("invalid backreference string 'g<" + Twine(Ref) + ">'").str();
+          break;
+        }
+      }
+      [[fallthrough]];
+
       // Treat all unrecognized characters as self-quoting.
     default:
       Res += Repl[0];
@@ -180,6 +201,17 @@ std::string Regex::sub(StringRef Repl, StringRef String,
     case 'n':
       Res += '\n';
       Repl = Repl.substr(1);
+      break;
+
+      // Hex character escapes.
+    case 'x':
+      if (Repl.size() >= 3 && isHexDigit(Repl[1]) && isHexDigit(Repl[2])) {
+        Res += char(hexDigitValue(Repl[1]) * 16 + hexDigitValue(Repl[2]));
+        Repl = Repl.substr(3);
+      } else {
+        Res += Repl[0];
+        Repl = Repl.substr(1);
+      }
       break;
 
       // Decimal escapes are backreferences.

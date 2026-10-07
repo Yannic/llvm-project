@@ -6,7 +6,7 @@ target datalayout = "e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64"
 define void @test1() {
 ; CHECK-LABEL: @test1(
 ; CHECK-NEXT:  bb:
-; CHECK-NEXT:    br i1 false, label [[BB1_BB43_CRIT_EDGE_UNR_LCSSA:%.*]], label [[BB_NEW:%.*]]
+; CHECK-NEXT:    br i1 false, label [[BB5_PREHEADER_EPIL_PREHEADER:%.*]], label [[BB_NEW:%.*]]
 ; CHECK:       bb.new:
 ; CHECK-NEXT:    br label [[BB5_PREHEADER:%.*]]
 ; CHECK:       bb5.preheader:
@@ -15,35 +15,31 @@ define void @test1() {
 ; CHECK-NEXT:    [[I4017:%.*]] = zext i16 [[I10]] to i64
 ; CHECK-NEXT:    [[I13_I:%.*]] = add nuw nsw i64 [[I4017]], 1
 ; CHECK-NEXT:    [[I42:%.*]] = trunc i64 [[I13_I]] to i16
-; CHECK-NEXT:    [[NITER_NEXT:%.*]] = add nuw nsw i16 [[NITER]], 1
 ; CHECK-NEXT:    [[I4017_1:%.*]] = zext i16 [[I42]] to i64
 ; CHECK-NEXT:    [[I13_I_1:%.*]] = add nuw nsw i64 [[I4017_1]], 1
 ; CHECK-NEXT:    [[I42_1:%.*]] = trunc i64 [[I13_I_1]] to i16
-; CHECK-NEXT:    [[NITER_NEXT_1:%.*]] = add nuw nsw i16 [[NITER_NEXT]], 1
 ; CHECK-NEXT:    [[I4017_2:%.*]] = zext i16 [[I42_1]] to i64
 ; CHECK-NEXT:    [[I13_I_2:%.*]] = add nuw nsw i64 [[I4017_2]], 1
 ; CHECK-NEXT:    [[I42_2:%.*]] = trunc i64 [[I13_I_2]] to i16
-; CHECK-NEXT:    [[NITER_NEXT_2:%.*]] = add nuw nsw i16 [[NITER_NEXT_1]], 1
 ; CHECK-NEXT:    [[I4017_3:%.*]] = zext i16 [[I42_2]] to i64
 ; CHECK-NEXT:    [[I13_I_3:%.*]] = add nuw nsw i64 [[I4017_3]], 1
 ; CHECK-NEXT:    [[I42_3]] = trunc i64 [[I13_I_3]] to i16
-; CHECK-NEXT:    [[NITER_NEXT_3]] = add nuw i16 [[NITER_NEXT_2]], 1
+; CHECK-NEXT:    [[NITER_NEXT_3]] = add nuw i16 [[NITER]], 4
 ; CHECK-NEXT:    br label [[BB10_PREHEADER:%.*]]
 ; CHECK:       bb10.preheader:
 ; CHECK-NEXT:    br i1 true, label [[BB38]], label [[BB10_PREHEADER]]
 ; CHECK:       bb38:
 ; CHECK-NEXT:    [[NITER_NCMP_3:%.*]] = icmp eq i16 [[NITER_NEXT_3]], -28
-; CHECK-NEXT:    br i1 [[NITER_NCMP_3]], label [[BB1_BB43_CRIT_EDGE_UNR_LCSSA_LOOPEXIT:%.*]], label [[BB5_PREHEADER]], !llvm.loop [[LOOP1:![0-9]+]]
-; CHECK:       bb1.bb43_crit_edge.unr-lcssa.loopexit:
-; CHECK-NEXT:    [[I10_UNR_PH:%.*]] = phi i16 [ [[I42_3]], [[BB38]] ]
-; CHECK-NEXT:    br label [[BB1_BB43_CRIT_EDGE_UNR_LCSSA]]
+; CHECK-NEXT:    br i1 [[NITER_NCMP_3]], label [[BB1_BB43_CRIT_EDGE_UNR_LCSSA:%.*]], label [[BB5_PREHEADER]], !llvm.loop [[LOOP0:![0-9]+]]
 ; CHECK:       bb1.bb43_crit_edge.unr-lcssa:
-; CHECK-NEXT:    [[I10_UNR:%.*]] = phi i16 [ 0, [[BB:%.*]] ], [ [[I10_UNR_PH]], [[BB1_BB43_CRIT_EDGE_UNR_LCSSA_LOOPEXIT]] ]
-; CHECK-NEXT:    br i1 true, label [[BB5_PREHEADER_EPIL_PREHEADER:%.*]], label [[BB1_BB43_CRIT_EDGE:%.*]]
+; CHECK-NEXT:    [[I10_UNR:%.*]] = phi i16 [ [[I42_3]], [[BB38]] ]
+; CHECK-NEXT:    br i1 true, label [[BB5_PREHEADER_EPIL_PREHEADER]], label [[BB1_BB43_CRIT_EDGE:%.*]]
 ; CHECK:       bb5.preheader.epil.preheader:
+; CHECK-NEXT:    [[I10_EPIL_INIT:%.*]] = phi i16 [ 0, [[BB:%.*]] ], [ [[I10_UNR]], [[BB1_BB43_CRIT_EDGE_UNR_LCSSA]] ]
+; CHECK-NEXT:    call void @llvm.assume(i1 true)
 ; CHECK-NEXT:    br label [[BB5_PREHEADER_EPIL:%.*]]
 ; CHECK:       bb5.preheader.epil:
-; CHECK-NEXT:    [[I10_EPIL:%.*]] = phi i16 [ [[I10_UNR]], [[BB5_PREHEADER_EPIL_PREHEADER]] ], [ [[I42_EPIL:%.*]], [[BB38_EPIL:%.*]] ]
+; CHECK-NEXT:    [[I10_EPIL:%.*]] = phi i16 [ [[I10_EPIL_INIT]], [[BB5_PREHEADER_EPIL_PREHEADER]] ], [ [[I42_EPIL:%.*]], [[BB38_EPIL:%.*]] ]
 ; CHECK-NEXT:    [[EPIL_ITER:%.*]] = phi i16 [ 0, [[BB5_PREHEADER_EPIL_PREHEADER]] ], [ [[EPIL_ITER_NEXT:%.*]], [[BB38_EPIL]] ]
 ; CHECK-NEXT:    br label [[BB10_PREHEADER_EPIL:%.*]]
 ; CHECK:       bb10.preheader.epil:
@@ -56,7 +52,7 @@ define void @test1() {
 ; CHECK-NEXT:    [[I3_NOT_EPIL:%.*]] = icmp eq i16 [[I10_EPIL]], -27
 ; CHECK-NEXT:    [[EPIL_ITER_NEXT]] = add i16 [[EPIL_ITER]], 1
 ; CHECK-NEXT:    [[EPIL_ITER_CMP:%.*]] = icmp ne i16 [[EPIL_ITER_NEXT]], 2
-; CHECK-NEXT:    br i1 [[EPIL_ITER_CMP]], label [[BB5_PREHEADER_EPIL]], label [[BB1_BB43_CRIT_EDGE_EPILOG_LCSSA:%.*]], !llvm.loop [[LOOP3:![0-9]+]]
+; CHECK-NEXT:    br i1 [[EPIL_ITER_CMP]], label [[BB5_PREHEADER_EPIL]], label [[BB1_BB43_CRIT_EDGE_EPILOG_LCSSA:%.*]], !llvm.loop [[LOOP2:![0-9]+]]
 ; CHECK:       bb1.bb43_crit_edge.epilog-lcssa:
 ; CHECK-NEXT:    br label [[BB1_BB43_CRIT_EDGE]]
 ; CHECK:       bb1.bb43_crit_edge:

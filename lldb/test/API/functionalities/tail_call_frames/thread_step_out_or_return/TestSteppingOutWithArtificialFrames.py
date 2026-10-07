@@ -7,41 +7,18 @@ import lldbsuite.test.lldbutil as lldbutil
 from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 
-class TestArtificialFrameThreadStepOut1(TestBase):
 
+@requireNotWasm("no unwinder support for tail-call frames")
+class TestArtificialFrameThreadStepOut1(TestBase):
     # If your test case doesn't stress debug info, then
     # set this to true.  That way it won't be run once for
     # each debug info format.
     NO_DEBUG_INFO_TESTCASE = True
 
     def prepare_thread(self):
-        exe = self.getBuildArtifact("a.out")
-
-        # Create a target by the debugger.
-        target = self.dbg.CreateTarget(exe)
-        self.assertTrue(target, VALID_TARGET)
-
-        breakpoint = target.BreakpointCreateBySourceRegex("break here",
-                lldb.SBFileSpec("main.cpp"))
-        self.assertTrue(breakpoint and
-                        breakpoint.GetNumLocations() == 1,
-                        VALID_BREAKPOINT)
-
-        error = lldb.SBError()
-        launch_info = target.GetLaunchInfo()
-        process = target.Launch(launch_info, error)
-        self.assertTrue(process, PROCESS_IS_VALID)
-
-        # Did we hit our breakpoint?
-        threads = lldbutil.get_threads_stopped_at_breakpoint(process,
-                breakpoint)
-        self.assertEqual(
-            len(threads), 1,
-            "There should be a thread stopped at our breakpoint")
-
-        self.assertEqual(breakpoint.GetHitCount(), 1)
-
-        thread = threads[0]
+        _, _, thread, _ = lldbutil.run_to_source_breakpoint(
+            self, "break here", lldb.SBFileSpec("main.cpp")
+        )
 
         # Here's what we expect to see in the backtrace:
         #   frame #0: ... a.out`sink() at main.cpp:13:4 [opt]
@@ -88,4 +65,3 @@ class TestArtificialFrameThreadStepOut1(TestBase):
         frame4 = thread.GetSelectedFrame()
         self.assertEqual(frame4.GetDisplayFunctionName(), "main")
         self.assertFalse(frame2.IsArtificial())
-

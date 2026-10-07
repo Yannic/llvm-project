@@ -2,8 +2,8 @@
 // There's a set of additional checks for systems with proper support of UTF-8
 // on the standard output in fixit-unicode-with-utf8-output.c.
 
-// RUN: not %clang_cc1 -fsyntax-only %s 2>&1 | FileCheck -strict-whitespace %s
-// RUN: not %clang_cc1 -fsyntax-only -fdiagnostics-parseable-fixits %s 2>&1 | FileCheck -check-prefix=CHECK-MACHINE %s
+// RUN: not %clang_cc1 -fsyntax-only -fno-diagnostics-show-line-numbers %s 2>&1 | FileCheck -strict-whitespace %s
+// RUN: not %clang_cc1 -fsyntax-only -fno-diagnostics-show-line-numbers -fdiagnostics-parseable-fixits %s 2>&1 | FileCheck -check-prefix=CHECK-MACHINE %s
 
 struct Foo {
   int bar;
@@ -13,7 +13,7 @@ struct Foo {
 void test1() {
   struct Foo foo;
   foo.bar = 42☃
-  // CHECK: error: character <U+2603> not allowed in an identifier
+  // CHECK: error: character '☃' U+2603 not allowed in an identifier
   // CHECK: {{^              \^}}
   // Make sure we emit the fixit right in front of the snowman.
 

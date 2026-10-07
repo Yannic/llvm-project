@@ -10,11 +10,13 @@
 #define LLDB_UTILITY_REGISTERVALUE_H
 
 #include "lldb/Utility/Endian.h"
+#include "lldb/Utility/RegisterInfo.h"
 #include "lldb/Utility/Scalar.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-enumerations.h"
 #include "lldb/lldb-types.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
 #include <cstring>
@@ -23,12 +25,20 @@
 namespace lldb_private {
 class DataExtractor;
 class Stream;
-struct RegisterInfo;
 
 class RegisterValue {
 public:
-  // big enough to support up to 256 byte AArch64 SVE
-  enum { kMaxRegisterByteSize = 256u };
+  enum {
+    // What we can reasonably put on the stack, big enough to support up to 256
+    // byte AArch64 SVE.
+    kTypicalRegisterByteSize = 256u,
+    // Anything else we'll heap allocate storage for it.
+    // 256x256 to support 256 byte AArch64 SME's array storage (ZA) register.
+    // Which is a square of vector length x vector length.
+    kMaxRegisterByteSize = 256u * 256u,
+  };
+
+  typedef llvm::SmallVector<uint8_t, kTypicalRegisterByteSize> BytesContainer;
 
   enum Type {
     eTypeInvalid,
@@ -36,7 +46,8 @@ public:
     eTypeUInt16,
     eTypeUInt32,
     eTypeUInt64,
-    eTypeUInt128,
+    eTypeUIntN, /// < This value is used when the (integer) register is larger
+                /// than 64-bits.
     eTypeFloat,
     eTypeDouble,
     eTypeLongDouble,
@@ -59,7 +70,7 @@ public:
     m_scalar = inst;
   }
 
-  explicit RegisterValue(llvm::APInt inst) : m_type(eTypeUInt128) {
+  explicit RegisterValue(llvm::APInt inst) : m_type(eTypeUIntN) {
     m_scalar = llvm::APInt(std::move(inst));
   }
 
@@ -87,6 +98,10 @@ public:
   RegisterValue::Type SetType(const RegisterInfo &reg_info);
 
   bool GetData(DataExtractor &data) const;
+
+  /// Copy \p byte_size bytes from this value into \p data using \p byte_order.
+  bool GetData(DataExtractor &data, uint32_t byte_size,
+               lldb::ByteOrder byte_order) const;
 
   // Copy the register value from this object into a buffer in "dst" and obey
   // the "dst_byte_order" when copying the data. Also watch out in case
@@ -168,7 +183,7 @@ public:
   }
 
   void operator=(llvm::APInt uint) {
-    m_type = eTypeUInt128;
+    m_type = eTypeUIntN;
     m_scalar = llvm::APInt(std::move(uint));
   }
 
@@ -207,8 +222,8 @@ public:
     m_scalar = uint;
   }
 
-  void SetUInt128(llvm::APInt uint) {
-    m_type = eTypeUInt128;
+  void SetUIntN(llvm::APInt uint) {
+    m_type = eTypeUIntN;
     m_scalar = std::move(uint);
   }
 
@@ -251,19 +266,17 @@ public:
 
   uint32_t GetByteSize() const;
 
-  static uint32_t GetMaxByteSize() { return kMaxRegisterByteSize; }
-
   void Clear();
 
 protected:
   RegisterValue::Type m_type = eTypeInvalid;
   Scalar m_scalar;
 
-  struct {
-    mutable uint8_t
-        bytes[kMaxRegisterByteSize]; // This must be big enough to hold any
-                                     // register for any supported target.
-    uint16_t length = 0;
+  struct RegisterValueBuffer {
+    // Start at max stack storage size. Move to the heap for anything larger.
+    RegisterValueBuffer() : bytes(kTypicalRegisterByteSize) {}
+
+    mutable BytesContainer bytes;
     lldb::ByteOrder byte_order = lldb::eByteOrderInvalid;
   } buffer;
 };

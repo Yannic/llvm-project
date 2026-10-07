@@ -19,7 +19,7 @@ namespace format {
 
 enum class Base { Binary, Decimal, Hex, Other };
 
-static Base getBase(const StringRef IntegerLiteral) {
+static Base getBase(StringRef IntegerLiteral) {
   assert(IntegerLiteral.size() > 1);
 
   if (IntegerLiteral[0] > '0') {
@@ -44,15 +44,20 @@ static Base getBase(const StringRef IntegerLiteral) {
 std::pair<tooling::Replacements, unsigned>
 IntegerLiteralSeparatorFixer::process(const Environment &Env,
                                       const FormatStyle &Style) {
+  const auto LangOpts = getFormattingLangOpts(Style);
+
   switch (Style.Language) {
-  case FormatStyle::LK_Cpp:
-  case FormatStyle::LK_ObjC:
-    Separator = '\'';
-    break;
   case FormatStyle::LK_CSharp:
   case FormatStyle::LK_Java:
   case FormatStyle::LK_JavaScript:
     Separator = '_';
+    break;
+  case FormatStyle::LK_C:
+  case FormatStyle::LK_Cpp:
+  case FormatStyle::LK_ObjC:
+    if (!LangOpts.AllowLiteralDigitSeparator)
+      return {};
+    Separator = '\'';
     break;
   default:
     return {};
@@ -69,11 +74,27 @@ IntegerLiteralSeparatorFixer::process(const Environment &Env,
   if (SkipBinary && SkipDecimal && SkipHex)
     return {};
 
+  auto CalcMinAndMax = [](int DigitsPerGroup, int MinDigitsInsert,
+                          int MaxDigitsRemove) {
+    MinDigitsInsert = std::max(MinDigitsInsert, DigitsPerGroup + 1);
+    if (MinDigitsInsert < 1)
+      MaxDigitsRemove = 0;
+    else if (MaxDigitsRemove < 1 || MaxDigitsRemove >= MinDigitsInsert)
+      MaxDigitsRemove = MinDigitsInsert - 1;
+    return std::pair(MinDigitsInsert, MaxDigitsRemove);
+  };
+
+  const auto [BinaryMinDigitsInsert, BinaryMaxDigitsRemove] = CalcMinAndMax(
+      Binary, Option.BinaryMinDigitsInsert, Option.BinaryMaxDigitsRemove);
+  const auto [DecimalMinDigitsInsert, DecimalMaxDigitsRemove] = CalcMinAndMax(
+      Decimal, Option.DecimalMinDigitsInsert, Option.DecimalMaxDigitsRemove);
+  const auto [HexMinDigitsInsert, HexMaxDigitsRemove] =
+      CalcMinAndMax(Hex, Option.HexMinDigitsInsert, Option.HexMaxDigitsRemove);
+
   const auto &SourceMgr = Env.getSourceManager();
   AffectedRangeManager AffectedRangeMgr(SourceMgr, Env.getCharRanges());
 
   const auto ID = Env.getFileID();
-  const auto LangOpts = getFormattingLangOpts(Style);
   Lexer Lex(ID, SourceMgr.getBufferOrFake(ID), SourceMgr, LangOpts);
   Lex.SetCommentRetentionState(true);
 
@@ -87,9 +108,9 @@ IntegerLiteralSeparatorFixer::process(const Environment &Env,
     auto Location = Tok.getLocation();
     auto Text = StringRef(SourceMgr.getCharacterData(Location), Length);
     if (Tok.is(tok::comment)) {
-      if (Text == "// clang-format off" || Text == "/* clang-format off */")
+      if (isClangFormatOff(Text))
         Skip = true;
-      else if (Text == "// clang-format on" || Text == "/* clang-format on */")
+      else if (isClangFormatOn(Text))
         Skip = false;
       continue;
     }
@@ -106,17 +127,22 @@ IntegerLiteralSeparatorFixer::process(const Environment &Env,
         (IsBase16 && SkipHex) || B == Base::Other) {
       continue;
     }
+    if (Style.isCpp()) {
+      // Hex alpha digits a-f/A-F must be at the end of the string literal.
+      static constexpr StringRef Suffixes("_himnsuyd");
+      if (const auto Pos =
+              Text.find_first_of(IsBase16 ? Suffixes.drop_back() : Suffixes);
+          Pos != StringRef::npos) {
+        Text = Text.substr(0, Pos);
+        Length = Pos;
+      }
+    }
     if ((IsBase10 && Text.find_last_of(".eEfFdDmM") != StringRef::npos) ||
         (IsBase16 && Text.find_last_of(".pP") != StringRef::npos)) {
       continue;
     }
-    if (((IsBase2 && Binary < 0) || (IsBase10 && Decimal < 0) ||
-         (IsBase16 && Hex < 0)) &&
-        Text.find(Separator) == StringRef::npos) {
-      continue;
-    }
     const auto Start = Text[0] == '0' ? 2 : 0;
-    auto End = Text.find_first_of("uUlLzZn");
+    auto End = Text.find_first_of("uUlLzZn", Start);
     if (End == StringRef::npos)
       End = Length;
     if (Start > 0 || End < Length) {
@@ -124,23 +150,43 @@ IntegerLiteralSeparatorFixer::process(const Environment &Env,
       Text = Text.substr(Start, Length);
     }
     auto DigitsPerGroup = Decimal;
-    if (IsBase2)
+    auto MinDigitsInsert = DecimalMinDigitsInsert;
+    auto MaxDigitsRemove = DecimalMaxDigitsRemove;
+    if (IsBase2) {
       DigitsPerGroup = Binary;
-    else if (IsBase16)
+      MinDigitsInsert = BinaryMinDigitsInsert;
+      MaxDigitsRemove = BinaryMaxDigitsRemove;
+    } else if (IsBase16) {
       DigitsPerGroup = Hex;
-    if (DigitsPerGroup > 0 && checkSeparator(Text, DigitsPerGroup))
+      MinDigitsInsert = HexMinDigitsInsert;
+      MaxDigitsRemove = HexMaxDigitsRemove;
+    }
+    const auto SeparatorCount = Text.count(Separator);
+    const int DigitCount = Length - SeparatorCount;
+    if (DigitCount > MaxDigitsRemove && DigitCount < MinDigitsInsert)
       continue;
+    const bool RemoveSeparator =
+        DigitsPerGroup < 0 || DigitCount <= MaxDigitsRemove;
+    if (RemoveSeparator && SeparatorCount == 0)
+      continue;
+    if (!RemoveSeparator && SeparatorCount > 0 &&
+        checkSeparator(Text, DigitsPerGroup)) {
+      continue;
+    }
+    const auto &Formatted =
+        format(Text, DigitsPerGroup, DigitCount, RemoveSeparator);
+    assert(Formatted != Text);
     if (Start > 0)
       Location = Location.getLocWithOffset(Start);
-    cantFail(Result.add(tooling::Replacement(SourceMgr, Location, Length,
-                                             format(Text, DigitsPerGroup))));
+    cantFail(Result.add(
+        tooling::Replacement(SourceMgr, Location, Length, Formatted)));
   }
 
   return {Result, 0};
 }
 
-bool IntegerLiteralSeparatorFixer::checkSeparator(
-    const StringRef IntegerLiteral, int DigitsPerGroup) const {
+bool IntegerLiteralSeparatorFixer::checkSeparator(StringRef IntegerLiteral,
+                                                  int DigitsPerGroup) const {
   assert(DigitsPerGroup > 0);
 
   int I = 0;
@@ -150,32 +196,29 @@ bool IntegerLiteralSeparatorFixer::checkSeparator(
         return false;
       I = 0;
     } else {
-      ++I;
       if (I == DigitsPerGroup)
         return false;
+      ++I;
     }
   }
 
   return true;
 }
 
-std::string IntegerLiteralSeparatorFixer::format(const StringRef IntegerLiteral,
-                                                 int DigitsPerGroup) const {
+std::string IntegerLiteralSeparatorFixer::format(StringRef IntegerLiteral,
+                                                 int DigitsPerGroup,
+                                                 int DigitCount,
+                                                 bool RemoveSeparator) const {
   assert(DigitsPerGroup != 0);
 
   std::string Formatted;
 
-  if (DigitsPerGroup < 0) {
+  if (RemoveSeparator) {
     for (auto C : IntegerLiteral)
       if (C != Separator)
         Formatted.push_back(C);
     return Formatted;
   }
-
-  int DigitCount = 0;
-  for (auto C : IntegerLiteral)
-    if (C != Separator)
-      ++DigitCount;
 
   int Remainder = DigitCount % DigitsPerGroup;
 

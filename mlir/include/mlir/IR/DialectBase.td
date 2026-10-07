@@ -13,28 +13,11 @@
 #ifndef DIALECTBASE_TD
 #define DIALECTBASE_TD
 
-// Helper for marking deprecated classes or defs. To mark a def as deprecated,
-// mix in the `Deprecate` class with a reason.
-class Deprecated<string reason> {
-  string odsDeprecated = reason;
-}
+include "mlir/IR/Utils.td"
 
 //===----------------------------------------------------------------------===//
 // Dialect definitions
 //===----------------------------------------------------------------------===//
-
-class EmitFolderBase;
-// Generate 'fold' method with 'ArrayRef<Attribute>' parameter.
-// New code should prefer using 'kEmitFoldAdaptorFolder' and
-// consider 'kEmitRawAttributesFolder' deprecated and to be
-// removed in the future.
-def kEmitRawAttributesFolder : EmitFolderBase, Deprecated<
-  "'useFoldAPI' of 'kEmitRawAttributesFolder' (default) has been deprecated "
-  # "and is pending removal. Please switch to 'kEmitFoldAdaptorFolder'. See "
-  # "https://discourse.llvm.org/t/psa-new-improved-fold-method-signature-has-landed-please-update-your-downstream-projects/67618"
-> {}
-// Generate 'fold' method with 'FoldAdaptor' parameter.
-def kEmitFoldAdaptorFolder : EmitFolderBase {}
 
 class Dialect {
   // The name of the dialect.
@@ -51,6 +34,11 @@ class Dialect {
   // pattern or interfaces.
   list<string> dependentDialects = [];
 
+  // A list of key/value pair representing an attribute type and a name.
+  // This will generate helper classes on the dialect to be able to
+  // manage discardable attributes on operations in a type safe way.
+  dag discardableAttrs = (ins);
+
   // The C++ namespace that ops of this dialect should be placed into.
   //
   // By default, uses the name of the dialect as the only namespace. To avoid
@@ -66,6 +54,13 @@ class Dialect {
   // An optional code block containing extra declarations to place in the
   // dialect declaration.
   code extraClassDeclaration = "";
+
+  // Require declarative parsers for property-backed operations to bind every
+  // inherent attribute and property directly in the custom assembly format,
+  // or otherwise cover them with `prop-dict`.
+  // Deprecated: setting this to 0 temporarily opts into legacy behavior that
+  // mixes inherent and discardable attributes in `attr-dict`.
+  bit useStrictPropertiesInAssemblyFormat = 1;
 
   // If this dialect overrides the hook for materializing constants.
   bit hasConstantMaterializer = 0;
@@ -104,9 +99,6 @@ class Dialect {
 
   // If this dialect can be extended at runtime with new operations or types.
   bit isExtensible = 0;
-
-  // Fold API to use for operations in this dialect.
-  EmitFolderBase useFoldAPI = kEmitRawAttributesFolder;
 }
 
 #endif // DIALECTBASE_TD

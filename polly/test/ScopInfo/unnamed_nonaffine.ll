@@ -1,5 +1,5 @@
-; RUN: opt %loadPolly -polly-allow-nonaffine -polly-use-llvm-names=true  -polly-print-scops -disable-output < %s | FileCheck %s
-; RUN: opt %loadPolly -polly-allow-nonaffine -polly-use-llvm-names=false -polly-print-scops -disable-output < %s | FileCheck %s -check-prefix=UNNAMED
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-allow-nonaffine -plugin-arg=Polly,-polly-use-llvm-names=true '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-allow-nonaffine -plugin-arg=Polly,-polly-use-llvm-names=false '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s -check-prefix=UNNAMED
 ;
 ;    void f(int *A, int b) {
 ;      int x;

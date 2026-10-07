@@ -19,10 +19,21 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/DialectInterface.h"
 #include "mlir/IR/OpImplementation.h"
-#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
 
 namespace mlir {
+//===--------------------------------------------------------------------===//
+// Dialect Version Interface.
+//===--------------------------------------------------------------------===//
+
+/// This class is used to represent the version of a dialect, for the purpose
+/// of polymorphic destruction.
+class DialectVersion {
+public:
+  virtual ~DialectVersion() = default;
+};
+
 //===----------------------------------------------------------------------===//
 // DialectBytecodeReader
 //===----------------------------------------------------------------------===//
@@ -37,7 +48,24 @@ public:
   virtual ~DialectBytecodeReader() = default;
 
   /// Emit an error to the reader.
-  virtual InFlightDiagnostic emitError(const Twine &msg = {}) = 0;
+  virtual InFlightDiagnostic emitError(const Twine &msg = {}) const = 0;
+
+  /// Emit a warning to the reader.
+  virtual InFlightDiagnostic emitWarning(const Twine &msg = {}) const = 0;
+
+  /// Retrieve the dialect version by name if available.
+  virtual FailureOr<const DialectVersion *>
+  getDialectVersion(StringRef dialectName) const = 0;
+  template <class T>
+  FailureOr<const DialectVersion *> getDialectVersion() const {
+    return getDialectVersion(T::getDialectNamespace());
+  }
+
+  /// Retrieve the context associated to the reader.
+  virtual MLIRContext *getContext() const = 0;
+
+  /// Return the bytecode version being read.
+  virtual uint64_t getBytecodeVersion() const = 0;
 
   /// Read out a list of elements, invoking the provided callback for each
   /// element. The callback function may be in any of the following forms:
@@ -48,6 +76,18 @@ public:
     uint64_t size;
     if (failed(readVarInt(size)))
       return failure();
+    return readListWithKnownSize(result, size,
+                                 std::forward<CallbackFn>(callback));
+  }
+
+  /// Read out a list of elements with a known size, invoking the provided
+  /// callback for each element. Unlike readList, this does not read a length
+  /// prefix. The callback function may be in any of the following forms:
+  ///   * LogicalResult(T &)
+  ///   * FailureOr<T>()
+  template <typename T, typename CallbackFn>
+  LogicalResult readListWithKnownSize(SmallVectorImpl<T> &result, uint64_t size,
+                                      CallbackFn &&callback) {
     result.reserve(size);
 
     for (uint64_t i = 0; i < size; ++i) {
@@ -74,6 +114,10 @@ public:
 
   /// Read a reference to the given attribute.
   virtual LogicalResult readAttribute(Attribute &result) = 0;
+  /// Read an optional reference to the given attribute. Returns success even if
+  /// the Attribute isn't present.
+  virtual LogicalResult readOptionalAttribute(Attribute &attr) = 0;
+
   template <typename T>
   LogicalResult readAttributes(SmallVectorImpl<T> &attrs) {
     return readList(attrs, [this](T &attr) { return readAttribute(attr); });
@@ -83,7 +127,19 @@ public:
     Attribute baseResult;
     if (failed(readAttribute(baseResult)))
       return failure();
-    if ((result = baseResult.dyn_cast<T>()))
+    if ((result = dyn_cast<T>(baseResult)))
+      return success();
+    return emitError() << "expected " << llvm::getTypeName<T>()
+                       << ", but got: " << baseResult;
+  }
+  template <typename T>
+  LogicalResult readOptionalAttribute(T &result) {
+    Attribute baseResult;
+    if (failed(readOptionalAttribute(baseResult)))
+      return failure();
+    if (!baseResult)
+      return success();
+    if ((result = dyn_cast<T>(baseResult)))
       return success();
     return emitError() << "expected " << llvm::getTypeName<T>()
                        << ", but got: " << baseResult;
@@ -100,7 +156,7 @@ public:
     Type baseResult;
     if (failed(readType(baseResult)))
       return failure();
-    if ((result = baseResult.dyn_cast<T>()))
+    if ((result = dyn_cast<T>(baseResult)))
       return success();
     return emitError() << "expected " << llvm::getTypeName<T>()
                        << ", but got: " << baseResult;
@@ -132,6 +188,76 @@ public:
                     [this](int64_t &value) { return readSignedVarInt(value); });
   }
 
+  /// Parse a variable length encoded integer whose low bit is used to encode an
+  /// unrelated flag, i.e: `(integerValue << 1) | (flag ? 1 : 0)`.
+  LogicalResult readVarIntWithFlag(uint64_t &result, bool &flag) {
+    if (failed(readVarInt(result)))
+      return failure();
+    flag = result & 1;
+    result >>= 1;
+    return success();
+  }
+
+  /// Read a "small" sparse array of integer <= 32 bits elements, where
+  /// index/value pairs can be compressed when the array is small.
+  /// Note that only some position of the array will be read and the ones
+  /// not stored in the bytecode are gonne be left untouched.
+  /// If the provided array is too small for the stored indices, an error
+  /// will be returned.
+  template <typename T>
+  LogicalResult readSparseArray(MutableArrayRef<T> array) {
+    static_assert(sizeof(T) < sizeof(uint64_t), "expect integer < 64 bits");
+    static_assert(std::is_integral<T>::value, "expects integer");
+    uint64_t nonZeroesCount;
+    bool useSparseEncoding;
+    if (failed(readVarIntWithFlag(nonZeroesCount, useSparseEncoding)))
+      return failure();
+    if (nonZeroesCount == 0)
+      return success();
+    if (!useSparseEncoding) {
+      // This is a simple dense array.
+      if (nonZeroesCount > array.size()) {
+        emitError("trying to read an array of ")
+            << nonZeroesCount << " but only " << array.size()
+            << " storage available.";
+        return failure();
+      }
+      for (int64_t index : llvm::seq<int64_t>(0, nonZeroesCount)) {
+        uint64_t value;
+        if (failed(readVarInt(value)))
+          return failure();
+        array[index] = value;
+      }
+      return success();
+    }
+    // Read sparse encoding
+    // This is the number of bits used for packing the index with the value.
+    uint64_t indexBitSize;
+    if (failed(readVarInt(indexBitSize)))
+      return failure();
+    constexpr uint64_t maxIndexBitSize = 8;
+    if (indexBitSize > maxIndexBitSize) {
+      emitError("reading sparse array with indexing above 8 bits: ")
+          << indexBitSize;
+      return failure();
+    }
+    for (uint32_t count : llvm::seq<uint32_t>(0, nonZeroesCount)) {
+      (void)count;
+      uint64_t indexValuePair;
+      if (failed(readVarInt(indexValuePair)))
+        return failure();
+      uint64_t index = indexValuePair & ~(uint64_t(-1) << (indexBitSize));
+      uint64_t value = indexValuePair >> indexBitSize;
+      if (index >= array.size()) {
+        emitError("reading a sparse array found index ")
+            << index << " but only " << array.size() << " storage available.";
+        return failure();
+      }
+      array[index] = value;
+    }
+    return success();
+  }
+
   /// Read an APInt that is known to have been encoded with the given width.
   virtual FailureOr<APInt> readAPIntWithKnownWidth(unsigned bitWidth) = 0;
 
@@ -145,6 +271,9 @@ public:
 
   /// Read a blob from the bytecode.
   virtual LogicalResult readBlob(ArrayRef<char> &result) = 0;
+
+  /// Read a bool from the bytecode.
+  virtual LogicalResult readBool(bool &result) = 0;
 
 private:
   /// Read a handle to a dialect resource.
@@ -177,8 +306,17 @@ public:
       callback(element);
   }
 
+  /// Write out a list of elements without a length prefix, for cases where the
+  /// size is known from another field.
+  template <typename RangeT, typename CallbackFn>
+  void writeListWithKnownSize(RangeT &&range, CallbackFn &&callback) {
+    for (auto &element : range)
+      callback(element);
+  }
+
   /// Write a reference to the given attribute.
   virtual void writeAttribute(Attribute attr) = 0;
+  virtual void writeOptionalAttribute(Attribute attr) = 0;
   template <typename T>
   void writeAttributes(ArrayRef<T> attrs) {
     writeList(attrs, [this](T attr) { writeAttribute(attr); });
@@ -210,6 +348,55 @@ public:
     writeList(value, [this](int64_t value) { writeSignedVarInt(value); });
   }
 
+  /// Write a VarInt and a flag packed together.
+  void writeVarIntWithFlag(uint64_t value, bool flag) {
+    writeVarInt((value << 1) | (flag ? 1 : 0));
+  }
+
+  /// Write out a "small" sparse array of integer <= 32 bits elements, where
+  /// index/value pairs can be compressed when the array is small. This method
+  /// will scan the array multiple times and should not be used for large
+  /// arrays. The optional provided "zero" can be used to adjust for the
+  /// expected repeated value. We assume here that the array size fits in a 32
+  /// bits integer.
+  template <typename T>
+  void writeSparseArray(ArrayRef<T> array) {
+    static_assert(sizeof(T) < sizeof(uint64_t), "expect integer < 64 bits");
+    static_assert(std::is_integral<T>::value, "expects integer");
+    uint32_t size = array.size();
+    uint32_t nonZeroesCount = 0, lastIndex = 0;
+    for (uint32_t index : llvm::seq<uint32_t>(0, size)) {
+      if (!array[index])
+        continue;
+      nonZeroesCount++;
+      lastIndex = index;
+    }
+    // If the last position is too large, or the array isn't at least 50%
+    // sparse, emit it with a dense encoding.
+    if (lastIndex > 256 || nonZeroesCount > size / 2) {
+      // Emit the array size and a flag which indicates whether it is sparse.
+      writeVarIntWithFlag(size, false);
+      for (const T &elt : array)
+        writeVarInt(elt);
+      return;
+    }
+    // Emit sparse: first the number of elements we'll write and a flag
+    // indicating it is a sparse encoding.
+    writeVarIntWithFlag(nonZeroesCount, true);
+    if (nonZeroesCount == 0)
+      return;
+    // This is the number of bits used for packing the index with the value.
+    int indexBitSize = llvm::Log2_32_Ceil(lastIndex + 1);
+    writeVarInt(indexBitSize);
+    for (uint32_t index : llvm::seq<uint32_t>(0, lastIndex + 1)) {
+      T value = array[index];
+      if (!value)
+        continue;
+      uint64_t indexValuePair = (value << indexBitSize) | (index);
+      writeVarInt(indexValuePair);
+    }
+  }
+
   /// Write an APInt to the bytecode stream whose bitwidth will be known
   /// externally at read time. This method is useful for encoding APInt values
   /// when the width is known via external means, such as via a type. This
@@ -233,60 +420,90 @@ public:
   /// guaranteed to not die before the end of the bytecode process. The blob is
   /// written as-is, with no additional compression or compaction.
   virtual void writeOwnedBlob(ArrayRef<char> blob) = 0;
-};
 
-//===----------------------------------------------------------------------===//
-// BytecodeDialectInterface
-//===----------------------------------------------------------------------===//
+  /// Write a blob to the bytecode, which is not owned by the caller. The blob
+  /// is copied into the bytecode, and need not strictly outlive the call.
+  virtual void writeUnownedBlob(ArrayRef<char> blob) = 0;
 
-class BytecodeDialectInterface
-    : public DialectInterface::Base<BytecodeDialectInterface> {
-public:
-  using Base::Base;
+  /// Write a bool to the output stream.
+  virtual void writeOwnedBool(bool value) = 0;
 
-  //===--------------------------------------------------------------------===//
-  // Reading
-  //===--------------------------------------------------------------------===//
+  /// Return the bytecode version being emitted for.
+  virtual int64_t getBytecodeVersion() const = 0;
 
-  /// Read an attribute belonging to this dialect from the given reader. This
-  /// method should return null in the case of failure.
-  virtual Attribute readAttribute(DialectBytecodeReader &reader) const {
-    reader.emitError() << "dialect " << getDialect()->getNamespace()
-                       << " does not support reading attributes from bytecode";
-    return Attribute();
-  }
+  /// Retrieve the dialect version by name if available.
+  virtual FailureOr<const DialectVersion *>
+  getDialectVersion(StringRef dialectName) const = 0;
 
-  /// Read a type belonging to this dialect from the given reader. This method
-  /// should return null in the case of failure.
-  virtual Type readType(DialectBytecodeReader &reader) const {
-    reader.emitError() << "dialect " << getDialect()->getNamespace()
-                       << " does not support reading types from bytecode";
-    return Type();
-  }
-
-  //===--------------------------------------------------------------------===//
-  // Writing
-  //===--------------------------------------------------------------------===//
-
-  /// Write the given attribute, which belongs to this dialect, to the given
-  /// writer. This method may return failure to indicate that the given
-  /// attribute could not be encoded, in which case the textual format will be
-  /// used to encode this attribute instead.
-  virtual LogicalResult writeAttribute(Attribute attr,
-                                       DialectBytecodeWriter &writer) const {
-    return failure();
-  }
-
-  /// Write the given type, which belongs to this dialect, to the given writer.
-  /// This method may return failure to indicate that the given type could not
-  /// be encoded, in which case the textual format will be used to encode this
-  /// type instead.
-  virtual LogicalResult writeType(Type type,
-                                  DialectBytecodeWriter &writer) const {
-    return failure();
+  template <class T>
+  FailureOr<const DialectVersion *> getDialectVersion() const {
+    return getDialectVersion(T::getDialectNamespace());
   }
 };
+
+/// Helper for resource handle reading that returns LogicalResult.
+template <typename T, typename... Ts>
+LogicalResult readResourceHandle(DialectBytecodeReader &reader,
+                                 FailureOr<T> &value, Ts &&...params) {
+  FailureOr<T> handle = reader.readResourceHandle<T>();
+  if (failed(handle))
+    return failure();
+  if (auto *result = dyn_cast<T>(&*handle)) {
+    value = std::move(*result);
+    return success();
+  }
+  return failure();
+}
+
+/// Helper method that injects context only if needed, this helps unify some of
+/// the attribute construction methods.
+template <typename T, typename... Ts>
+auto get(MLIRContext *context, Ts &&...params) {
+  // Prefer a direct `get` method if one exists.
+  if constexpr (llvm::is_detected<detail::has_get_method, T, Ts...>::value) {
+    (void)context;
+    return T::get(std::forward<Ts>(params)...);
+  } else if constexpr (llvm::is_detected<detail::has_get_method, T,
+                                         MLIRContext *, Ts...>::value) {
+    return T::get(context, std::forward<Ts>(params)...);
+  } else {
+    // Otherwise, pass to the base get.
+    return T::Base::get(context, std::forward<Ts>(params)...);
+  }
+}
+
+namespace detail {
+template <typename T, typename... Ts>
+using has_get_checked_method = decltype(T::getChecked(std::declval<Ts>()...));
+} // namespace detail
+
+/// Helper method analogous to `get`, but uses `getChecked` when available to
+/// allow graceful failure on invalid parameters instead of asserting.
+///
+/// Only the no-context form of `getChecked` is tried here. Types that expose
+/// `getChecked(emitError, params...)` without a leading `MLIRContext*` (e.g.
+/// MemRefType, VectorType, RankedTensorType) will use it for graceful failure.
+/// Everything else falls back to `get<T>()`.  We intentionally do NOT try
+/// `T::getChecked(emitError, context, params...)`: for types that only inherit
+/// the base `StorageUserBase::getChecked` template (e.g. ArrayAttr), that
+/// template instantiation requires a complete storage type which may not be
+/// available in the bytecode reading TU.
+template <typename T, typename... Ts>
+auto getChecked(function_ref<InFlightDiagnostic()> emitError,
+                MLIRContext *context, Ts &&...params) {
+  if constexpr (llvm::is_detected<detail::has_get_checked_method, T,
+                                  function_ref<InFlightDiagnostic()>,
+                                  Ts...>::value) {
+    (void)context;
+    return T::getChecked(emitError, std::forward<Ts>(params)...);
+  } else {
+    // Fall back to get() for types that don't define a no-context getChecked.
+    return get<T>(context, std::forward<Ts>(params)...);
+  }
+}
 
 } // namespace mlir
+
+#include "mlir/Bytecode/BytecodeDialectInterface.h.inc"
 
 #endif // MLIR_BYTECODE_BYTECODEIMPLEMENTATION_H

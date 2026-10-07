@@ -13,6 +13,12 @@
 
 #include <cstdio>
 
+namespace lldb_private {
+namespace python {
+class SWIGBridge;
+}
+} // namespace lldb_private
+
 namespace lldb {
 
 class LLDB_API SBThreadPlan {
@@ -21,8 +27,6 @@ public:
   SBThreadPlan();
 
   SBThreadPlan(const lldb::SBThreadPlan &threadPlan);
-
-  SBThreadPlan(const lldb::ThreadPlanSP &lldb_object_sp);
 
   SBThreadPlan(lldb::SBThread &thread, const char *class_name);
 
@@ -101,6 +105,9 @@ public:
   SBThreadPlan QueueThreadPlanForStepOut(uint32_t frame_idx_to_step_to,
                                          bool first_insn, SBError &error);
 
+  SBThreadPlan QueueThreadPlanForStepSingleInstruction(bool step_over,
+                                                       SBError &error);
+
   SBThreadPlan QueueThreadPlanForRunToAddress(SBAddress address);
   SBThreadPlan QueueThreadPlanForRunToAddress(SBAddress address,
                                               SBError &error);
@@ -112,6 +119,11 @@ public:
                                               lldb::SBStructuredData &args_data,
                                               SBError &error);
 
+protected:
+  friend class lldb_private::python::SWIGBridge;
+
+  SBThreadPlan(const lldb::ThreadPlanSP &lldb_object_sp);
+
 private:
   friend class SBBreakpoint;
   friend class SBBreakpointLocation;
@@ -121,6 +133,7 @@ private:
   friend class SBValue;
   friend class lldb_private::QueueImpl;
   friend class SBQueueItem;
+  friend class lldb_private::ScriptInterpreterBridge;
 
   lldb::ThreadPlanSP GetSP() const { return m_opaque_wp.lock(); }
   lldb_private::ThreadPlan *get() const { return GetSP().get(); }

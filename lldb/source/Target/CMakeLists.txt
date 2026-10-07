@@ -6,10 +6,16 @@ lldb_tablegen(TargetPropertiesEnum.inc -gen-lldb-property-enum-defs
   SOURCE TargetProperties.td
   TARGET LLDBTargetPropertiesEnumGen)
 
+lldb_tablegen(TargetProperties.json -dump-json
+  SOURCE TargetProperties.td
+  TARGET LLDBTargetPropertiesJsonGen)
+
+# TODO: Add property `NO_PLUGIN_DEPENDENCIES` to lldbTarget
 add_lldb_library(lldbTarget
   ABI.cpp
   AssertFrameRecognizer.cpp
   DynamicRegisterInfo.cpp
+  CoreFileMemoryRanges.cpp
   ExecutionContext.cpp
   InstrumentationRuntime.cpp
   InstrumentationRuntimeStopInfo.cpp
@@ -20,12 +26,14 @@ add_lldb_library(lldbTarget
   Memory.cpp
   MemoryHistory.cpp
   MemoryRegionInfo.cpp
+  MemoryRegionInfoCache.cpp
   MemoryTagMap.cpp
   ModuleCache.cpp
   OperatingSystem.cpp
   PathMappingList.cpp
   Platform.cpp
   Process.cpp
+  ProcessIOHandler.cpp
   ProcessTrace.cpp
   Queue.cpp
   QueueItem.cpp
@@ -34,8 +42,11 @@ add_lldb_library(lldbTarget
   RegisterContextUnwind.cpp
   RegisterNumber.cpp
   RemoteAwarePlatform.cpp
+  ScriptedThreadPlan.cpp
+  SyntheticFrameProvider.cpp
   SectionLoadHistory.cpp
   SectionLoadList.cpp
+  BorrowedStackFrame.cpp
   StackFrame.cpp
   StackFrameList.cpp
   StackFrameRecognizer.cpp
@@ -45,6 +56,7 @@ add_lldb_library(lldbTarget
   StructuredDataPlugin.cpp
   SystemRuntime.cpp
   Target.cpp
+  TargetAPIMutex.cpp
   TargetList.cpp
   Thread.cpp
   ThreadCollection.cpp
@@ -55,8 +67,9 @@ add_lldb_library(lldbTarget
   ThreadPlanCallFunctionUsingABI.cpp
   ThreadPlanCallOnFunctionExit.cpp
   ThreadPlanCallUserExpression.cpp
-  ThreadPlanPython.cpp
   ThreadPlanRunToAddress.cpp
+  ThreadPlanRunToBreakpoint.cpp
+  ThreadPlanSingleThreadTimeout.cpp
   ThreadPlanShouldStopHere.cpp
   ThreadPlanStepInRange.cpp
   ThreadPlanStepInstruction.cpp
@@ -77,6 +90,11 @@ add_lldb_library(lldbTarget
   UnwindAssembly.cpp
   UnwindLLDB.cpp
 
+  ADDITIONAL_HEADER_DIRS
+    ${LLDB_INCLUDE_DIR}/lldb/Target
+  LINK_COMPONENTS
+    Support
+    MC
   LINK_LIBS
     lldbBreakpoint
     lldbCore
@@ -85,11 +103,8 @@ add_lldb_library(lldbTarget
     lldbInterpreter
     lldbSymbol
     lldbUtility
+    lldbValueObject
     lldbPluginProcessUtility
-
-  LINK_COMPONENTS
-    Support
-    MC
   )
 
 add_dependencies(lldbTarget

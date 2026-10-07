@@ -23,7 +23,10 @@ class MCCodeEmitter;
 class MCContext;
 class MCInstrInfo;
 class MCObjectTargetWriter;
+class MCObjectWriter;
+class MCRegister;
 class MCRegisterInfo;
+class MCStreamer;
 class MCSubtargetInfo;
 class MCTargetOptions;
 class StringRef;
@@ -39,11 +42,33 @@ MCAsmBackend *createMipsAsmBackend(const Target &T, const MCSubtargetInfo &STI,
                                    const MCRegisterInfo &MRI,
                                    const MCTargetOptions &Options);
 
+/// Construct an MIPS Windows COFF machine code streamer which will generate
+/// PE/COFF format object files.
+///
+/// Takes ownership of \p AB and \p CE.
+MCStreamer *createMipsWinCOFFStreamer(MCContext &C,
+                                      std::unique_ptr<MCAsmBackend> &&AB,
+                                      std::unique_ptr<MCObjectWriter> &&OW,
+                                      std::unique_ptr<MCCodeEmitter> &&CE);
+
+/// Construct a Mips ELF object writer.
 std::unique_ptr<MCObjectTargetWriter>
 createMipsELFObjectWriter(const Triple &TT, bool IsN32);
+/// Construct a Mips Win COFF object writer.
+std::unique_ptr<MCObjectTargetWriter> createMipsWinCOFFObjectWriter();
 
 namespace MIPS_MC {
+void initLLVMToCVRegMapping(MCRegisterInfo *MRI);
+
 StringRef selectMipsCPU(const Triple &TT, StringRef CPU);
+
+/// Match a symbolic name in RegClassID, or return an invalid register.
+MCRegister matchRegisterName(StringRef Name, const MCRegisterInfo &MRI,
+                             unsigned RegClassID, unsigned AltIdx);
+
+/// Return a GPR name's hardware index, or -1 if unknown.
+int getCPURegisterIndex(StringRef Name, const MCRegisterInfo &MRI,
+                        unsigned AltIdx, bool *IsDeprecated = nullptr);
 }
 
 } // End llvm namespace

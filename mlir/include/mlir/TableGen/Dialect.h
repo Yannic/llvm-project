@@ -14,6 +14,8 @@
 #define MLIR_TABLEGEN_DIALECT_H_
 
 #include "mlir/Support/LLVM.h"
+#include "llvm/TableGen/Record.h"
+
 #include <string>
 #include <vector>
 
@@ -52,6 +54,10 @@ public:
   // Returns the dialects extra class declaration code.
   std::optional<StringRef> getExtraClassDeclaration() const;
 
+  /// Returns true if this dialect uses strict properties in declarative
+  /// assembly formats.
+  bool useStrictPropertiesInAssemblyFormat() const;
+
   /// Returns true if this dialect has a canonicalizer.
   bool hasCanonicalizer() const;
 
@@ -86,14 +92,9 @@ public:
   /// operations or types.
   bool isExtensible() const;
 
-  enum class FolderAPI {
-    RawAttributes = 0, /// fold method with ArrayRef<Attribute>.
-    FolderAdaptor = 1, /// fold method with the operation's FoldAdaptor.
-  };
+  const llvm::DagInit *getDiscardableAttributes() const;
 
-  /// Returns the folder API that should be emitted for operations in this
-  /// dialect.
-  FolderAPI getFolderAPI() const;
+  const llvm::Record *getDef() const { return def; }
 
   // Returns whether two dialects are equal by checking the equality of the
   // underlying record.
@@ -106,6 +107,7 @@ public:
 
   // Returns whether the dialect is defined.
   explicit operator bool() const { return def != nullptr; }
+  bool isDefined() const { return def != nullptr; }
 
 private:
   const llvm::Record *def;

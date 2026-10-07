@@ -21,6 +21,8 @@
 #include "mlir/Dialect/SPIRV/Utils/LayoutUtils.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/Support/FormatVariadic.h"
+
 using namespace mlir;
 
 namespace mlir {
@@ -34,28 +36,26 @@ namespace {
 class SPIRVGlobalVariableOpLayoutInfoDecoration
     : public OpRewritePattern<spirv::GlobalVariableOp> {
 public:
-  using OpRewritePattern<spirv::GlobalVariableOp>::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(spirv::GlobalVariableOp op,
                                 PatternRewriter &rewriter) const override {
-    SmallVector<NamedAttribute, 4> globalVarAttrs;
+    NamedAttrList globalVarAttrs(op->getDiscardableAttrDictionary());
+    op->getName().populateInherentAttrs(op, globalVarAttrs);
 
-    auto ptrType = op.getType().cast<spirv::PointerType>();
-    auto structType = VulkanLayoutUtils::decorateType(
-        ptrType.getPointeeType().cast<spirv::StructType>());
+    auto ptrType = cast<spirv::PointerType>(op.getType());
+    auto pointeeType = cast<spirv::StructType>(ptrType.getPointeeType());
+    spirv::StructType structType = VulkanLayoutUtils::decorateType(pointeeType);
 
     if (!structType)
-      return failure();
+      return op->emitError(llvm::formatv(
+          "failed to decorate (unsuported pointee type: '{0}')", pointeeType));
 
     auto decoratedType =
         spirv::PointerType::get(structType, ptrType.getStorageClass());
 
-    // Save all named attributes except "type" attribute.
-    for (const auto &attr : op->getAttrs()) {
-      if (attr.getName() == "type")
-        continue;
-      globalVarAttrs.push_back(attr);
-    }
+    // The new type is passed through the operation-specific builder below.
+    globalVarAttrs.erase("type");
 
     rewriter.replaceOpWithNewOp<spirv::GlobalVariableOp>(
         op, TypeAttr::get(decoratedType), globalVarAttrs);
@@ -66,7 +66,7 @@ public:
 class SPIRVAddressOfOpLayoutInfoDecoration
     : public OpRewritePattern<spirv::AddressOfOp> {
 public:
-  using OpRewritePattern<spirv::AddressOfOp>::OpRewritePattern;
+  using Base::Base;
 
   LogicalResult matchAndRewrite(spirv::AddressOfOp op,
                                 PatternRewriter &rewriter) const override {
@@ -88,8 +88,8 @@ public:
   LogicalResult
   matchAndRewrite(OpT op, typename OpT::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.updateRootInPlace(op,
-                               [&] { op->setOperands(adaptor.getOperands()); });
+    rewriter.modifyOpInPlace(op,
+                             [&] { op->setOperands(adaptor.getOperands()); });
     return success();
   }
 };

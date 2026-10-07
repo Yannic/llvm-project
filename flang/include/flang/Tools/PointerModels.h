@@ -1,4 +1,4 @@
-//===-- Tools/PointerModels.h --------------------- *-C++-*-===//
+//===-- Tools/PointerModels.h -----------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,23 +11,15 @@
 
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 
-/// models for FIR pointer like types that already provide a `getElementType` or
-/// a `getEleTy` method
+/// models for FIR pointer like types that already provide a `getElementType`
+/// method
 
 template <typename T>
-struct PointerLikeModel
-    : public mlir::omp::PointerLikeType::ExternalModel<PointerLikeModel<T>, T> {
-  mlir::Type getElementType(mlir::Type pointer) const {
-    return pointer.cast<T>().getElementType();
-  }
-};
-
-template <typename T>
-struct AlternativePointerLikeModel
+struct OpenMPPointerLikeModel
     : public mlir::omp::PointerLikeType::ExternalModel<
-          AlternativePointerLikeModel<T>, T> {
+          OpenMPPointerLikeModel<T>, T> {
   mlir::Type getElementType(mlir::Type pointer) const {
-    return pointer.cast<T>().getEleTy();
+    return mlir::cast<T>(pointer).getElementType();
   }
 };
 

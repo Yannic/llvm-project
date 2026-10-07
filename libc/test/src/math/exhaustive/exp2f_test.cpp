@@ -6,68 +6,47 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "exhaustive_test.h"
-#include "src/__support/FPUtil/FPBits.h"
+#include "src/__support/math/exp2f_float_eval.h"
 #include "src/math/exp2f.h"
+#include "test/src/math/exhaustive/exhaustive_test.h"
 #include "utils/MPFRWrapper/MPFRUtils.h"
-#include "utils/UnitTest/FPMatcher.h"
 
-using FPBits = __llvm_libc::fputil::FPBits<float>;
+namespace mpfr = LIBC_NAMESPACE::testing::mpfr;
 
-namespace mpfr = __llvm_libc::testing::mpfr;
-
-struct LlvmLibcExp2fExhaustiveTest : public LlvmLibcExhaustiveTest<uint32_t> {
-  bool check(uint32_t start, uint32_t stop,
-             mpfr::RoundingMode rounding) override {
-    mpfr::ForceRoundingMode r(rounding);
-    uint32_t bits = start;
-    bool result = true;
-    do {
-      FPBits xbits(bits);
-      float x = float(xbits);
-      result &= EXPECT_MPFR_MATCH(mpfr::Operation::Exp2, x,
-                                  __llvm_libc::exp2f(x), 0.5, rounding);
-    } while (bits++ < stop);
-    return result;
-  }
-};
-
-// Range: [0, +Inf];
+// Range: [0, Inf];
 static constexpr uint32_t POS_START = 0x0000'0000U;
 static constexpr uint32_t POS_STOP = 0x7f80'0000U;
-
-TEST_F(LlvmLibcExp2fExhaustiveTest, PostiveRangeRoundNearestTieToEven) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Nearest);
-}
-
-TEST_F(LlvmLibcExp2fExhaustiveTest, PostiveRangeRoundUp) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Upward);
-}
-
-TEST_F(LlvmLibcExp2fExhaustiveTest, PostiveRangeRoundDown) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::Downward);
-}
-
-TEST_F(LlvmLibcExp2fExhaustiveTest, PostiveRangeRoundTowardZero) {
-  test_full_range(POS_START, POS_STOP, mpfr::RoundingMode::TowardZero);
-}
 
 // Range: [-Inf, 0];
 static constexpr uint32_t NEG_START = 0x8000'0000U;
 static constexpr uint32_t NEG_STOP = 0xff80'0000U;
 
-TEST_F(LlvmLibcExp2fExhaustiveTest, NegativeRangeRoundNearestTieToEven) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Nearest);
+using LlvmLibcExp2fExhaustiveTest =
+    LlvmLibcUnaryOpExhaustiveMathTest<float, mpfr::Operation::Exp2,
+                                      LIBC_NAMESPACE::exp2f>;
+
+TEST_F(LlvmLibcExp2fExhaustiveTest, PositiveRange) {
+  test_full_range_all_roundings(POS_START, POS_STOP);
 }
 
-TEST_F(LlvmLibcExp2fExhaustiveTest, NegativeRangeRoundUp) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Upward);
+TEST_F(LlvmLibcExp2fExhaustiveTest, NegativeRange) {
+  test_full_range_all_roundings(NEG_START, NEG_STOP);
 }
 
-TEST_F(LlvmLibcExp2fExhaustiveTest, NegativeRangeRoundDown) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::Downward);
+// Float-eval implementation: tested against the correctly rounded double
+// precision version for round-to-nearest with 1 ULP bound.
+static float exp2f_float_eval(float x) {
+  return LIBC_NAMESPACE::math::float_eval::exp2f(x);
 }
 
-TEST_F(LlvmLibcExp2fExhaustiveTest, NegativeRangeRoundTowardZero) {
-  test_full_range(NEG_START, NEG_STOP, mpfr::RoundingMode::TowardZero);
+using LlvmLibcExp2fFloatExhaustiveTest =
+    LlvmLibcUnaryOpAgainstBaselineExhaustiveMathTest<
+        float, LIBC_NAMESPACE::exp2f, exp2f_float_eval, 1>;
+
+TEST_F(LlvmLibcExp2fFloatExhaustiveTest, PositiveRange) {
+  test_full_range(mpfr::RoundingMode::Nearest, POS_START, POS_STOP);
+}
+
+TEST_F(LlvmLibcExp2fFloatExhaustiveTest, NegativeRange) {
+  test_full_range(mpfr::RoundingMode::Nearest, NEG_START, NEG_STOP);
 }

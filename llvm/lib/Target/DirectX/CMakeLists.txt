@@ -18,37 +18,55 @@ add_llvm_target(DirectXCodeGen
   DirectXRegisterInfo.cpp
   DirectXSubtarget.cpp
   DirectXTargetMachine.cpp
+  DirectXTargetTransformInfo.cpp
   DXContainerGlobals.cpp
-  DXILMetadata.cpp
+  DXContainerPDB.cpp
+  DXILCBufferAccess.cpp
+  DXILDataScalarization.cpp
+  DXILFinalizeLinkage.cpp
+  DXILForwardHandleAccesses.cpp
+  DXILFlattenArrays.cpp
+  DXILIntrinsicExpansion.cpp
+  DXILMemIntrinsics.cpp
   DXILOpBuilder.cpp
   DXILOpLowering.cpp
+  DXILPostOptimizationValidation.cpp
   DXILPrepare.cpp
   DXILPrettyPrinter.cpp
-  DXILResource.cpp
-  DXILResourceAnalysis.cpp
+  DXILRemoveUnusedResources.cpp
+  DXILResourceAccess.cpp
+  DXILResourceImplicitBinding.cpp
   DXILShaderFlags.cpp
   DXILTranslateMetadata.cpp
+  DXILRootSignature.cpp
+  DXILLegalizePass.cpp
 
   LINK_COMPONENTS
   Analysis
   AsmPrinter
-  Core
+  BinaryFormat
   CodeGen
-  SelectionDAG
-  Support
-  TargetParser
+  CodeGenTypes
+  Core
+  DebugInfoMSF
+  DebugInfoPDB
+  DXILBitWriter
   DirectXDesc
   DirectXInfo
-  DirectXPointerTypeAnalysis
-  DXILBitWriter
+  DirectXIRPasses
   FrontendHLSL
+  IPO
   MC
+  ScalarOpts
+  SelectionDAG
+  Support
   Target
+  TargetParser
   TransformUtils
 
   ADD_TO_COMPONENT
   DirectX
-)
+  )
 
 add_subdirectory(MCTargetDesc)
 add_subdirectory(TargetInfo)

@@ -25,7 +25,7 @@
 using namespace lldb;
 using namespace lldb_private;
 
-#define DEFINE_GPR(reg, alt) #reg, alt, 4, 0, eEncodingUint, eFormatHexUppercase
+#define DEFINE_GPR(reg, alt) #reg, alt, 4, 0, eEncodingUint, eFormatHex
 #define DEFINE_GPR_BIN(reg, alt) #reg, alt, 4, 0, eEncodingUint, eFormatBinary
 
 namespace {
@@ -51,15 +51,10 @@ enum RegisterIndex {
 
 // Array of all register information supported by Windows x86
 RegisterInfo g_register_infos[] = {
-    //  Macro auto defines most stuff   eh_frame                DWARF
-    //  GENERIC                    GDB                   LLDB
-    //  VALUE REGS    INVALIDATE REGS
-    //  ==============================  =======================
-    //  ===================  =========================  ===================
-    //  =================  ==========    ===============
     {DEFINE_GPR(eax, nullptr),
      {ehframe_eax_i386, dwarf_eax_i386, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, lldb_eax_i386},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -68,10 +63,12 @@ RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, lldb_ebx_i386},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(ecx, nullptr),
      {ehframe_ecx_i386, dwarf_ecx_i386, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, lldb_ecx_i386},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -80,10 +77,12 @@ RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, lldb_edx_i386},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(edi, nullptr),
      {ehframe_edi_i386, dwarf_edi_i386, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, lldb_edi_i386},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -92,10 +91,12 @@ RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, lldb_esi_i386},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(ebp, "fp"),
      {ehframe_ebp_i386, dwarf_ebp_i386, LLDB_REGNUM_GENERIC_FP,
       LLDB_INVALID_REGNUM, lldb_ebp_i386},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -104,16 +105,19 @@ RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, lldb_esp_i386},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(eip, "pc"),
      {ehframe_eip_i386, dwarf_eip_i386, LLDB_REGNUM_GENERIC_PC,
       LLDB_INVALID_REGNUM, lldb_eip_i386},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR_BIN(eflags, "flags"),
      {ehframe_eflags_i386, dwarf_eflags_i386, LLDB_REGNUM_GENERIC_FLAGS,
       LLDB_INVALID_REGNUM, lldb_eflags_i386},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -149,7 +153,7 @@ const RegisterInfo *
 RegisterContextWindows_x86::GetRegisterInfoAtIndex(size_t reg) {
   if (reg < k_num_register_infos)
     return &g_register_infos[reg];
-  return NULL;
+  return nullptr;
 }
 
 size_t RegisterContextWindows_x86::GetRegisterSetCount() {
@@ -254,6 +258,7 @@ bool RegisterContextWindows_x86::WriteRegister(const RegisterInfo *reg_info,
   default:
     LLDB_LOG(log, "Write value {0:x} to unknown register {1}",
              reg_value.GetAsUInt32(), reg);
+    return false;
   }
 
   // Physically update the registers in the target process.

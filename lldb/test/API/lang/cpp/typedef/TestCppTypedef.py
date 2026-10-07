@@ -5,11 +5,11 @@ Test typedef types.
 import lldb
 import lldbsuite.test.lldbutil as lldbutil
 from lldbsuite.test.lldbtest import *
-from lldbsuite.test import decorators
+from lldbsuite.test.decorators import *
 
 
+@requireExpressionEvaluation
 class TestCppTypedef(TestBase):
-
     def test_typedef(self):
         """
         Test that we retrieve typedefed types correctly
@@ -20,7 +20,6 @@ class TestCppTypedef(TestBase):
         lldbutil.run_to_source_breakpoint(
             self, "Set a breakpoint here", lldb.SBFileSpec("main.cpp")
         )
-
 
         # First of all, check that we can get a typedefed type correctly in a simple case.
         expr_result = self.expect_expr(
@@ -39,7 +38,6 @@ class TestCppTypedef(TestBase):
         self.assertTrue(typedefed_type.IsValid())
         self.assertEqual(typedefed_type.GetName(), "S<float>")
 
-
         # Check that we can get a typedefed type correctly in the case
         # when an elaborated type is created during the parsing
         expr_result = self.expect_expr(
@@ -56,12 +54,10 @@ class TestCppTypedef(TestBase):
         self.assertTrue(typedefed_type.IsValid())
         self.assertEqual(typedefed_type.GetName(), "float")
 
-
         # Try accessing a typedef inside a namespace.
         self.expect_expr(
             "(ns::NamespaceTypedef)s", result_children=[ValueCheck(value="0.5")]
         )
-
 
         # Try accessing a typedef inside a struct/class.
         # FIXME: This doesn't actually work. StructTypedef just gets injected
@@ -77,9 +73,10 @@ class TestCppTypedef(TestBase):
             substrs=["no member named 'OtherStructTypedef' in 'NonLocalVarStruct'"],
         )
 
-
         # Check the generated Clang AST.
         self.filecheck("image dump ast a.out", __file__, "--strict-whitespace")
+
+
 # CHECK:      {{^}}|-TypedefDecl {{.*}} GlobalTypedef 'S<float>'
 # CHECK:      {{^}}|-NamespaceDecl {{.*}} ns
 # CHECK-NEXT: {{^}}| `-TypedefDecl {{.*}} NamespaceTypedef 'S<float>'

@@ -15,8 +15,8 @@
 
 #include "X86Subtarget.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include "llvm/Support/CodeGen.h"
-#include "llvm/Target/TargetMachine.h"
 #include <memory>
 #include <optional>
 
@@ -25,19 +25,25 @@ namespace llvm {
 class StringRef;
 class TargetTransformInfo;
 
-class X86TargetMachine final : public LLVMTargetMachine {
+class X86TargetMachine final : public CodeGenTargetMachineImpl {
+  const X86Options &CLOpts;
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
   mutable StringMap<std::unique_ptr<X86Subtarget>> SubtargetMap;
   // True if this is used in JIT.
   bool IsJIT;
 
+  /// Reset internal state.
+  void reset() override;
+
 public:
   X86TargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                    StringRef FS, const TargetOptions &Options,
                    std::optional<Reloc::Model> RM,
-                   std::optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
+                   std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
                    bool JIT);
   ~X86TargetMachine() override;
+
+  const X86Options &getCLOpts() const { return CLOpts; }
 
   const X86Subtarget *getSubtargetImpl(const Function &F) const override;
   // DO NOT IMPLEMENT: There is no such thing as a valid default subtarget,
@@ -58,9 +64,32 @@ public:
   createMachineFunctionInfo(BumpPtrAllocator &Allocator, const Function &F,
                             const TargetSubtargetInfo *STI) const override;
 
+  yaml::MachineFunctionInfo *createDefaultFuncInfoYAML() const override;
+  yaml::MachineFunctionInfo *
+  convertFuncInfoToYAML(const MachineFunction &MF) const override;
+  bool parseMachineFunctionInfo(const yaml::MachineFunctionInfo &,
+                                PerFunctionMIParsingState &PFS,
+                                SMDiagnostic &Error,
+                                SMRange &SourceRange) const override;
+
+  void registerPassBuilderCallbacks(PassBuilder &PB) override;
+
+  Error buildCodeGenPipeline(ModulePassManager &MPM, ModuleAnalysisManager &MAM,
+                             raw_pwrite_stream &Out, raw_pwrite_stream *DwoOut,
+                             CodeGenFileType FileType,
+                             const CGPassBuilderOption &Opt, MCContext &Ctx,
+                             PassInstrumentationCallbacks *PIC) override;
+
   bool isJIT() const { return IsJIT; }
 
-  bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override;
+  bool isNoopAddrSpaceCast(const DataLayout &DL, unsigned SrcAS,
+                           unsigned DestAS) const override;
+  ScheduleDAGInstrs *
+  createMachineScheduler(MachineSchedContext *C) const override;
+  ScheduleDAGInstrs *
+  createPostMachineScheduler(MachineSchedContext *C) const override;
+
+  bool canLowerCondLoop() const override { return true; }
 };
 
 } // end namespace llvm

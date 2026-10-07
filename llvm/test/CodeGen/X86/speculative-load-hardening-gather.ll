@@ -379,8 +379,8 @@ define <16 x float> @test_llvm_x86_avx512_gather_dps_512(ptr %b, <16 x i32> %iv)
 ; CHECK-NEXT:    movq %rsp, %rax
 ; CHECK-NEXT:    movq $-1, %rcx
 ; CHECK-NEXT:    sarq $63, %rax
-; CHECK-NEXT:    kxnorw %k0, %k0, %k1
 ; CHECK-NEXT:    vxorps %xmm1, %xmm1, %xmm1
+; CHECK-NEXT:    kxnorw %k0, %k0, %k1
 ; CHECK-NEXT:    orq %rax, %rdi
 ; CHECK-NEXT:    vpbroadcastq %rax, %zmm2
 ; CHECK-NEXT:    vporq %zmm0, %zmm2, %zmm0
@@ -472,8 +472,8 @@ define <16 x i32> @test_llvm_x86_avx512_gather_dpi_512(ptr %b, <16 x i32> %iv) #
 ; CHECK-NEXT:    movq %rsp, %rax
 ; CHECK-NEXT:    movq $-1, %rcx
 ; CHECK-NEXT:    sarq $63, %rax
-; CHECK-NEXT:    kxnorw %k0, %k0, %k1
 ; CHECK-NEXT:    vpxor %xmm1, %xmm1, %xmm1
+; CHECK-NEXT:    kxnorw %k0, %k0, %k1
 ; CHECK-NEXT:    orq %rax, %rdi
 ; CHECK-NEXT:    vpbroadcastq %rax, %zmm2
 ; CHECK-NEXT:    vporq %zmm0, %zmm2, %zmm0
@@ -556,28 +556,6 @@ define <8 x i64> @test_llvm_x86_avx512_gather_qpq_512(ptr %b, <8 x i64> %iv) #1 
 entry:
   %v = call <8 x i64> @llvm.x86.avx512.gather.qpq.512(<8 x i64> zeroinitializer, ptr %b, <8 x i64> %iv, i8 -1, i32 1)
   ret <8 x i64> %v
-}
-
-declare void @llvm.x86.avx512.gatherpf.qps.512(i8, <8 x i64>, ptr, i32, i32);
-
-define void @test_llvm_x86_avx512_gatherpf_qps_512(<8 x i64> %iv, ptr %b) #1 {
-; CHECK-LABEL: test_llvm_x86_avx512_gatherpf_qps_512:
-; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    movq %rsp, %rax
-; CHECK-NEXT:    movq $-1, %rcx
-; CHECK-NEXT:    sarq $63, %rax
-; CHECK-NEXT:    kxnorw %k0, %k0, %k1
-; CHECK-NEXT:    orq %rax, %rdi
-; CHECK-NEXT:    vpbroadcastq %rax, %zmm1
-; CHECK-NEXT:    vporq %zmm0, %zmm1, %zmm0
-; CHECK-NEXT:    vgatherpf0qps (%rdi,%zmm0,4) {%k1}
-; CHECK-NEXT:    shlq $47, %rax
-; CHECK-NEXT:    orq %rax, %rsp
-; CHECK-NEXT:    vzeroupper
-; CHECK-NEXT:    retq
-entry:
-  call void @llvm.x86.avx512.gatherpf.qps.512(i8 -1, <8 x i64> %iv, ptr %b, i32 4, i32 3)
-  ret void
 }
 
 declare <4 x float> @llvm.x86.avx512.gather3siv4.sf(<4 x float>, ptr, <4 x i32>, i8, i32)

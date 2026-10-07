@@ -41,11 +41,8 @@ define void @v8i64_v8i32(<8 x i64> %a, ptr %result) {
 define void @v2i32_v2i16(<2 x i32> %a, ptr %result) {
 ; CHECK-LABEL: v2i32_v2i16:
 ; CHECK:       // %bb.0:
-; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
-; CHECK-NEXT:    mov w8, v0.s[1]
-; CHECK-NEXT:    fmov w9, s0
-; CHECK-NEXT:    strh w9, [x0]
-; CHECK-NEXT:    strh w8, [x0, #2]
+; CHECK-NEXT:    uzp1 v0.4h, v0.4h, v0.4h
+; CHECK-NEXT:    str s0, [x0]
 ; CHECK-NEXT:    ret
   %b = trunc <2 x i32> %a to <2 x i16>
   store <2 x i16> %b, ptr %result
@@ -90,10 +87,9 @@ define void @v2i32_v2i8(<2 x i32> %a, ptr %result) {
 ; CHECK-LABEL: v2i32_v2i8:
 ; CHECK:       // %bb.0:
 ; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
-; CHECK-NEXT:    mov w8, v0.s[1]
-; CHECK-NEXT:    fmov w9, s0
-; CHECK-NEXT:    strb w9, [x0]
-; CHECK-NEXT:    strb w8, [x0, #1]
+; CHECK-NEXT:    mov s1, v0.s[1]
+; CHECK-NEXT:    str b0, [x0]
+; CHECK-NEXT:    stur b1, [x0, #1]
 ; CHECK-NEXT:    ret
   %b = trunc <2 x i32> %a to <2 x i8>
   store <2 x i8> %b, ptr %result
@@ -104,7 +100,7 @@ define void @v4i32_v4i8(<4 x i32> %a, ptr %result) {
 ; CHECK-LABEL: v4i32_v4i8:
 ; CHECK:       // %bb.0:
 ; CHECK-NEXT:    xtn v0.4h, v0.4s
-; CHECK-NEXT:    xtn v0.8b, v0.8h
+; CHECK-NEXT:    uzp1 v0.8b, v0.8b, v0.8b
 ; CHECK-NEXT:    str s0, [x0]
 ; CHECK-NEXT:    ret
   %b = trunc <4 x i32> %a to <4 x i8>
@@ -141,10 +137,10 @@ define void @v32i32_v32i8(<32 x i32> %a, ptr %result) {
 ; CHECK-LABEL: v32i32_v32i8:
 ; CHECK:       // %bb.0:
 ; CHECK-NEXT:    uzp1 v6.8h, v6.8h, v7.8h
+; CHECK-NEXT:    uzp1 v4.8h, v4.8h, v5.8h
 ; CHECK-NEXT:    uzp1 v2.8h, v2.8h, v3.8h
-; CHECK-NEXT:    uzp1 v3.8h, v4.8h, v5.8h
 ; CHECK-NEXT:    uzp1 v0.8h, v0.8h, v1.8h
-; CHECK-NEXT:    uzp1 v1.16b, v3.16b, v6.16b
+; CHECK-NEXT:    uzp1 v1.16b, v4.16b, v6.16b
 ; CHECK-NEXT:    uzp1 v0.16b, v0.16b, v2.16b
 ; CHECK-NEXT:    stp q0, q1, [x0]
 ; CHECK-NEXT:    ret
@@ -157,10 +153,9 @@ define void @v2i16_v2i8(<2 x i16> %a, ptr %result) {
 ; CHECK-LABEL: v2i16_v2i8:
 ; CHECK:       // %bb.0:
 ; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
-; CHECK-NEXT:    mov w8, v0.s[1]
-; CHECK-NEXT:    fmov w9, s0
-; CHECK-NEXT:    strb w9, [x0]
-; CHECK-NEXT:    strb w8, [x0, #1]
+; CHECK-NEXT:    mov s1, v0.s[1]
+; CHECK-NEXT:    str b0, [x0]
+; CHECK-NEXT:    stur b1, [x0, #1]
 ; CHECK-NEXT:    ret
   %b = trunc <2 x i16> %a to <2 x i8>
   store <2 x i8> %b, ptr %result
@@ -170,8 +165,7 @@ define void @v2i16_v2i8(<2 x i16> %a, ptr %result) {
 define void @v4i16_v4i8(<4 x i16> %a, ptr %result) {
 ; CHECK-LABEL: v4i16_v4i8:
 ; CHECK:       // %bb.0:
-; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
-; CHECK-NEXT:    xtn v0.8b, v0.8h
+; CHECK-NEXT:    uzp1 v0.8b, v0.8b, v0.8b
 ; CHECK-NEXT:    str s0, [x0]
 ; CHECK-NEXT:    ret
   %b = trunc <4 x i16> %a to <4 x i8>
@@ -210,5 +204,61 @@ define void @v32i16_v32i8(<32 x i16> %a, ptr %result) {
 ; CHECK-NEXT:    ret
   %b = trunc <32 x i16> %a to <32 x i8>
   store <32 x i8> %b, ptr %result
+  ret void
+}
+
+
+define void @extract_v2i16_v8i16(<8 x i16> %a, ptr %p) {
+; CHECK-LABEL: extract_v2i16_v8i16:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    str s0, [x0]
+; CHECK-NEXT:    ret
+  %c = shufflevector <8 x i16> %a, <8 x i16> poison, <2 x i32> <i32 0, i32 1>
+  store <2 x i16> %c, ptr %p
+  ret void
+}
+
+define void @extract_v4i16_v8i16(<8 x i16> %a, ptr %p) {
+; CHECK-LABEL: extract_v4i16_v8i16:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    str d0, [x0]
+; CHECK-NEXT:    ret
+  %c = shufflevector <8 x i16> %a, <8 x i16> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+  store <4 x i16> %c, ptr %p
+  ret void
+}
+
+define void @extract_v2i16_v4i16(<4 x i16> %a, ptr %p) {
+; CHECK-LABEL: extract_v2i16_v4i16:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
+; CHECK-NEXT:    str s0, [x0]
+; CHECK-NEXT:    ret
+  %c = shufflevector <4 x i16> %a, <4 x i16> poison, <2 x i32> <i32 0, i32 1>
+  store <2 x i16> %c, ptr %p
+  ret void
+}
+
+define void @extract_v2i8_v8i8(<8 x i8> %a, ptr %p) {
+; CHECK-LABEL: extract_v2i8_v8i8:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
+; CHECK-NEXT:    mov b1, v0.b[1]
+; CHECK-NEXT:    str b0, [x0]
+; CHECK-NEXT:    stur b1, [x0, #1]
+; CHECK-NEXT:    ret
+  %c = shufflevector <8 x i8> %a, <8 x i8> poison, <2 x i32> <i32 0, i32 1>
+  store <2 x i8> %c, ptr %p
+  ret void
+}
+
+define void @extract_v4i8_v8i8(<8 x i8> %a, ptr %p) {
+; CHECK-LABEL: extract_v4i8_v8i8:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    // kill: def $d0 killed $d0 def $q0
+; CHECK-NEXT:    str s0, [x0]
+; CHECK-NEXT:    ret
+  %c = shufflevector <8 x i8> %a, <8 x i8> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 3>
+  store <4 x i8> %c, ptr %p
   ret void
 }

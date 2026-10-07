@@ -167,14 +167,12 @@ def IsARM            : Predicate<"!Subtarget->isThumb()">,
                                  AssemblerPredicate<(all_of (not ModeThumb)), "arm-mode">;
 def IsMachO          : Predicate<"Subtarget->isTargetMachO()">;
 def IsNotMachO       : Predicate<"!Subtarget->isTargetMachO()">;
-def IsNaCl           : Predicate<"Subtarget->isTargetNaCl()">;
 def IsWindows        : Predicate<"Subtarget->isTargetWindows()">;
 def IsNotWindows     : Predicate<"!Subtarget->isTargetWindows()">;
-def IsReadTPHard     : Predicate<"Subtarget->isReadTPHard()">;
-def IsReadTPSoft     : Predicate<"!Subtarget->isReadTPHard()">;
-def UseNaClTrap      : Predicate<"Subtarget->useNaClTrap()">,
-                                 AssemblerPredicate<(all_of FeatureNaClTrap), "NaCl">;
-def DontUseNaClTrap  : Predicate<"!Subtarget->useNaClTrap()">;
+def IsReadTPTPIDRURW : Predicate<"Subtarget->isReadTPTPIDRURW()">;
+def IsReadTPTPIDRURO : Predicate<"Subtarget->isReadTPTPIDRURO()">;
+def IsReadTPTPIDRPRW : Predicate<"Subtarget->isReadTPTPIDRPRW()">;
+def IsReadTPSoft     : Predicate<"Subtarget->isReadTPSoft()">;
 
 def UseNegativeImmediates :
   Predicate<"false">,
@@ -188,9 +186,7 @@ let RecomputePerFunction = 1 in {
   def UseMovtInPic     : Predicate<"Subtarget->useMovt() && Subtarget->allowPositionIndependentMovt()">;
   def DontUseMovtInPic : Predicate<"!Subtarget->useMovt() || !Subtarget->allowPositionIndependentMovt()">;
 
-  def UseFPVMLx: Predicate<"((Subtarget->useFPVMLx() &&"
-                           "  TM.Options.AllowFPOpFusion != FPOpFusion::Fast) ||"
-                           "Subtarget->hasMinSize())">;
+  def UseFPVMLx: Predicate<"Subtarget->useFPVMLx() || Subtarget->hasMinSize()">;
   def SLSBLRMitigation : Predicate<[{ MF->getSubtarget<ARMSubtarget>().hardenSlsBlr() }]>;
   def NoSLSBLRMitigation : Predicate<[{ !MF->getSubtarget<ARMSubtarget>().hardenSlsBlr() }]>;
 
@@ -201,9 +197,7 @@ def UseMulOps        : Predicate<"Subtarget->useMulOps()">;
 // But only select them if more precision in FP computation is allowed, and when
 // they are not slower than a mul + add sequence.
 // Do not use them for Darwin platforms.
-def UseFusedMAC      : Predicate<"TM.Options.AllowFPOpFusion =="
-                                 "  FPOpFusion::Fast && "
-                                 "Subtarget->useFPVFMx()">;
+def UseFusedMAC      : Predicate<"Subtarget->useFPVFMx()">;
 
 def HasFastVGETLNi32 : Predicate<"!Subtarget->hasSlowVGETLNi32()">;
 def HasSlowVGETLNi32 : Predicate<"Subtarget->hasSlowVGETLNi32()">;
@@ -222,6 +216,14 @@ let RecomputePerFunction = 1 in {
 }
 
 def GenExecuteOnly : Predicate<"Subtarget->genExecuteOnly()">;
+def DontGenExecuteOnly : Predicate<"!Subtarget->genExecuteOnly()">;
+def GenT1ExecuteOnly : Predicate<"Subtarget->genExecuteOnly() && "
+                                 "Subtarget->isThumb1Only() && "
+                                 "!Subtarget->hasV8MBaselineOps()">;
+let RecomputePerFunction = 1 in {
+  def SignRetAddr : Predicate<[{ MF->getInfo<ARMFunctionInfo>()->shouldSignReturnAddress(true) }]>;
+  def NoSignRetAddr : Predicate<[{ !MF->getInfo<ARMFunctionInfo>()->shouldSignReturnAddress(true) }]>;
+}
 
 // Armv8.5-A extensions
 def HasSB            : Predicate<"Subtarget->hasSB()">,

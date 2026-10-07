@@ -1,19 +1,37 @@
 """ This module represents an abstraction of an lldb target / host platform. """
 
-from __future__ import absolute_import
-
 # System modules
 import itertools
 
 # LLDB modules
 import lldb
 
-windows, linux, macosx, darwin, ios, tvos, watchos, bridgeos, darwin_all, \
-    darwin_embedded, darwin_simulator, freebsd, netbsd, bsd_all, android \
-    = range(15)
+(
+    windows,
+    linux,
+    macosx,
+    darwin,
+    ios,
+    tvos,
+    watchos,
+    xros,
+    bridgeos,
+    darwin_all,
+    darwin_embedded,
+    darwin_simulator,
+    freebsd,
+    netbsd,
+    bsd_all,
+    android,
+) = range(16)
 
-__darwin_embedded = ["ios", "tvos", "watchos", "bridgeos"]
-__darwin_simulators = ["iphonesimulator", "watchsimulator", "appletvsimulator"]
+__darwin_embedded = ["ios", "tvos", "watchos", "xros", "bridgeos"]
+__darwin_simulators = [
+    "iphonesimulator",
+    "watchsimulator",
+    "appletvsimulator",
+    "xrsimulator",
+]
 
 __name_lookup = {
     windows: ["windows"],
@@ -23,6 +41,7 @@ __name_lookup = {
     ios: ["ios", "iphonesimulator"],
     tvos: ["tvos", "appletvsimulator"],
     watchos: ["watchos", "watchsimulator"],
+    xros: ["xros", "xrsimulator"],
     bridgeos: ["bridgeos"],
     darwin_all: ["macosx", "darwin"] + __darwin_embedded + __darwin_simulators,
     darwin_embedded: __darwin_embedded + __darwin_simulators,
@@ -30,12 +49,11 @@ __name_lookup = {
     freebsd: ["freebsd"],
     netbsd: ["netbsd"],
     bsd_all: ["freebsd", "netbsd"],
-    android: ["android"]
+    android: ["android"],
 }
 
 
 def translate(values):
-
     if isinstance(values, int):
         # This is a value from the platform enumeration, translate it.
         return __name_lookup[values]

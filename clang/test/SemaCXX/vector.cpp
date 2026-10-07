@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -flax-vector-conversions=all -triple x86_64-apple-darwin10 -fsyntax-only -verify %s
+// RUN: %clang_cc1 -flax-vector-conversions=all -triple x86_64-apple-darwin10 -fsyntax-only -verify -fexperimental-new-constant-interpreter %s
 // RUN: %clang_cc1 -flax-vector-conversions=all -triple x86_64-apple-darwin10 -fsyntax-only -verify -std=c++98 %s
 // RUN: %clang_cc1 -flax-vector-conversions=all -triple x86_64-apple-darwin10 -fsyntax-only -verify -std=c++11 %s
 // RUN: %clang_cc1 -flax-vector-conversions=all -triple x86_64-apple-darwin10 -fsyntax-only -verify -std=c++20 %s
@@ -335,6 +336,23 @@ const int &reference_to_vec_element = vi4(1).x;
 // PR12649
 typedef bool bad __attribute__((__vector_size__(16)));  // expected-error {{invalid vector element type 'bool'}}
 
+namespace GH225037 {
+enum E { A };
+
+#if __cplusplus >= 201103L
+enum class ScopedE { A };
+typedef ScopedE ScopedEnumVector __attribute__((ext_vector_type(4))); // expected-error {{invalid vector element type 'ScopedE'}}
+typedef ScopedE ScopedEnumSizeVector __attribute__((vector_size(16))); // expected-error {{invalid vector element type 'ScopedE'}}
+#endif
+
+template <typename T> struct Vector {
+  // Rebuilding a fixed-size extended vector currently loses the attribute location.
+  typedef T type __attribute__((ext_vector_type(4))); // expected-error@*:* {{invalid vector element type 'GH225037::E'}}
+};
+Vector<E> enum_vector; // expected-note {{in instantiation of template class 'GH225037::Vector<GH225037::E>' requested here}}
+Vector<int> int_vector;
+} // namespace GH225037
+
 namespace Templates {
 template <typename Elt, unsigned long long Size>
 struct TemplateVectorType {
@@ -376,6 +394,15 @@ void Init() {
   // expected-note@+1 {{in instantiation of template class 'Templates::PR15730<8, char>' requested here}}
   const PR15730<8, char>::type2 PR15730_2 = {};
 }
+
+template <unsigned long long N>
+struct GH165458 {
+  typedef bool __attribute__((ext_vector_type(N))) type; // #GH165458
+};
+// expected-error@#GH165458 {{vector size too large}}
+// expected-note@+1 {{in instantiation of template class 'Templates::GH165458<187553262>' requested here}}
+typedef GH165458<187553262>::type GH165458_TooLarge;
+typedef GH165458<8388608>::type GH165458_Max;
 
 } // namespace Templates
 
@@ -532,6 +559,18 @@ void use() {
 }
 } // namespace PR48540
 
+#if __cplusplus >= 201703L // C++17 or later
+namespace PR180563 {
+typedef int __attribute__((vector_size(8))) v_int;
+constexpr int f(v_int v) {
+  return v[~0UL]; // expected-note{{cannot refer to element 18446744073709551615 of array of 2 elements in a constant expression}}
+}
+
+static_assert(f(v_int{0})); // expected-error{{static assertion expression is not an integral constant expression}}
+// expected-note@-1{{in call to 'f({0, 0})'}}
+}
+#endif
+
 #if __cplusplus >= 202002L // C++20 or later
 // Don't crash due to missing integer ranks.
 char8_t v1 __attribute__((vector_size(16)));
@@ -545,3 +584,258 @@ void triggerIntegerRankCheck() {
   auto b4 = (v4 >= 0x12);
 }
 #endif
+
+namespace all_operators {
+typedef unsigned int v2u __attribute__((ext_vector_type(2)));
+typedef float v2f __attribute__((ext_vector_type(2)));
+
+void test_int_vector_scalar(unsigned int ua, v2u v2ua) {
+  // Operators with one integer vector and one integer scalar operand. The scalar will splat.
+  (void)(v2ua + ua);
+  (void)(ua + v2ua);
+  (void)(v2ua - ua);
+  (void)(ua - v2ua);
+  (void)(v2ua * ua);
+  (void)(ua * v2ua);
+  (void)(v2ua / ua);
+  (void)(ua / v2ua);
+  (void)(v2ua % ua);
+  (void)(ua % v2ua);
+
+  (void)(v2ua == ua);
+  (void)(ua == v2ua);
+  (void)(v2ua != ua);
+  (void)(ua != v2ua);
+  (void)(v2ua <= ua);
+  (void)(ua <= v2ua);
+  (void)(v2ua >= ua);
+  (void)(ua >= v2ua);
+  (void)(v2ua < ua);
+  (void)(ua < v2ua);
+  (void)(v2ua > ua);
+  (void)(ua > v2ua);
+  (void)(v2ua && ua);
+  (void)(ua && v2ua);
+  (void)(v2ua || ua);
+  (void)(ua || v2ua);
+
+  (void)(v2ua & ua);
+  (void)(ua & v2ua);
+  (void)(v2ua | ua);
+  (void)(ua | v2ua);
+  (void)(v2ua ^ ua);
+  (void)(ua ^ v2ua);
+  (void)(v2ua << ua);
+  (void)(ua << v2ua);
+  (void)(v2ua >> ua);
+  (void)(ua >> v2ua);
+
+  v2ua += ua;
+  v2ua -= ua;
+  v2ua *= ua;
+  v2ua /= ua;
+  v2ua %= ua;
+  v2ua &= ua;
+  v2ua |= ua;
+  v2ua ^= ua;
+  v2ua >>= ua;
+  v2ua <<= ua;
+
+  ua += v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua -= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua *= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua /= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua %= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua &= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua |= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua ^= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua >>= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+  ua <<= v2ua; // expected-error{{assigning to 'unsigned int' from incompatible type 'v2u'}}
+}
+
+void test_float_vector_scalar(float fa, unsigned int ua, v2f v2fa) {
+  // Operators with one float vector and one float scalar operand. The scalar will splat.
+  (void)(v2fa + fa);
+  (void)(fa + v2fa);
+  (void)(v2fa - fa);
+  (void)(fa - v2fa);
+  (void)(v2fa * fa);
+  (void)(fa * v2fa);
+  (void)(v2fa / fa);
+  (void)(fa / v2fa);
+  (void)(v2fa % fa); // expected-error{{invalid operands to binary expression}}
+  (void)(fa % v2fa); // expected-error{{invalid operands to binary expression}}
+
+  (void)(v2fa == fa);
+  (void)(fa == v2fa);
+  (void)(v2fa != fa);
+  (void)(fa != v2fa);
+  (void)(v2fa <= fa);
+  (void)(fa <= v2fa);
+  (void)(v2fa >= fa);
+  (void)(fa >= v2fa);
+  (void)(v2fa < fa);
+  (void)(fa < v2fa);
+  (void)(v2fa > fa);
+  (void)(fa > v2fa);
+  (void)(v2fa && fa);
+  (void)(fa && v2fa);
+  (void)(v2fa || fa);
+  (void)(fa || v2fa);
+
+  (void)(v2fa & fa); // expected-error{{invalid operands to binary expression}}
+  (void)(fa & v2fa); // expected-error{{invalid operands to binary expression}}
+  (void)(v2fa | fa); // expected-error{{invalid operands to binary expression}}
+  (void)(fa | v2fa); // expected-error{{invalid operands to binary expression}}
+  (void)(v2fa ^ fa); // expected-error{{invalid operands to binary expression}}
+  (void)(fa ^ v2fa); // expected-error{{invalid operands to binary expression}}
+  (void)(v2fa << fa); // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+  (void)(v2fa << ua); // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+  (void)(fa << v2fa); // expected-error{{used type 'float' where integer is required}}
+  (void)(ua << v2fa); // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+  (void)(v2fa >> fa); // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+  (void)(v2fa >> ua); // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+  (void)(fa >> v2fa); // expected-error{{used type 'float' where integer is required}}
+  (void)(ua >> v2fa); // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+
+  v2fa += fa;
+  v2fa -= fa;
+  v2fa *= fa;
+  v2fa /= fa;
+  v2fa %= fa; // expected-error{{invalid operands to binary expression}}
+  v2fa &= fa; // expected-error{{invalid operands to binary expression}}
+  v2fa |= fa; // expected-error{{invalid operands to binary expression}}
+  v2fa ^= fa; // expected-error{{invalid operands to binary expression}}
+  v2fa >>= fa; // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+  v2fa <<= fa; // expected-error{{used type 'v2f' (vector of 2 'float' values) where integer is required}}
+
+  fa += v2fa; // expected-error{{assigning to 'float' from incompatible type 'v2f'}}
+  fa -= v2fa; // expected-error{{assigning to 'float' from incompatible type 'v2f'}}
+  fa *= v2fa; // expected-error{{assigning to 'float' from incompatible type 'v2f'}}
+  fa /= v2fa; // expected-error{{assigning to 'float' from incompatible type 'v2f'}}
+  fa %= v2fa; // expected-error{{invalid operands to binary expression}}
+  fa &= v2fa; // expected-error{{invalid operands to binary expression}}
+  fa |= v2fa; // expected-error{{invalid operands to binary expression}}
+  fa ^= v2fa; // expected-error{{invalid operands to binary expression}}
+  fa >>= v2fa; // expected-error{{used type 'float' where integer is required}}
+  fa <<= v2fa; // expected-error{{used type 'float' where integer is required}}
+}
+
+enum Enum { ENUM };
+
+void test_enum_vector_scalar(Enum ea, v2u v2ua) {
+  // Operators with one integer vector and one enum scalar operand.
+  // The scalar will have an implicit conversion to an integral type and then splat.
+  // FIXME: These should behave the same as in C, they should be accepted via
+  // the enum converting to an integer then splatting to the vector width.
+  // https://github.com/llvm/llvm-project/issues/62869
+  (void)(v2ua + ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea + v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua - ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea - v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua * ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea * v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua / ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea / v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua % ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea % v2ua); // expected-error{{cannot convert between vector values of different size}}
+
+  (void)(v2ua == ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea == v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua != ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea != v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua <= ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea <= v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua >= ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea >= v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua < ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea < v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua > ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea > v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua && ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea && v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua || ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea || v2ua); // expected-error{{cannot convert between vector values of different size}}
+
+  (void)(v2ua & ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea & v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua | ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea | v2ua); // expected-error{{cannot convert between vector values of different size}}
+  (void)(v2ua ^ ea); // expected-error{{cannot convert between vector values of different size}}
+  (void)(ea ^ v2ua); // expected-error{{cannot convert between vector values of different size}}
+  // FIXME: Vector/scalar shifts cause an assertion failure
+  // https://github.com/llvm/llvm-project/issues/62870
+  // (void)(v2ua << ea);
+  // (void)(ea << v2ua);
+  // (void)(v2ua >> ea);
+  // (void)(ea >> v2ua);
+
+  v2ua += ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua -= ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua *= ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua /= ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua %= ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua &= ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua |= ea; // expected-error{{cannot convert between vector values of different size}}
+  v2ua ^= ea; // expected-error{{cannot convert between vector values of different size}}
+  // FIXME: Vector/scalar shifts cause an assertion failure
+  // https://github.com/llvm/llvm-project/issues/62870
+  // v2ua >>= ea;
+  // v2ua <<= ea;
+
+  ea += v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea -= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea *= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea /= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea %= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea &= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea |= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  ea ^= v2ua; // expected-error{{cannot convert between vector values of different size}}
+  // FIXME: Vector/scalar shifts cause an assertion failure
+  // https://github.com/llvm/llvm-project/issues/62870
+  // ea >>= v2ua; // not-expected-error{{assigning to 'enum Enum' from incompatible type 'v2u'}}
+  // ea <<= v2ua; // not-expected-error{{assigning to 'enum Enum' from incompatible type 'v2u'}}
+}
+
+#if __cplusplus >= 201103L // C++11 or later
+enum class EnumClass { ENUM };
+
+void test_scoped_enum_vector(EnumClass ea, v2u v2ua) {
+  // Scoped enumerations are only compatible with exactly matching types. They shouldn't integral promote.
+  (void)(v2ua + ea); // expected-error{{cannot convert between vector and non-scalar values}}
+  (void)(ea + v2ua); // expected-error{{cannot convert between vector and non-scalar values}}
+}
+#endif
+}
+
+namespace GH105486 {
+__attribute__((__vector_size__(sizeof(double)))) double a;
+double b = a - (long)(*0); // expected-error {{indirection requires pointer operand ('int' invalid)}} \
+                           // expected-error {{cannot initialize a variable of type 'double' with an rvalue of type '__attribute__((__vector_size__(1 * sizeof(double)))) double' (vector of 1 'double' value)}}
+
+__attribute__((__vector_size__(sizeof(long)))) long c;
+long d = c - (long)(*0); // expected-error {{indirection requires pointer operand ('int' invalid)}} \
+                         // expected-error {{cannot initialize a variable of type 'long' with an rvalue of type '__attribute__((__vector_size__(1 * sizeof(long)))) long' (vector of 1 'long' value)}}
+
+const long long e = *0; // expected-error {{indirection requires pointer operand ('int' invalid)}}
+double f = a - e;       // expected-error {{cannot initialize a variable of type 'double' with an rvalue of type '__attribute__((__vector_size__(1 * sizeof(double)))) double' (vector of 1 'double' value)}}
+int h = c - e;          // expected-error {{cannot initialize a variable of type 'int' with an rvalue of type '__attribute__((__vector_size__(1 * sizeof(long)))) long' (vector of 1 'long' value)}}
+}
+
+typedef int v_neg_size __attribute__((vector_size(-8))); // expected-error{{vector must have non-negative size}}
+typedef int v_neg_size_2 __attribute__((vector_size(-1 * 8))); // expected-error{{vector must have non-negative size}}
+typedef int v_ext_neg_size __attribute__((ext_vector_type(-8))); // expected-error{{vector must have non-negative size}}
+typedef int v_ext_neg_size2 __attribute__((ext_vector_type(-1 * 8))); // expected-error{{vector must have non-negative size}}
+
+
+#if __cplusplus >= 201103L
+
+template <int N> using templated_v_size = int  __attribute__((vector_size(N))); // expected-error{{vector must have non-negative size}}
+templated_v_size<-8> templated_v_neg_size; //expected-note{{in instantiation of template type alias 'templated_v_size' requested here}}
+
+#endif
+
+namespace GH173347 {
+typedef short __attribute__((__vector_size__(8))) V;
+template <int N> V test(V x) { return (x % 5) * N; }
+}

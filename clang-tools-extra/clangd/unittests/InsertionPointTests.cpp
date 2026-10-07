@@ -13,6 +13,7 @@
 #include "XRefs.h"
 #include "refactor/InsertionPoint.h"
 #include "clang/AST/DeclBase.h"
+#include "clang/AST/DeclObjC.h"
 #include "llvm/Testing/Support/Error.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -38,7 +39,7 @@ TEST(InsertionPointTests, Generic) {
       [&](llvm::StringLiteral S) -> std::function<bool(const Decl *)> {
     return [S](const Decl *D) {
       if (const auto *ND = llvm::dyn_cast<NamedDecl>(D))
-        return llvm::StringRef(ND->getNameAsString()).startswith(S);
+        return llvm::StringRef(ND->getNameAsString()).starts_with(S);
       return false;
     };
   };

@@ -58,7 +58,9 @@
 ; CHECK:       FunctionType: f (0x1002)
 ; CHECK:       CodeOffset: ?f@@YAXXZ+0x0
 ; CHECK:       Segment: 0x0
-; CHECK:       Flags [ (0x0)
+; CHECK:       Flags [ (0x81)
+; CHECK:         HasFP (0x1)
+; CHECK:         HasOptimizedDebugInfo (0x80)
 ; CHECK:       ]
 ; CHECK:       DisplayName: f
 ; CHECK:       LinkageName: ?f@@YAXXZ
@@ -106,10 +108,10 @@ declare void @llvm.memcpy.p0.p0.i32(ptr nocapture, ptr nocapture readonly, i32, 
 
 declare void @"\01?usevars@@YAXHZZ"(i32, ...) #3
 
-attributes #0 = { "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone }
 attributes #2 = { argmemonly nounwind }
-attributes #3 = { "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #3 = { "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="pentium4" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "use-soft-float"="false" }
 
 !llvm.dbg.cu = !{!0}
 !llvm.module.flags = !{!3, !4}

@@ -6,15 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "test/UnitTest/FEnvSafeTest.h"
+#include "test/UnitTest/FPMatcher.h"
+#include "test/UnitTest/Test.h"
 #include "utils/MPFRWrapper/MPFRUtils.h"
-#include "utils/UnitTest/FPMatcher.h"
-#include "utils/UnitTest/Test.h"
 
-#include <math.h>
+#include "hdr/math_macros.h"
 
-namespace mpfr = __llvm_libc::testing::mpfr;
+namespace mpfr = LIBC_NAMESPACE::testing::mpfr;
 
-template <typename T> class CopySignTest : public __llvm_libc::testing::Test {
+template <typename T>
+class CopySignTest : public LIBC_NAMESPACE::testing::FEnvSafeTest {
 
   DECLARE_SPECIAL_CONSTANTS(T)
 
@@ -33,23 +35,23 @@ public:
   }
 
   void testRange(CopySignFunc func) {
-    constexpr UIntType COUNT = 10000000;
-    constexpr UIntType STEP = UIntType(-1) / COUNT;
-    for (UIntType i = 0, v = 0; i <= COUNT; ++i, v += STEP) {
-      T x = T(FPBits(v));
-      if (isnan(x) || isinf(x))
+    constexpr StorageType COUNT = 1'231;
+    constexpr StorageType STEP = STORAGE_MAX / COUNT;
+    for (StorageType i = 0, v = 0; i <= COUNT; ++i, v += STEP) {
+      T x = FPBits(v).get_val();
+      if (FPBits(v).is_nan() || FPBits(v).is_inf())
         continue;
 
-      double res1 = func(x, -x);
+      T res1 = func(x, -x);
       ASSERT_FP_EQ(res1, -x);
 
-      double res2 = func(x, x);
+      T res2 = func(x, x);
       ASSERT_FP_EQ(res2, x);
     }
   }
 };
 
-#define LIST_COPYSIGN_TESTS(T, func)                                           \
-  using LlvmLibcCopySignTest = CopySignTest<T>;                                \
-  TEST_F(LlvmLibcCopySignTest, SpecialNumbers) { testSpecialNumbers(&func); }  \
-  TEST_F(LlvmLibcCopySignTest, Range) { testRange(&func); }
+#define LIST_COPYSIGN_TESTS(Name, T, func)                                     \
+  using LlvmLibc##Name##Test = CopySignTest<T>;                                \
+  TEST_F(LlvmLibc##Name##Test, SpecialNumbers) { testSpecialNumbers(&func); }  \
+  TEST_F(LlvmLibc##Name##Test, Range) { testRange(&func); }

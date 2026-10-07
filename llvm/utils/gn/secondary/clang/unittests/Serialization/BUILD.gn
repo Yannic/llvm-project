@@ -9,12 +9,20 @@ unittest("SerializationTests") {
     "//clang/lib/Lex",
     "//clang/lib/Sema",
     "//clang/lib/Serialization",
+    "//clang/lib/Tooling",
     "//llvm/lib/Bitcode/Reader",
     "//llvm/lib/Support",
   ]
   sources = [
+    "CommentsTest.cpp",
+    "ForceCheckFileInputTest.cpp",
     "InMemoryModuleCacheTest.cpp",
+    "LoadSpecLazilyTest.cpp",
     "ModuleCacheTest.cpp",
+    "NamespaceLookupTest.cpp",
+    "PreambleInNamedModulesTest.cpp",
+    "ResolveImportedPathTest.cpp",
     "SourceLocationEncodingTest.cpp",
+    "VarDeclConstantInitTest.cpp",
   ]
 }

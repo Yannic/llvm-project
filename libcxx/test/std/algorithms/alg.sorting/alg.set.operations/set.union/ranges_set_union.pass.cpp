@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
+// UNSUPPORTED: GCC-ALWAYS_INLINE-FIXME
 
 // <algorithm>
 
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <concepts>
 #include <functional>
 #include <ranges>
@@ -290,7 +292,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
       assert(std::ranges::equal(out, std::array<TracedCopy, 6>{1, 3, 5, 8, 15, 16}));
 
       assert(std::ranges::all_of(out, &TracedCopy::copiedOnce));
@@ -303,7 +305,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
       assert(std::ranges::equal(out, std::array<TracedCopy, 6>{1, 3, 5, 8, 15, 16}));
 
       assert(std::ranges::all_of(out, &TracedCopy::copiedOnce));
@@ -367,7 +369,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
 
     // range overload
@@ -381,7 +383,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
   }
 
@@ -402,7 +404,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
 
     // range overload
@@ -414,7 +416,7 @@ constexpr bool test() {
 
       assert(result.in1 == r1.end());
       assert(result.in2 == r2.end());
-      assert(result.out == out.end());
+      assert(result.out == out.data() + out.size());
     }
   }
 

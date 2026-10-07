@@ -14,7 +14,10 @@ unittest("ClangDriverTests") {
   sources = [
     "DXCModeTest.cpp",
     "DistroTest.cpp",
+    "EscapedCommandLineTest.cpp",
+    "GCCVersionTest.cpp",
     "ModuleCacheTest.cpp",
+    "MultilibBuilderTest.cpp",
     "MultilibTest.cpp",
     "SanitizerArgsTest.cpp",
     "ToolChainTest.cpp",

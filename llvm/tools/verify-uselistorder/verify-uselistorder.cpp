@@ -73,9 +73,9 @@ namespace {
 struct TempFile {
   std::string Filename;
   FileRemover Remover;
-  bool init(const std::string &Ext);
+  bool init(const std::string &Ext, bool IsText = false);
   bool writeBitcode(const Module &M) const;
-  bool writeAssembly(const Module &M) const;
+  bool writeAssembly(Module &M) const;
   std::unique_ptr<Module> readBitcode(LLVMContext &Context) const;
   std::unique_ptr<Module> readAssembly(LLVMContext &Context) const;
 };
@@ -106,10 +106,12 @@ struct ValueMapping {
 
 } // end namespace
 
-bool TempFile::init(const std::string &Ext) {
+bool TempFile::init(const std::string &Ext, bool IsText) {
   SmallVector<char, 64> Vector;
   LLVM_DEBUG(dbgs() << " - create-temp-file\n");
-  if (auto EC = sys::fs::createTemporaryFile("uselistorder", Ext, Vector)) {
+  if (auto EC = sys::fs::createTemporaryFile("uselistorder", Ext, Vector,
+                                             IsText ? sys::fs::OF_Text
+                                                    : sys::fs::OF_None)) {
     errs() << "verify-uselistorder: error: " << EC.message() << "\n";
     return true;
   }
@@ -135,7 +137,7 @@ bool TempFile::writeBitcode(const Module &M) const {
   return false;
 }
 
-bool TempFile::writeAssembly(const Module &M) const {
+bool TempFile::writeAssembly(Module &M) const {
   LLVM_DEBUG(dbgs() << " - write assembly\n");
   std::error_code EC;
   raw_fd_ostream OS(Filename, EC, sys::fs::OF_TextWithCRLF);
@@ -144,6 +146,7 @@ bool TempFile::writeAssembly(const Module &M) const {
     return true;
   }
 
+  M.renumberMetadataForAssembly();
   M.print(OS, nullptr, /* ShouldPreserveUseListOrder */ true);
   return false;
 }
@@ -166,6 +169,7 @@ std::unique_ptr<Module> TempFile::readBitcode(LLVMContext &Context) const {
                           "verify-uselistorder: error: ");
     return nullptr;
   }
+
   return std::move(ModuleOr.get());
 }
 
@@ -173,7 +177,7 @@ std::unique_ptr<Module> TempFile::readAssembly(LLVMContext &Context) const {
   LLVM_DEBUG(dbgs() << " - read assembly\n");
   SMDiagnostic Err;
   std::unique_ptr<Module> M = parseAssemblyFile(Filename, Err, Context);
-  if (!M.get())
+  if (!M)
     Err.print("verify-uselistorder", errs());
   return M;
 }
@@ -219,8 +223,15 @@ ValueMapping::ValueMapping(const Module &M) {
         map(&I);
 
     // Constants used by instructions.
-    for (const BasicBlock &BB : F)
-      for (const Instruction &I : BB)
+    for (const BasicBlock &BB : F) {
+      for (const Instruction &I : BB) {
+        for (const DbgVariableRecord &DVR :
+             filterDbgVars(I.getDbgRecordRange())) {
+          for (Value *Op : DVR.location_ops())
+            map(Op);
+          if (DVR.isDbgAssign())
+            map(DVR.getAddress());
+        }
         for (const Value *Op : I.operands()) {
           // Look through a metadata wrapper.
           if (const auto *MAV = dyn_cast<MetadataAsValue>(Op))
@@ -231,10 +242,15 @@ ValueMapping::ValueMapping(const Module &M) {
               isa<InlineAsm>(Op))
             map(Op);
         }
+      }
+    }
   }
 }
 
 void ValueMapping::map(const Value *V) {
+  if (!V->hasUseList())
+    return;
+
   if (IDs.lookup(V))
     return;
 
@@ -354,7 +370,7 @@ static void verifyAfterRoundTrip(const Module &M,
 
 static void verifyBitcodeUseListOrder(const Module &M) {
   TempFile F;
-  if (F.init("bc"))
+  if (F.init("bc", /*IsText=*/false))
     report_fatal_error("failed to initialize bitcode file");
 
   if (F.writeBitcode(M))
@@ -364,9 +380,9 @@ static void verifyBitcodeUseListOrder(const Module &M) {
   verifyAfterRoundTrip(M, F.readBitcode(Context));
 }
 
-static void verifyAssemblyUseListOrder(const Module &M) {
+static void verifyAssemblyUseListOrder(Module &M) {
   TempFile F;
-  if (F.init("ll"))
+  if (F.init("ll", /*IsText=*/true))
     report_fatal_error("failed to initialize assembly file");
 
   if (F.writeAssembly(M))
@@ -376,7 +392,7 @@ static void verifyAssemblyUseListOrder(const Module &M) {
   verifyAfterRoundTrip(M, F.readAssembly(Context));
 }
 
-static void verifyUseListOrder(const Module &M) {
+static void verifyUseListOrder(Module &M) {
   outs() << "verify bitcode\n";
   verifyBitcodeUseListOrder(M);
   outs() << "verify assembly\n";
@@ -385,6 +401,9 @@ static void verifyUseListOrder(const Module &M) {
 
 static void shuffleValueUseLists(Value *V, std::minstd_rand0 &Gen,
                                  DenseSet<Value *> &Seen) {
+  if (!V->hasUseList())
+    return;
+
   if (!Seen.insert(V).second)
     return;
 
@@ -412,7 +431,7 @@ static void shuffleValueUseLists(Value *V, std::minstd_rand0 &Gen,
                         << ", U = ";
                  U.getUser()->dump());
     }
-  } while (std::is_sorted(V->use_begin(), V->use_end(), compareUses));
+  } while (llvm::is_sorted(V->uses(), compareUses));
 
   LLVM_DEBUG(dbgs() << " => shuffle\n");
   V->sortUseList(compareUses);
@@ -427,6 +446,9 @@ static void shuffleValueUseLists(Value *V, std::minstd_rand0 &Gen,
 }
 
 static void reverseValueUseLists(Value *V, DenseSet<Value *> &Seen) {
+  if (!V->hasUseList())
+    return;
+
   if (!Seen.insert(V).second)
     return;
 
@@ -542,7 +564,7 @@ int main(int argc, char **argv) {
   // Load the input module...
   std::unique_ptr<Module> M = parseIRFile(InputFilename, Err, Context);
 
-  if (!M.get()) {
+  if (!M) {
     Err.print(argv[0], errs());
     return 1;
   }

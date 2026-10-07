@@ -1,15 +1,15 @@
-; RUN: llc -mtriple=amdgcn--amdpal -mcpu=gfx802 <%s | FileCheck %s
+; RUN: llc -mtriple=amdgpu8.02--amdpal <%s | FileCheck %s
 
 ; Test that the mnemonic names for PAL metadata user data registers work in a
 ; full tessellation-and-geometry pipeline, compiled on gfx8 so it uses all six
 ; hardware shader types.
 
-; CHECK-DAG: 0x2c0c (SPI_SHADER_USER_DATA_PS_0): 0x10000000
-; CHECK-DAG: 0x2c4c (SPI_SHADER_USER_DATA_VS_0): 0x10000000
-; CHECK-DAG: 0x2c8c (SPI_SHADER_USER_DATA_GS_0): 0x10000000
-; CHECK-DAG: 0x2ccc (SPI_SHADER_USER_DATA_ES_0): 0x10000000
-; CHECK-DAG: 0x2d0c (SPI_SHADER_USER_DATA_HS_0): 0x10000000
-; CHECK-DAG: 0x2d4c (SPI_SHADER_USER_DATA_LS_0): 0x10000000
+; CHECK-DAG: '0x2c0c (SPI_SHADER_USER_DATA_PS_0)': 0x10000000
+; CHECK-DAG: '0x2c4c (SPI_SHADER_USER_DATA_VS_0)': 0x10000000
+; CHECK-DAG: '0x2c8c (SPI_SHADER_USER_DATA_GS_0)': 0x10000000
+; CHECK-DAG: '0x2ccc (SPI_SHADER_USER_DATA_ES_0)': 0x10000000
+; CHECK-DAG: '0x2d0c (SPI_SHADER_USER_DATA_HS_0)': 0x10000000
+; CHECK-DAG: '0x2d4c (SPI_SHADER_USER_DATA_LS_0)': 0x10000000
 
 !amdgpu.pal.metadata.msgpack = !{!0}
 

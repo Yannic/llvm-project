@@ -11,13 +11,12 @@
 // CHECK-NEXT:  Type: SHT_REL
 // CHECK-NEXT:  Flags [
 // CHECK-NEXT:    SHF_ALLOC
-// CHECK-NEXT:    SHF_INFO_LINK
 // CHECK-NEXT:  ]
 // CHECK-NEXT:  Address: [[RELA:.*]]
 // CHECK-NEXT:  Offset: 0xD4
 // CHECK-NEXT:  Size: 16
 // CHECK-NEXT:  Link: 0
-// CHECK-NEXT:  Info: 4
+// CHECK-NEXT:  Info: 0
 // CHECK-NEXT:  AddressAlignment: 4
 // CHECK-NEXT:  EntrySize: 8
 // CHECK-NEXT: }
@@ -37,6 +36,24 @@
 // CHECK-NEXT:   Type: None
 // CHECK-NEXT:   Other: 0
 // CHECK-NEXT:   Section: Undefined
+// CHECK-NEXT: }
+// CHECK-NEXT: Symbol {
+// CHECK-NEXT:   Name: bar
+// CHECK-NEXT:   Value: 0x4010E4
+// CHECK-NEXT:   Size: 0
+// CHECK-NEXT:   Binding: Local
+// CHECK-NEXT:   Type: GNU_IFunc
+// CHECK-NEXT:   Other: 0
+// CHECK-NEXT:   Section: .text
+// CHECK-NEXT: }
+// CHECK-NEXT: Symbol {
+// CHECK-NEXT:   Name: foo
+// CHECK-NEXT:   Value: 0x4010E5
+// CHECK-NEXT:   Size: 0
+// CHECK-NEXT:   Binding: Local
+// CHECK-NEXT:   Type: GNU_IFunc
+// CHECK-NEXT:   Other: 0
+// CHECK-NEXT:   Section: .text
 // CHECK-NEXT: }
 // CHECK-NEXT: Symbol {
 // CHECK-NEXT:   Name: __rel_iplt_start

@@ -14,7 +14,7 @@ open Llvm_target
 
 let () = Llvm_all_backends.initialize ()
 
-let context = global_context ()
+let context = create_context ()
 let i32_type = Llvm.i32_type context
 let i64_type = Llvm.i64_type context
 
@@ -82,9 +82,7 @@ let test_target_machine () =
   assert_equal (TM.cpu machine) "";
   assert_equal (TM.features machine) "";
   ignore (TM.data_layout machine);
-  TM.set_verbose_asm true machine;
-  let pm = PassManager.create () in
-  TM.add_analysis_passes pm machine
+  TM.set_verbose_asm true machine
 
 
 (*===-- Code Emission -----------------------------------------------------===*)
@@ -110,4 +108,5 @@ let _ =
   test_target ();
   test_target_machine ();
   test_code_emission ();
-  dispose_module m
+  dispose_module m;
+  dispose_context context

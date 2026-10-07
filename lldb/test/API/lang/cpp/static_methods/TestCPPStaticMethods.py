@@ -8,12 +8,14 @@ from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbutil
 
 
+@requireExpressionEvaluation
 class CPPStaticMethodsTestCase(TestBase):
-
     def test_with_run_command(self):
         """Test that static methods are properly distinguished from regular methods"""
         self.build()
-        lldbutil.run_to_source_breakpoint(self, "// Break here", lldb.SBFileSpec("main.cpp"))
+        lldbutil.run_to_source_breakpoint(
+            self, "// Break here", lldb.SBFileSpec("main.cpp")
+        )
 
         self.expect_expr("A::getStaticValue()", result_type="int", result_value="5")
         self.expect_expr("a.getMemberValue()", result_type="int", result_value="3")

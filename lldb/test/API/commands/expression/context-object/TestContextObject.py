@@ -4,15 +4,19 @@ Tests expression evaluation in context of an object.
 
 import lldb
 import lldbsuite.test.lldbutil as lldbutil
+from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 
-class ContextObjectTestCase(TestBase):
 
+@requireExpressionEvaluation
+class ContextObjectTestCase(TestBase):
     def test_context_object(self):
         """Tests expression evaluation in context of an object."""
         self.build()
 
-        (target, process, thread, bkpt) = lldbutil.run_to_source_breakpoint(self, '// Break here', self.main_source_spec)
+        (target, process, thread, bkpt) = lldbutil.run_to_source_breakpoint(
+            self, "// Break here", self.main_source_spec
+        )
         frame = thread.GetFrameAtIndex(0)
 
         #

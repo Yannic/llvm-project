@@ -1,11 +1,11 @@
-; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx906 --amdhsa-code-object-version=5 < %s | FileCheck --check-prefixes=CHECK %s
+; RUN: llc -mtriple=amdgpu9.06-amd-amdhsa < %s | FileCheck --check-prefixes=CHECK %s
 
 
 ; CHECK-LABEL: test_unaligned_to_eight:
 ; CHECK: .amdhsa_kernarg_size 264
 define amdgpu_kernel void @test_unaligned_to_eight(i32 %four)  {
   %implicitarg.ptr = call ptr addrspace(4) @llvm.amdgcn.implicitarg.ptr()
-  store volatile ptr addrspace(4) %implicitarg.ptr, ptr addrspace(1) undef
+  store volatile ptr addrspace(4) %implicitarg.ptr, ptr addrspace(1) poison
   ret void
 }
 
@@ -14,7 +14,7 @@ define amdgpu_kernel void @test_unaligned_to_eight(i32 %four)  {
 ; CHECK: .amdhsa_kernarg_size 264
 define amdgpu_kernel void @test_aligned_to_eight(i64 %eight)  {
   %implicitarg.ptr = call ptr addrspace(4) @llvm.amdgcn.implicitarg.ptr()
-  store volatile ptr addrspace(4) %implicitarg.ptr, ptr addrspace(1) undef
+  store volatile ptr addrspace(4) %implicitarg.ptr, ptr addrspace(1) poison
   ret void
 }
 
@@ -56,3 +56,4 @@ define amdgpu_kernel void @test_aligned_to_eight(i64 %eight)  {
 ; CHECK-LABEL:        .name:           test_aligned_to_eight
 
 declare ptr addrspace(4) @llvm.amdgcn.implicitarg.ptr()
+

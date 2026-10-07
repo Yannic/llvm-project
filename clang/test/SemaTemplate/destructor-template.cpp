@@ -1,12 +1,14 @@
 // RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 %s
 
 template<typename A> class s0 {
+  template<typename B> class s1;
+};
 
-  template<typename B> class s1 : public s0<A> {
-    ~s1() {}
-    s0<A> ms0;
-  };
-
+template<typename A>
+template<typename B>
+class s0<A>::s1 : s0<A> {
+  ~s1() {}
+  s0<A> ms0;
 };
 
 struct Incomplete;
@@ -28,7 +30,7 @@ namespace PR6152 {
     y->template Y<T>::~Y<T>();
     y->~Y();
   }
-  
+
   template struct X<int>;
 }
 
@@ -102,3 +104,25 @@ struct T : S {
   ~T() = default;
 };
 } // namespace PR38671
+
+namespace GH159630 {
+
+struct X {
+  template<typename T>
+  struct typo { // expected-note {{'typo' declared here}}
+    ~typo();
+  };
+};
+
+template<typename T>
+X::typo<T>::typ0::~typ0() {} // expected-error {{no member named 'typ0'}} \
+                             // expected-error {{no type named 'typ0'}}
+
+}
+
+namespace GH209908 {
+  template <class T> using X = decltype(T().~E());
+  // expected-error@-1 {{undeclared identifier 'E' in destructor name}}
+  enum E : int;
+  using Z = X<E>; // expected-note {{requested here}}
+} // namespace GH209908

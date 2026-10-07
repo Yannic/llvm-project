@@ -297,5 +297,161 @@ for.end:
   ret void
 }
 
+define void @test_infer_nsw(ptr %p) {
+; CHECK-LABEL: @test_infer_nsw(
+; CHECK-NEXT:  bb:
+; CHECK-NEXT:    [[FREEZE:%.*]] = freeze i32 poison
+; CHECK-NEXT:    br label [[BB1:%.*]]
+; CHECK:       bb1:
+; CHECK-NEXT:    [[PHI:%.*]] = phi i32 [ [[ADD:%.*]], [[BB2:%.*]] ], [ 0, [[BB:%.*]] ]
+; CHECK-NEXT:    [[SUB:%.*]] = sub nuw nsw i32 [[FREEZE]], [[PHI]]
+; CHECK-NEXT:    [[ICMP:%.*]] = icmp sgt i32 [[SUB]], 1
+; CHECK-NEXT:    br i1 [[ICMP]], label [[BB2]], label [[BB3:%.*]]
+; CHECK:       bb2:
+; CHECK-NEXT:    store i16 1, ptr [[P:%.*]], align 2
+; CHECK-NEXT:    [[ADD]] = add nuw i32 [[PHI]], 2
+; CHECK-NEXT:    br label [[BB1]]
+; CHECK:       bb3:
+; CHECK-NEXT:    ret void
+;
+bb:
+  %freeze = freeze i32 poison
+  br label %bb1
+
+bb1:                                              ; preds = %bb2, %bb
+  %phi = phi i32 [ %add, %bb2 ], [ 0, %bb ]
+  %sub = sub i32 %freeze, %phi
+  %icmp = icmp sgt i32 %sub, 1
+  br i1 %icmp, label %bb2, label %bb3
+
+bb2:                                              ; preds = %bb1
+  store i16 1, ptr %p, align 2
+  %add = add nuw i32 %phi, 2
+  br label %bb1
+
+bb3:                                              ; preds = %bb1
+  ret void
+}
+
+define void @test_shl_const_bound(ptr %p) {
+; CHECK-LABEL: @test_shl_const_bound(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[LOOP:%.*]]
+; CHECK:       loop:
+; CHECK-NEXT:    [[IV:%.*]] = phi i64 [ 0, [[ENTRY:%.*]] ], [ [[IV_NEXT:%.*]], [[LOOP]] ]
+; CHECK-NEXT:    [[OFF:%.*]] = shl nuw nsw i64 [[IV]], 2
+; CHECK-NEXT:    [[GEP:%.*]] = getelementptr i8, ptr [[P:%.*]], i64 [[OFF]]
+; CHECK-NEXT:    store i8 0, ptr [[GEP]], align 1
+; CHECK-NEXT:    [[IV_NEXT]] = add nuw nsw i64 [[IV]], 1
+; CHECK-NEXT:    [[EC:%.*]] = icmp eq i64 [[IV_NEXT]], 100
+; CHECK-NEXT:    br i1 [[EC]], label [[EXIT:%.*]], label [[LOOP]]
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i64 [ 0, %entry ], [ %iv.next, %loop ]
+  %off = shl i64 %iv, 2
+  %gep = getelementptr i8, ptr %p, i64 %off
+  store i8 0, ptr %gep
+  %iv.next = add i64 %iv, 1
+  %ec = icmp eq i64 %iv.next, 100
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+define void @test_shl_bw_minus_one(ptr %p) {
+; CHECK-LABEL: @test_shl_bw_minus_one(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[LOOP:%.*]]
+; CHECK:       loop:
+; CHECK-NEXT:    [[IV:%.*]] = phi i8 [ 0, [[ENTRY:%.*]] ], [ [[IV_NEXT:%.*]], [[LOOP]] ]
+; CHECK-NEXT:    [[OFF:%.*]] = shl nuw i8 [[IV]], 7
+; CHECK-NEXT:    store i8 [[OFF]], ptr [[P:%.*]], align 1
+; CHECK-NEXT:    [[IV_NEXT]] = add nuw nsw i8 [[IV]], 1
+; CHECK-NEXT:    [[EC:%.*]] = icmp eq i8 [[IV_NEXT]], 2
+; CHECK-NEXT:    br i1 [[EC]], label [[EXIT:%.*]], label [[LOOP]]
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i8 [ 0, %entry ], [ %iv.next, %loop ]
+  %off = shl i8 %iv, 7
+  store i8 %off, ptr %p
+  %iv.next = add i8 %iv, 1
+  %ec = icmp eq i8 %iv.next, 2
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+define void @test_shl_unbounded(ptr %p, i64 %n) {
+; CHECK-LABEL: @test_shl_unbounded(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[LOOP:%.*]]
+; CHECK:       loop:
+; CHECK-NEXT:    [[IV:%.*]] = phi i64 [ 0, [[ENTRY:%.*]] ], [ [[IV_NEXT:%.*]], [[LOOP]] ]
+; CHECK-NEXT:    [[OFF:%.*]] = shl i64 [[IV]], 2
+; CHECK-NEXT:    [[GEP:%.*]] = getelementptr i8, ptr [[P:%.*]], i64 [[OFF]]
+; CHECK-NEXT:    store i8 0, ptr [[GEP]], align 1
+; CHECK-NEXT:    [[IV_NEXT]] = add i64 [[IV]], 1
+; CHECK-NEXT:    [[EC:%.*]] = icmp eq i64 [[IV_NEXT]], [[N:%.*]]
+; CHECK-NEXT:    br i1 [[EC]], label [[EXIT:%.*]], label [[LOOP]]
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i64 [ 0, %entry ], [ %iv.next, %loop ]
+  %off = shl i64 %iv, 2
+  %gep = getelementptr i8, ptr %p, i64 %off
+  store i8 0, ptr %gep
+  %iv.next = add i64 %iv, 1
+  %ec = icmp eq i64 %iv.next, %n
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}
+
+define void @test_shl_nuw_only(ptr %p) {
+; CHECK-LABEL: @test_shl_nuw_only(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[LOOP:%.*]]
+; CHECK:       loop:
+; CHECK-NEXT:    [[IV:%.*]] = phi i8 [ 0, [[ENTRY:%.*]] ], [ [[IV_NEXT:%.*]], [[LOOP]] ]
+; CHECK-NEXT:    [[OFF:%.*]] = shl nuw i8 [[IV]], 1
+; CHECK-NEXT:    store i8 [[OFF]], ptr [[P:%.*]], align 1
+; CHECK-NEXT:    [[IV_NEXT]] = add nuw i8 [[IV]], 1
+; CHECK-NEXT:    [[EC:%.*]] = icmp eq i8 [[IV_NEXT]], -128
+; CHECK-NEXT:    br i1 [[EC]], label [[EXIT:%.*]], label [[LOOP]]
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  br label %loop
+
+loop:
+  %iv = phi i8 [ 0, %entry ], [ %iv.next, %loop ]
+  %off = shl i8 %iv, 1
+  store i8 %off, ptr %p
+  %iv.next = add i8 %iv, 1
+  %ec = icmp eq i8 %iv.next, -128
+  br i1 %ec, label %exit, label %loop
+
+exit:
+  ret void
+}
+
 !0 = !{i32 0, i32 2}
 !1 = !{i32 0, i32 42}

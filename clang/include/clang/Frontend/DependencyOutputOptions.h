@@ -10,6 +10,7 @@
 #define LLVM_CLANG_FRONTEND_DEPENDENCYOUTPUTOPTIONS_H
 
 #include "clang/Basic/HeaderInclude.h"
+#include "clang/Basic/MakeSupport.h"
 #include <string>
 #include <vector>
 
@@ -17,9 +18,6 @@ namespace clang {
 
 /// ShowIncludesDestination - Destination for /showIncludes output.
 enum class ShowIncludesDestination { None, Stdout, Stderr };
-
-/// DependencyOutputFormat - Format for the compiler dependency file.
-enum class DependencyOutputFormat { Make, NMake };
 
 /// ExtraDepKind - The kind of extra dependency file.
 enum ExtraDepKind {
@@ -29,17 +27,30 @@ enum ExtraDepKind {
   EDK_DepFileEntry,
 };
 
+/// ModuleFileDepsKind - Whether to include module file dependencies.
+enum ModuleFileDepsKind {
+  MFDK_None,   ///< Do not include module file dependencies.
+  MFDK_All,    ///< Include all module file dependencies.
+  MFDK_Direct, ///< Include only directly imported module file dependencies.
+};
+
 /// DependencyOutputOptions - Options for controlling the compiler dependency
 /// file generation.
 class DependencyOutputOptions {
 public:
+  LLVM_PREFERRED_TYPE(bool)
   unsigned IncludeSystemHeaders : 1; ///< Include system header dependencies.
+  LLVM_PREFERRED_TYPE(bool)
   unsigned ShowHeaderIncludes : 1;   ///< Show header inclusions (-H).
+  LLVM_PREFERRED_TYPE(bool)
   unsigned UsePhonyTargets : 1;      ///< Include phony targets for each
                                      /// dependency, which can avoid some 'make'
                                      /// problems.
+  LLVM_PREFERRED_TYPE(bool)
   unsigned AddMissingHeaderDeps : 1; ///< Add missing headers to dependency list
-  unsigned IncludeModuleFiles : 1; ///< Include module file dependencies.
+  LLVM_PREFERRED_TYPE(ModuleFileDepsKind)
+  unsigned IncludeModuleFiles : 2; ///< Include module file dependencies.
+  LLVM_PREFERRED_TYPE(bool)
   unsigned ShowSkippedHeaderIncludes : 1; ///< With ShowHeaderIncludes, show
                                           /// also includes that were skipped
                                           /// due to the "include guard
@@ -74,9 +85,6 @@ public:
   /// target.
   std::vector<std::pair<std::string, ExtraDepKind>> ExtraDeps;
 
-  /// In /showIncludes mode, pretend the main TU is a header with this name.
-  std::string ShowIncludesPretendHeader;
-
   /// The file to write GraphViz-formatted header dependencies to.
   std::string DOTOutputFile;
 
@@ -86,7 +94,7 @@ public:
 public:
   DependencyOutputOptions()
       : IncludeSystemHeaders(0), ShowHeaderIncludes(0), UsePhonyTargets(0),
-        AddMissingHeaderDeps(0), IncludeModuleFiles(0),
+        AddMissingHeaderDeps(0), IncludeModuleFiles(MFDK_None),
         ShowSkippedHeaderIncludes(0), HeaderIncludeFormat(HIFMT_Textual),
         HeaderIncludeFiltering(HIFIL_None) {}
 };

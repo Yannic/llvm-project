@@ -1,11 +1,18 @@
 // REQUIRES: arm
-// RUN: llvm-mc -arm-add-build-attributes -filetype=obj -triple=armv6-none-linux-gnueabi %s -o %t
-// RUN: echo "SECTIONS { \
-// RUN:          .callee1 0x100004 : { *(.callee_low) } \
-// RUN:          .caller  0x500000 : { *(.text) } \
-// RUN:          .callee2 0x900004 : { *(.callee_high) } } " > %t.script
-// RUN: ld.lld %t --script %t.script -o %t2
-// RUN: llvm-objdump -d --triple=armv6-none-linux-gnueabi %t2 | FileCheck %s
+// RUN: rm -rf %t && split-file %s %t && cd %t
+// RUN: llvm-mc -arm-add-build-attributes -filetype=obj -triple=armv6-none-linux-gnueabi a.s -o a.o
+// RUN: ld.lld a.o --script a.lds -o exe
+// RUN: llvm-objdump -d --triple=armv6-none-linux-gnueabi exe | FileCheck %s
+
+//--- a.lds
+
+SECTIONS {
+  .callee1 0x100004 : AT(0x100004) { *(.callee_low) }
+  .caller  0x500000 : AT(0x500000) { *(.text) }
+  .callee2 0x900004 : AT(0x900004) { *(.callee_high) }
+}
+
+//--- a.s
 
 // On older Arm Architectures such as v5 and v6 the Thumb BL and BLX relocation
 // uses a slightly different encoding that has a lower range. These relocations
@@ -38,8 +45,8 @@ thumbfunc:
 // CHECK-NEXT:   500004:       f3ff effe       blx    0x900004 <armfunc>
 // CHECK-NEXT:   500008:       4770    bx      lr
 
-  .arm
   .section .callee_high, "ax", %progbits
+  .arm
   .globl armfunc
   .type armfunc, %function
 armfunc:

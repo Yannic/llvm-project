@@ -12,13 +12,14 @@
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <algorithm>
 #include <optional>
@@ -59,7 +60,7 @@ void Denormalize(llvm::SmallVectorImpl<char> &path, FileSpec::Style style) {
   if (PathStyleIsPosix(style))
     return;
 
-  std::replace(path.begin(), path.end(), '/', '\\');
+  llvm::replace(path, '/', '\\');
 }
 
 } // end anonymous namespace
@@ -185,25 +186,25 @@ void FileSpec::SetFile(llvm::StringRef pathname, Style style) {
 
   // Normalize back slashes to forward slashes
   if (m_style == Style::windows)
-    std::replace(resolved.begin(), resolved.end(), '\\', '/');
+    llvm::replace(resolved, '\\', '/');
 
   if (resolved.empty()) {
     // If we have no path after normalization set the path to the current
     // directory. This matches what python does and also a few other path
     // utilities.
-    m_filename.SetString(".");
+    m_filename = ".";
     return;
   }
 
   // Split path into filename and directory. We rely on the underlying char
   // pointer to be nullptr when the components are empty.
   llvm::StringRef filename = llvm::sys::path::filename(resolved, m_style);
-  if(!filename.empty())
-    m_filename.SetString(filename);
+  if (!filename.empty())
+    m_filename = filename;
 
   llvm::StringRef directory = llvm::sys::path::parent_path(resolved, m_style);
-  if(!directory.empty())
-    m_directory.SetString(directory);
+  if (!directory.empty())
+    m_directory = directory;
 }
 
 void FileSpec::SetFile(llvm::StringRef path, const llvm::Triple &triple) {
@@ -215,23 +216,29 @@ void FileSpec::SetFile(llvm::StringRef path, const llvm::Triple &triple) {
 //
 //  if (file_spec)
 //  {}
-FileSpec::operator bool() const { return m_filename || m_directory; }
+FileSpec::operator bool() const {
+  return !m_filename.empty() || !m_directory.empty();
+}
 
 // Logical NOT operator. This allows code to check any FileSpec objects to see
 // if they are invalid using code such as:
 //
 //  if (!file_spec)
 //  {}
-bool FileSpec::operator!() const { return !m_directory && !m_filename; }
+bool FileSpec::operator!() const {
+  return m_directory.empty() && m_filename.empty();
+}
 
 bool FileSpec::DirectoryEquals(const FileSpec &rhs) const {
-  const bool case_sensitive = IsCaseSensitive() || rhs.IsCaseSensitive();
-  return ConstString::Equals(m_directory, rhs.m_directory, case_sensitive);
+  if (IsCaseSensitive() || rhs.IsCaseSensitive())
+    return GetDirectory() == rhs.GetDirectory();
+  return GetDirectory().equals_insensitive(rhs.GetDirectory());
 }
 
 bool FileSpec::FileEquals(const FileSpec &rhs) const {
-  const bool case_sensitive = IsCaseSensitive() || rhs.IsCaseSensitive();
-  return ConstString::Equals(m_filename, rhs.m_filename, case_sensitive);
+  if (IsCaseSensitive() || rhs.IsCaseSensitive())
+    return GetFilename() == rhs.GetFilename();
+  return GetFilename().equals_insensitive(rhs.GetFilename());
 }
 
 // Equal to operator
@@ -256,8 +263,8 @@ Stream &lldb_private::operator<<(Stream &s, const FileSpec &f) {
 // Clear this object by releasing both the directory and filename string values
 // and making them both the empty string.
 void FileSpec::Clear() {
-  m_directory.Clear();
-  m_filename.Clear();
+  m_directory.clear();
+  m_filename.clear();
   PathWasModified();
 }
 
@@ -282,34 +289,44 @@ int FileSpec::Compare(const FileSpec &a, const FileSpec &b, bool full) {
   // full compare. This allows for matching when we just have a filename in one
   // of the FileSpec objects.
 
-  if (full || (a.m_directory && b.m_directory)) {
-    result = ConstString::Compare(a.m_directory, b.m_directory, case_sensitive);
+  if (full || (!a.m_directory.empty() && !b.m_directory.empty())) {
+    if (case_sensitive)
+      result = a.GetDirectory().compare(b.GetDirectory());
+    else
+      result = a.GetDirectory().compare_insensitive(b.GetDirectory());
+
     if (result)
       return result;
   }
-  return ConstString::Compare(a.m_filename, b.m_filename, case_sensitive);
+
+  if (case_sensitive)
+    result = a.GetFilename().compare(b.GetFilename());
+  else
+    result = a.GetFilename().compare_insensitive(b.GetFilename());
+
+  return result;
 }
 
 bool FileSpec::Equal(const FileSpec &a, const FileSpec &b, bool full) {
-  if (full || (a.GetDirectory() && b.GetDirectory()))
+  if (full || (!a.GetDirectory().empty() && !b.GetDirectory().empty()))
     return a == b;
 
   return a.FileEquals(b);
 }
 
 bool FileSpec::Match(const FileSpec &pattern, const FileSpec &file) {
-  if (pattern.GetDirectory())
+  if (!pattern.GetDirectory().empty())
     return pattern == file;
-  if (pattern.GetFilename())
+  if (!pattern.GetFilename().empty())
     return pattern.FileEquals(file);
   return true;
 }
 
 std::optional<FileSpec::Style>
 FileSpec::GuessPathStyle(llvm::StringRef absolute_path) {
-  if (absolute_path.startswith("/"))
+  if (absolute_path.starts_with("/"))
     return Style::posix;
-  if (absolute_path.startswith(R"(\\)"))
+  if (absolute_path.starts_with(R"(\\)"))
     return Style::windows;
   if (absolute_path.size() >= 3 && llvm::isAlpha(absolute_path[0]) &&
       (absolute_path.substr(1, 2) == R"(:\)" ||
@@ -325,39 +342,36 @@ void FileSpec::Dump(llvm::raw_ostream &s) const {
   std::string path{GetPath(true)};
   s << path;
   char path_separator = GetPreferredPathSeparator(m_style);
-  if (!m_filename && !path.empty() && path.back() != path_separator)
+  if (m_filename.empty() && !path.empty() && path.back() != path_separator)
     s << path_separator;
+}
+
+llvm::json::Value FileSpec::ToJSON() const {
+  std::string str;
+  llvm::raw_string_ostream stream(str);
+  this->Dump(stream);
+  return llvm::json::Value(std::move(str));
 }
 
 FileSpec::Style FileSpec::GetPathStyle() const { return m_style; }
 
-void FileSpec::SetDirectory(ConstString directory) {
+void FileSpec::SetDirectory(llvm::StringRef directory) {
   m_directory = directory;
   PathWasModified();
 }
 
-void FileSpec::SetDirectory(llvm::StringRef directory) {
-  m_directory = ConstString(directory);
-  PathWasModified();
-}
-
-void FileSpec::SetFilename(ConstString filename) {
+void FileSpec::SetFilename(llvm::StringRef filename) {
   m_filename = filename;
   PathWasModified();
 }
 
-void FileSpec::SetFilename(llvm::StringRef filename) {
-  m_filename = ConstString(filename);
-  PathWasModified();
-}
-
 void FileSpec::ClearFilename() {
-  m_filename.Clear();
+  m_filename.clear();
   PathWasModified();
 }
 
 void FileSpec::ClearDirectory() {
-  m_directory.Clear();
+  m_directory.clear();
   PathWasModified();
 }
 
@@ -379,39 +393,32 @@ std::string FileSpec::GetPath(bool denormalize) const {
   return static_cast<std::string>(result);
 }
 
-ConstString FileSpec::GetPathAsConstString(bool denormalize) const {
-  return ConstString{GetPath(denormalize)};
-}
-
 void FileSpec::GetPath(llvm::SmallVectorImpl<char> &path,
                        bool denormalize) const {
-  path.append(m_directory.GetStringRef().begin(),
-              m_directory.GetStringRef().end());
+  path.append(m_directory.begin(), m_directory.end());
   // Since the path was normalized and all paths use '/' when stored in these
   // objects, we don't need to look for the actual syntax specific path
   // separator, we just look for and insert '/'.
-  if (m_directory && m_filename && m_directory.GetStringRef().back() != '/' &&
-      m_filename.GetStringRef().back() != '/')
+  if (!m_directory.empty() && !m_filename.empty() &&
+      m_directory.back() != '/' && m_filename.back() != '/')
     path.insert(path.end(), '/');
-  path.append(m_filename.GetStringRef().begin(),
-              m_filename.GetStringRef().end());
+  path.append(m_filename.begin(), m_filename.end());
   if (denormalize && !path.empty())
     Denormalize(path, m_style);
 }
 
-ConstString FileSpec::GetFileNameExtension() const {
-  return ConstString(
-      llvm::sys::path::extension(m_filename.GetStringRef(), m_style));
+llvm::StringRef FileSpec::GetFileNameExtension() const {
+  return llvm::sys::path::extension(m_filename, m_style);
 }
 
-ConstString FileSpec::GetFileNameStrippingExtension() const {
-  return ConstString(llvm::sys::path::stem(m_filename.GetStringRef(), m_style));
+llvm::StringRef FileSpec::GetFileNameStrippingExtension() const {
+  return llvm::sys::path::stem(m_filename, m_style);
 }
 
 // Return the size in bytes that this object takes in memory. This returns the
 // size in bytes of this object, not any shared string values it may refer to.
 size_t FileSpec::MemorySize() const {
-  return m_filename.MemorySize() + m_directory.MemorySize();
+  return m_filename.size() + m_directory.size();
 }
 
 FileSpec
@@ -428,12 +435,6 @@ FileSpec FileSpec::CopyByRemovingLastPathComponent() const {
     return FileSpec(llvm::sys::path::parent_path(current_path, m_style),
                     m_style);
   return *this;
-}
-
-ConstString FileSpec::GetLastPathComponent() const {
-  llvm::SmallString<64> current_path;
-  GetPath(current_path, false);
-  return ConstString(llvm::sys::path::filename(current_path, m_style));
 }
 
 void FileSpec::PrependPathComponent(llvm::StringRef component) {
@@ -470,6 +471,26 @@ bool FileSpec::RemoveLastPathComponent() {
   }
   return false;
 }
+
+std::vector<llvm::StringRef> FileSpec::GetComponents() const {
+  std::vector<llvm::StringRef> components;
+
+  auto dir_begin = llvm::sys::path::begin(m_directory, m_style);
+  auto dir_end = llvm::sys::path::end(m_directory);
+
+  for (auto iter = dir_begin; iter != dir_end; ++iter) {
+    if (*iter == "/" || *iter == ".")
+      continue;
+
+    components.push_back(*iter);
+  }
+
+  if (!m_filename.empty() && m_filename != "/" && m_filename != ".")
+    components.push_back(m_filename);
+
+  return components;
+}
+
 /// Returns true if the filespec represents an implementation source
 /// file (files with a ".c", ".cpp", ".m", ".mm" (many more)
 /// extension).
@@ -478,8 +499,8 @@ bool FileSpec::RemoveLastPathComponent() {
 ///     \b true if the filespec represents an implementation source
 ///     file, \b false otherwise.
 bool FileSpec::IsSourceImplementationFile() const {
-  ConstString extension(GetFileNameExtension());
-  if (!extension)
+  llvm::StringRef extension = GetFileNameExtension();
+  if (extension.empty())
     return false;
 
   static RegularExpression g_source_file_regex(llvm::StringRef(
@@ -487,7 +508,7 @@ bool FileSpec::IsSourceImplementationFile() const {
       "cC][pP]|[sS]|[aA][sS][mM]|[fF]|[fF]77|[fF]90|[fF]95|[fF]03|[fF][oO]["
       "rR]|[fF][tT][nN]|[fF][pP][pP]|[aA][dD][aA]|[aA][dD][bB]|[aA][dD][sS])"
       "$"));
-  return g_source_file_regex.Execute(extension.GetStringRef());
+  return g_source_file_regex.Execute(extension);
 }
 
 bool FileSpec::IsRelative() const {
@@ -525,8 +546,8 @@ void llvm::format_provider<FileSpec>::format(const FileSpec &F,
           Style.equals_insensitive("D")) &&
          "Invalid FileSpec style!");
 
-  StringRef dir = F.GetDirectory().GetStringRef();
-  StringRef file = F.GetFilename().GetStringRef();
+  StringRef dir = F.GetDirectory();
+  StringRef file = F.GetFilename();
 
   if (dir.empty() && file.empty()) {
     Stream << "(empty)";

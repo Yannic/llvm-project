@@ -8,8 +8,8 @@
 
 // UNSUPPORTED: c++03
 
-// Self assignement post-conditions are tested.
-// ADDITIONAL_COMPILE_FLAGS: -Wno-self-move
+// Self assignment post-conditions are tested.
+// ADDITIONAL_COMPILE_FLAGS(gcc-style-warnings): -Wno-self-move
 
 // <memory>
 
@@ -113,18 +113,25 @@ TEST_CONSTEXPR_CXX23 void test_sfinae() {
     static_assert(std::is_nothrow_assignable<U, U&&>::value, "");
   }
   {
+    typedef std::unique_ptr<VT, NCDeleter<VT> > U;
+    static_assert(!std::is_assignable<U, U&>::value, "");
+    static_assert(!std::is_assignable<U, const U&>::value, "");
+    static_assert(!std::is_assignable<U, const U&&>::value, "");
+    static_assert(!std::is_assignable<U, U&&>::value, "");
+  }
+  {
     typedef std::unique_ptr<VT, NCDeleter<VT>&> U;
     static_assert(!std::is_assignable<U, U&>::value, "");
     static_assert(!std::is_assignable<U, const U&>::value, "");
     static_assert(!std::is_assignable<U, const U&&>::value, "");
-    static_assert(std::is_nothrow_assignable<U, U&&>::value, "");
+    static_assert(!std::is_assignable<U, U&&>::value, "");
   }
   {
     typedef std::unique_ptr<VT, const NCDeleter<VT>&> U;
     static_assert(!std::is_assignable<U, U&>::value, "");
     static_assert(!std::is_assignable<U, const U&>::value, "");
     static_assert(!std::is_assignable<U, const U&&>::value, "");
-    static_assert(std::is_nothrow_assignable<U, U&&>::value, "");
+    static_assert(!std::is_assignable<U, U&&>::value, "");
   }
 }
 

@@ -16,9 +16,12 @@
 #include "lldb/Core/Communication.h"
 #include "lldb/Host/MainLoop.h"
 #include "lldb/Host/common/NativeProcessProtocol.h"
+#include "lldb/Utility/Locked.h"
+#include "lldb/Utility/RegisterValue.h"
 #include "lldb/lldb-private-forward.h"
 
 #include "GDBRemoteCommunicationServerCommon.h"
+#include "LLDBServerAcceleratorPlugin.h"
 
 class StringExtractorGDBRemote;
 
@@ -35,7 +38,7 @@ public:
   // Constructors and Destructors
   GDBRemoteCommunicationServerLLGS(
       MainLoop &mainloop,
-      const NativeProcessProtocol::Factory &process_factory);
+      NativeProcessProtocol::Manager &process_manager);
 
   void SetLaunchInfo(const ProcessLaunchInfo &info);
 
@@ -71,6 +74,9 @@ public:
   ///     attach operation.
   Status AttachWaitProcess(llvm::StringRef process_name, bool include_existing);
 
+  void InstallPlugin(
+      std::unique_ptr<lldb_server::LLDBServerAcceleratorPlugin> plugin_up);
+
   // NativeProcessProtocol::NativeDelegate overrides
   void InitializeDelegate(NativeProcessProtocol *process) override;
 
@@ -83,7 +89,19 @@ public:
   NewSubprocess(NativeProcessProtocol *parent_process,
                 std::unique_ptr<NativeProcessProtocol> child_process) override;
 
+  /// Forward a chunk of inferior stdout/stderr produced by the platform's
+  /// own reader. This is used on Windows.
+  void NewProcessOutput(NativeProcessProtocol *process,
+                        llvm::StringRef data) override;
+
+  /// Drain m_pending_output_buffer and emit a `$O` packet if the debuggee
+  /// is currently in a running state. No-op otherwise.
+  void FlushPendingProcessOutput();
+
   Status InitializeConnection(std::unique_ptr<Connection> connection);
+
+  GDBRemoteCommunication::PacketResult
+  SendStructuredDataPacket(const llvm::json::Value &value);
 
   struct DebuggedProcess {
     enum class Flag {
@@ -99,7 +117,9 @@ public:
 protected:
   MainLoop &m_mainloop;
   MainLoop::ReadHandleUP m_network_handle_up;
-  const NativeProcessProtocol::Factory &m_process_factory;
+  NativeProcessProtocol::Manager &m_process_manager;
+  std::vector<std::unique_ptr<lldb_server::LLDBServerAcceleratorPlugin>>
+      m_accelerator_plugins;
   lldb::tid_t m_current_tid = LLDB_INVALID_THREAD_ID;
   lldb::tid_t m_continue_tid = LLDB_INVALID_THREAD_ID;
   NativeProcessProtocol *m_current_process;
@@ -110,11 +130,19 @@ protected:
   Communication m_stdio_communication;
   MainLoop::ReadHandleUP m_stdio_handle_up;
 
+  std::string m_pending_output_buffer;
+  std::mutex m_pending_output_mutex;
+
   llvm::StringMap<std::unique_ptr<llvm::MemoryBuffer>> m_xfer_buffer_map;
-  std::mutex m_saved_registers_mutex;
-  std::unordered_map<uint32_t, lldb::DataBufferSP> m_saved_registers_map;
-  uint32_t m_next_saved_registers_id = 1;
+
+  struct SavedRegisters {
+    std::unordered_map<uint32_t, lldb::DataBufferSP> map;
+    uint32_t next_id = 1;
+  };
+  Guarded<SavedRegisters, std::mutex> m_saved_registers;
+
   bool m_thread_suffix_supported = false;
+  bool m_address_space_suffix_supported = false;
   bool m_list_threads_in_stop_reply = false;
   bool m_non_stop = false;
   bool m_disabling_non_stop = false;
@@ -122,6 +150,11 @@ protected:
   std::deque<std::string> m_stop_notification_queue;
 
   NativeProcessProtocol::Extension m_extensions_supported = {};
+
+  // Typically we would use a SmallVector for this data but in this context we
+  // don't know how much data we're recieving so we would have to heap allocate
+  // a lot, or have a very large stack frame. So it's a member instead.
+  uint8_t m_reg_bytes[RegisterValue::kMaxRegisterByteSize];
 
   PacketResult SendONotification(const char *buffer, uint32_t len);
 
@@ -178,6 +211,8 @@ protected:
   PacketResult Handle_qfThreadInfo(StringExtractorGDBRemote &packet);
 
   PacketResult Handle_qsThreadInfo(StringExtractorGDBRemote &packet);
+
+  PacketResult Handle_qStructuredDataPlugins(StringExtractorGDBRemote &packet);
 
   PacketResult Handle_p(StringExtractorGDBRemote &packet);
 
@@ -239,6 +274,8 @@ protected:
 
   PacketResult Handle_jThreadsInfo(StringExtractorGDBRemote &packet);
 
+  PacketResult Handle_jAddressSpacesInfo(StringExtractorGDBRemote &packet);
+
   PacketResult Handle_qWatchpointSupportInfo(StringExtractorGDBRemote &packet);
 
   PacketResult Handle_qFileLoadAddress(StringExtractorGDBRemote &packet);
@@ -264,6 +301,17 @@ protected:
   PacketResult Handle_QMemTags(StringExtractorGDBRemote &packet);
 
   PacketResult Handle_T(StringExtractorGDBRemote &packet);
+
+  PacketResult Handle_jMultiBreakpoint(StringExtractorGDBRemote &packet);
+
+  PacketResult
+  Handle_jAcceleratorPluginInitialize(StringExtractorGDBRemote &packet);
+
+  PacketResult
+  Handle_jAcceleratorPluginBreakpointHit(StringExtractorGDBRemote &packet);
+
+  PacketResult Handle_jAcceleratorPluginGetDynamicLoaderLibraryInfo(
+      StringExtractorGDBRemote &packet);
 
   void SetCurrentThreadID(lldb::tid_t tid);
 
@@ -295,6 +343,28 @@ protected:
 
 private:
   llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> BuildTargetXml();
+
+  struct BreakpointOK {};
+  struct BreakpointIllFormed {
+    std::string message;
+  };
+  struct BreakpointError {
+    uint8_t error_code;
+  };
+
+  using BreakpointResult =
+      std::variant<BreakpointOK, BreakpointIllFormed, BreakpointError>;
+
+  /// Core logic for a Z (set breakpoint/watchpoint) request.
+  BreakpointResult ExecuteSetBreakpoint(llvm::StringRef packet_str);
+
+  /// Core logic for a z (remove breakpoint/watchpoint) request.
+  BreakpointResult ExecuteRemoveBreakpoint(llvm::StringRef packet_str);
+
+  /// Convert a BreakpointResult into a PacketResult, sending the appropriate
+  /// response.
+  PacketResult SendBreakpointResponse(StringExtractorGDBRemote &packet,
+                                      const BreakpointResult &result);
 
   void HandleInferiorState_Exited(NativeProcessProtocol *process);
 

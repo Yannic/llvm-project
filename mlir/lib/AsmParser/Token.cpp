@@ -11,8 +11,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "Token.h"
+#include "mlir/Support/LLVM.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/ErrorHandling.h"
+#include <cassert>
+#include <cstdint>
 #include <optional>
+#include <string>
 
 using namespace mlir;
 
@@ -42,15 +47,6 @@ std::optional<uint64_t> Token::getUInt64IntegerValue(StringRef spelling) {
 
   uint64_t result = 0;
   if (spelling.getAsInteger(isHex ? 0 : 10, result))
-    return std::nullopt;
-  return result;
-}
-
-/// For a floatliteral, return its value as a double. Return std::nullopt if the
-/// value underflows or overflows.
-std::optional<double> Token::getFloatingPointValue() const {
-  double result = 0;
-  if (spelling.getAsDouble(result))
     return std::nullopt;
   return result;
 }

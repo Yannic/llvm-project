@@ -8,11 +8,14 @@
 #ifndef LLVM_CLANG_DRIVER_SANITIZERARGS_H
 #define LLVM_CLANG_DRIVER_SANITIZERARGS_H
 
+#include "clang/Basic/OffloadArch.h"
 #include "clang/Basic/Sanitizers.h"
+#include "clang/Driver/Action.h"
 #include "clang/Driver/Types.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Transforms/Instrumentation/AddressSanitizerOptions.h"
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,21 +28,32 @@ class SanitizerArgs {
   SanitizerSet Sanitizers;
   SanitizerSet RecoverableSanitizers;
   SanitizerSet TrapSanitizers;
+  SanitizerSet MergeHandlers;
+  SanitizerMaskCutoffs SkipHotCutoffs;
+  SanitizerSet AnnotateDebugInfo;
+  SanitizerSet SuppressUBSanFeature;
 
   std::vector<std::string> UserIgnorelistFiles;
   std::vector<std::string> SystemIgnorelistFiles;
   std::vector<std::string> CoverageAllowlistFiles;
   std::vector<std::string> CoverageIgnorelistFiles;
+  std::vector<std::string> BinaryMetadataIgnorelistFiles;
   int CoverageFeatures = 0;
+  int CoverageStackDepthCallbackMin = 0;
   int BinaryMetadataFeatures = 0;
+  int OverflowPatternExclusions = 0;
   int MsanTrackOrigins = 0;
   bool MsanUseAfterDtor = true;
   bool MsanParamRetval = true;
   bool CfiCrossDso = false;
   bool CfiICallGeneralizePointers = false;
+  bool CfiICallNormalizeIntegers = false;
   bool CfiCanonicalJumpTables = false;
+  bool KcfiArity = false;
+  std::optional<std::string> KcfiHash;
   int AsanFieldPadding = 0;
   bool SharedRuntime = false;
+  bool StableABI = false;
   bool AsanUseAfterScope = true;
   bool AsanPoisonCustomArrayCookie = false;
   bool AsanGlobalsDeadStripping = false;
@@ -58,21 +72,30 @@ class SanitizerArgs {
   bool TsanFuncEntryExit = true;
   bool TsanAtomics = true;
   bool MinimalRuntime = false;
+  bool TrapLoop = false;
+  bool TysanOutlineInstrumentation = true;
+  bool HandlerPreserveAllRegs = false;
   // True if cross-dso CFI support if provided by the system (i.e. Android).
   bool ImplicitCfiRuntime = false;
   bool NeedsMemProfRt = false;
+  bool NeedsCopyProfRt = false;
   bool HwasanUseAliases = false;
   llvm::AsanDetectStackUseAfterReturnMode AsanUseAfterReturn =
       llvm::AsanDetectStackUseAfterReturnMode::Invalid;
 
   std::string MemtagMode;
+  bool AllocTokenFastABI = false;
+  bool AllocTokenExtended = false;
 
 public:
   /// Parses the sanitizer arguments from an argument list.
   SanitizerArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
-                bool DiagnoseErrors = true);
+                bool DiagnoseErrors = true, bool DiagnoseBoundArchErrors = true,
+                BoundArch BA = {},
+                Action::OffloadKind DeviceOffloadKind = Action::OFK_None);
 
   bool needsSharedRt() const { return SharedRuntime; }
+  bool needsStableAbi() const { return StableABI; }
 
   bool needsMemProfRt() const { return NeedsMemProfRt; }
   bool needsAsanRt() const { return Sanitizers.has(SanitizerKind::Address); }
@@ -82,6 +105,7 @@ public:
   bool needsHwasanAliasesRt() const {
     return needsHwasanRt() && HwasanUseAliases;
   }
+  bool needsTysanRt() const { return Sanitizers.has(SanitizerKind::Type); }
   bool needsTsanRt() const { return Sanitizers.has(SanitizerKind::Thread); }
   bool needsMsanRt() const { return Sanitizers.has(SanitizerKind::Memory); }
   bool needsFuzzer() const { return Sanitizers.has(SanitizerKind::Fuzzer); }
@@ -90,15 +114,22 @@ public:
            !Sanitizers.has(SanitizerKind::Address) &&
            !Sanitizers.has(SanitizerKind::HWAddress);
   }
+  bool needsCopyProfRt() const { return NeedsCopyProfRt; }
   bool needsFuzzerInterceptors() const;
   bool needsUbsanRt() const;
+  bool needsUbsanCXXRt() const;
   bool requiresMinimalRuntime() const { return MinimalRuntime; }
+  bool needsUbsanLoopDetectRt() const { return TrapLoop; }
   bool needsDfsanRt() const { return Sanitizers.has(SanitizerKind::DataFlow); }
   bool needsSafeStackRt() const { return SafeStackRuntime; }
-  bool needsCfiRt() const;
-  bool needsCfiDiagRt() const;
+  bool needsCfiCrossDsoRt() const;
+  bool needsCfiCrossDsoDiagRt() const;
   bool needsStatsRt() const { return Stats; }
   bool needsScudoRt() const { return Sanitizers.has(SanitizerKind::Scudo); }
+  bool needsNsanRt() const {
+    return Sanitizers.has(SanitizerKind::NumericalStability);
+  }
+  bool needsRtsanRt() const { return Sanitizers.has(SanitizerKind::Realtime); }
 
   bool hasMemTag() const {
     return hasMemtagHeap() || hasMemtagStack() || hasMemtagGlobals();
@@ -115,6 +146,10 @@ public:
   const std::string &getMemtagMode() const {
     assert(!MemtagMode.empty());
     return MemtagMode;
+  }
+
+  bool hasShadowCallStack() const {
+    return Sanitizers.has(SanitizerKind::ShadowCallStack);
   }
 
   bool requiresPIE() const;

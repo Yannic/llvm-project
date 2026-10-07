@@ -223,6 +223,7 @@ bb12:
 ; CHECK-X32:	jmpq	*%rax
 
 ; CHECK:	.p2align 2
+; CHECK-NEXT:	.type	.LJTI7_0,@object
 ; CHECK-NEXT:	.LJTI7_0:
 ; CHECK-I686:	.long	 .LBB7_2@GOTOFF
 ; CHECK-I686:	.long	 .LBB7_8@GOTOFF
@@ -231,19 +232,19 @@ bb12:
 ; CHECK-I686:	.long	 .LBB7_5@GOTOFF
 ; CHECK-I686:	.long	 .LBB7_8@GOTOFF
 ; CHECK-I686:	.long	 .LBB7_7@GOTOFF
-; CHECK-X32:	.long	.LBB7_3-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_3-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_2-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_2-.LJTI7_0
 ; CHECK-X32:	.long	.LBB7_12-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_8-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_5-.LJTI7_0
 ; CHECK-X32:	.long	.LBB7_12-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_10-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_9-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_5-.LJTI7_0
 ; CHECK-X32:	.long	.LBB7_8-.LJTI7_0
 ; CHECK-X32:	.long	.LBB7_9-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_10-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_9-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_8-.LJTI7_0
 ; CHECK-X32:	.long	.LBB7_12-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_14-.LJTI7_0
-; CHECK-X32:	.long	.LBB7_14-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_3-.LJTI7_0
+; CHECK-X32:	.long	.LBB7_3-.LJTI7_0
 }
 
 declare void @foo1(...)

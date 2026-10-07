@@ -32,7 +32,8 @@ DEFINE_COMPILERRT_FUNCTION(__udivsi3)
 	bx  	lr
 
 LOCAL_LABEL(divby0):
-	mov     r0, #0
+	// Use movs for compatibility with v8-m.base.
+	movs    r0, #0
 #  ifdef __ARM_EABI__
 	b       __aeabi_idiv0
 #  else
@@ -188,7 +189,7 @@ LOCAL_LABEL(divby0):
 #      if defined(__ARM_EABI__)
 	push {r7, lr}
 	bl	__aeabi_idiv0 // due to relocation limit, can't use b.
-	pop  {r7, pc}
+	POP_PC_WITH_REGS r7
 #      else
 	JMP(lr)
 #      endif
@@ -203,7 +204,7 @@ LOCAL_LABEL(divby0):
 	LOCAL_LABEL(block_skip_##shift) :;                                           \
 	adcs r3, r3 // same as ((r3 << 1) | Carry). Carry is set if r0 >= r2.
 
-	// TODO: if current location counter is not not word aligned, we don't
+	// TODO: if current location counter is not word aligned, we don't
 	// need the .p2align and nop
 	// Label div0block must be word-aligned. First align block 31
 	.p2align 2

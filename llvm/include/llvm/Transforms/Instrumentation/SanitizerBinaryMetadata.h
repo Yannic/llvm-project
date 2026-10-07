@@ -12,10 +12,14 @@
 #ifndef LLVM_TRANSFORMS_INSTRUMENTATION_SANITIZERBINARYMETADATA_H
 #define LLVM_TRANSFORMS_INSTRUMENTATION_SANITIZERBINARYMETADATA_H
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/Transforms/Instrumentation.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/VirtualFileSystemFwd.h"
+#include "llvm/Transforms/Utils/Instrumentation.h"
 
 namespace llvm {
 
@@ -28,12 +32,14 @@ struct SanitizerBinaryMetadataOptions {
 
 inline constexpr int kSanitizerBinaryMetadataAtomicsBit = 0;
 inline constexpr int kSanitizerBinaryMetadataUARBit = 1;
+inline constexpr int kSanitizerBinaryMetadataUARHasSizeBit = 2;
 
-inline constexpr uint32_t kSanitizerBinaryMetadataNone = 0;
-inline constexpr uint32_t kSanitizerBinaryMetadataAtomics =
+inline constexpr uint64_t kSanitizerBinaryMetadataAtomics =
     1 << kSanitizerBinaryMetadataAtomicsBit;
-inline constexpr uint32_t kSanitizerBinaryMetadataUAR =
+inline constexpr uint64_t kSanitizerBinaryMetadataUAR =
     1 << kSanitizerBinaryMetadataUARBit;
+inline constexpr uint64_t kSanitizerBinaryMetadataUARHasSize =
+    1 << kSanitizerBinaryMetadataUARHasSizeBit;
 
 inline constexpr char kSanitizerBinaryMetadataCoveredSection[] =
     "sanmd_covered";
@@ -45,15 +51,18 @@ inline constexpr char kSanitizerBinaryMetadataAtomicsSection[] =
 //
 /// The pass should be inserted after optimizations.
 class SanitizerBinaryMetadataPass
-    : public PassInfoMixin<SanitizerBinaryMetadataPass> {
+    : public RequiredPassInfoMixin<SanitizerBinaryMetadataPass> {
 public:
-  explicit SanitizerBinaryMetadataPass(
-      SanitizerBinaryMetadataOptions Opts = {});
-  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
-  static bool isRequired() { return true; }
+  LLVM_ABI explicit SanitizerBinaryMetadataPass(
+      SanitizerBinaryMetadataOptions Opts = {},
+      IntrusiveRefCntPtr<vfs::FileSystem> VFS = nullptr,
+      ArrayRef<std::string> IgnorelistFiles = {});
+  LLVM_ABI PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 
 private:
   const SanitizerBinaryMetadataOptions Options;
+  IntrusiveRefCntPtr<vfs::FileSystem> VFS;
+  const ArrayRef<std::string> IgnorelistFiles;
 };
 
 } // namespace llvm

@@ -13,49 +13,128 @@
 #ifndef FORTRAN_LOWER_OPENMP_H
 #define FORTRAN_LOWER_OPENMP_H
 
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
+
 #include <cinttypes>
 
 namespace mlir {
-class Value;
 class Operation;
+class Location;
+class Type;
+namespace omp {
+enum class DeclareTargetDeviceType : uint32_t;
+enum class DeclareTargetCaptureClause : uint32_t;
+} // namespace omp
 } // namespace mlir
 
 namespace fir {
 class FirOpBuilder;
-class ConvertOp;
 } // namespace fir
 
 namespace Fortran {
 namespace parser {
 struct OpenMPConstruct;
 struct OpenMPDeclarativeConstruct;
-struct OmpEndLoopDirective;
 struct OmpClauseList;
 } // namespace parser
+
+namespace semantics {
+class Symbol;
+class Scope;
+class SemanticsContext;
+} // namespace semantics
 
 namespace lower {
 
 class AbstractConverter;
+class SymMap;
 
 namespace pft {
 struct Evaluation;
 struct Variable;
 } // namespace pft
 
-void genOpenMPConstruct(AbstractConverter &, pft::Evaluation &,
-                        const parser::OpenMPConstruct &);
-void genOpenMPDeclarativeConstruct(AbstractConverter &, pft::Evaluation &,
-                                   const parser::OpenMPDeclarativeConstruct &);
-int64_t getCollapseValue(const Fortran::parser::OmpClauseList &clauseList);
-void genThreadprivateOp(AbstractConverter &, const pft::Variable &);
-void genOpenMPReduction(AbstractConverter &,
-                        const Fortran::parser::OmpClauseList &clauseList);
+struct OMPDeferredDeclareTargetInfo {
+  mlir::omp::DeclareTargetCaptureClause declareTargetCaptureClause;
+  mlir::omp::DeclareTargetDeviceType declareTargetDeviceType;
+  bool automap = false;
+  const Fortran::semantics::Symbol &sym;
+};
 
-mlir::Operation *findReductionChain(mlir::Value, mlir::Value * = nullptr);
-fir::ConvertOp getConvertFromReductionOp(mlir::Operation *, mlir::Value);
-void updateReduction(mlir::Operation *, fir::FirOpBuilder &, mlir::Value,
-                     mlir::Value, fir::ConvertOp * = nullptr);
-void removeStoreOp(mlir::Operation *, mlir::Value);
+// Generate the OpenMP terminator for Operation at Location.
+mlir::Operation *genOpenMPTerminator(fir::FirOpBuilder &, mlir::Operation *,
+                                     mlir::Location);
+
+void genOpenMPConstruct(AbstractConverter &, Fortran::lower::SymMap &,
+                        semantics::SemanticsContext &, pft::Evaluation &,
+                        const parser::OpenMPConstruct &);
+void genOpenMPDeclarativeConstruct(AbstractConverter &,
+                                   Fortran::lower::SymMap &,
+                                   semantics::SemanticsContext &,
+                                   pft::Evaluation &,
+                                   const parser::OpenMPDeclarativeConstruct &);
+/// Symbols in OpenMP code can have flags (e.g. threadprivate directive)
+/// that require additional handling when lowering the corresponding
+/// variable. Perform such handling according to the flags on the symbol.
+/// The variable \p var is required to have a `Symbol`.
+void genOpenMPSymbolProperties(AbstractConverter &converter,
+                               const pft::Variable &var);
+
+void genGroupprivateOp(AbstractConverter &, const pft::Variable &);
+void genThreadprivateOp(AbstractConverter &, const pft::Variable &);
+void genDeclareTargetIntGlobal(AbstractConverter &, const pft::Variable &);
+bool isOpenMPTargetConstruct(const parser::OpenMPConstruct &);
+bool isOpenMPDeviceDeclareTarget(Fortran::lower::AbstractConverter &,
+                                 Fortran::semantics::SemanticsContext &,
+                                 Fortran::lower::pft::Evaluation &,
+                                 const parser::OpenMPDeclarativeConstruct &);
+void gatherOpenMPDeferredDeclareTargets(
+    Fortran::lower::AbstractConverter &, Fortran::semantics::SemanticsContext &,
+    Fortran::lower::pft::Evaluation &,
+    const parser::OpenMPDeclarativeConstruct &,
+    llvm::SmallVectorImpl<OMPDeferredDeclareTargetInfo> &);
+bool markOpenMPDeferredDeclareTargetFunctions(
+    mlir::Operation *, llvm::SmallVectorImpl<OMPDeferredDeclareTargetInfo> &,
+    AbstractConverter &);
+void genOpenMPRequires(mlir::Operation *, const Fortran::semantics::Symbol *);
+
+// Materialize omp.declare_mapper ops for mapper declarations found in
+// imported modules. If \p scope is null, materialize for the whole
+// semantics global scope; otherwise, operate recursively starting at \p scope.
+void materializeOpenMPDeclareMappers(
+    Fortran::lower::AbstractConverter &, Fortran::semantics::SemanticsContext &,
+    const Fortran::semantics::Scope *scope = nullptr);
+
+// Mark declare target globals and functions that were imported from a
+// module file.
+void markOpenMPImportedDeclareTargets(
+    Fortran::lower::AbstractConverter &converter,
+    semantics::SemanticsContext &semaCtx);
+
+namespace omp {
+/// If \p base carries OpenMP DECLARE VARIANT entries, return the variant symbol
+/// that best matches the enclosing OpenMP context, or nullptr if none matches.
+/// \p base is expected to have variant entries.
+const Fortran::semantics::Symbol *
+resolveDeclareVariantCallee(const Fortran::semantics::Symbol &base,
+                            AbstractConverter &converter);
+} // namespace omp
+
+// Materialize (idempotently) the omp.declare_reduction op for one already-
+// resolved imported user reduction and one requested element type, at module
+// scope, for separate compilation. Only the per-type instance whose scoped op
+// name equals \p requestedOpName is emitted, so a multi-type declaration's
+// other listed types (and any unsupported sibling type) are left alone. No-op
+// if the requested type's shape is not lowerable (a combiner-in-clause form or
+// an unsupported element type) or the op already exists. Safe to call
+// mid-function (uses createDeclareReductionHelper's InsertionGuard). \p
+// isByRef selects the by-ref/by-value naming variant used by the clause.
+void materializeUserReduction(
+    Fortran::lower::AbstractConverter &, Fortran::semantics::SemanticsContext &,
+    const Fortran::semantics::Symbol &resolvedReduction,
+    llvm::StringRef requestedOpName, mlir::Type requestedType, bool isByRef);
+
 } // namespace lower
 } // namespace Fortran
 

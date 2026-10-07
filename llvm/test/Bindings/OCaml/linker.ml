@@ -13,7 +13,7 @@
 open Llvm
 open Llvm_linker
 
-let context = global_context ()
+let context = create_context ()
 let void_type = Llvm.void_type context
 
 let diagnostic_handler _ = ()
@@ -43,18 +43,18 @@ let test_linker () =
 
   let m1 = make_module "one"
   and m2 = make_module "two" in
-  link_modules' m1 m2;
+  link_modules m1 m2;
   dispose_module m1;
 
   let m1 = make_module "one"
   and m2 = make_module "two" in
-  link_modules' m1 m2;
+  link_modules m1 m2;
   dispose_module m1;
 
   let m1 = make_module "one"
   and m2 = make_module "one" in
   try
-    link_modules' m1 m2;
+    link_modules m1 m2;
     failwith "must raise"
   with Error _ ->
     dispose_module m1
@@ -62,4 +62,5 @@ let test_linker () =
 (*===-- Driver ------------------------------------------------------------===*)
 
 let _ =
-  suite "linker" test_linker
+  suite "linker" test_linker;
+  dispose_context context

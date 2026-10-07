@@ -26,6 +26,8 @@
 #define LLVM_CODEGEN_DFAPACKETIZER_H
 
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/CodeGen/ScheduleDAGInstrs.h"
+#include "llvm/CodeGen/ScheduleDAGMutation.h"
 #include "llvm/Support/Automaton.h"
 #include <cstdint>
 #include <map>
@@ -35,7 +37,6 @@
 
 namespace llvm {
 
-class DefaultVLIWScheduler;
 class ScheduleDAGMutation;
 class InstrItineraryData;
 class MachineFunction;
@@ -44,6 +45,30 @@ class MachineLoopInfo;
 class MCInstrDesc;
 class SUnit;
 class TargetInstrInfo;
+
+// This class extends ScheduleDAGInstrs and overrides the schedule method
+// to build the dependence graph.
+class LLVM_ABI DefaultVLIWScheduler : public ScheduleDAGInstrs {
+private:
+  AAResults *AA;
+  /// Ordered list of DAG postprocessing steps.
+  std::vector<std::unique_ptr<ScheduleDAGMutation>> Mutations;
+
+public:
+  DefaultVLIWScheduler(MachineFunction &MF, MachineLoopInfo &MLI,
+                       AAResults *AA);
+
+  // Actual scheduling work.
+  void schedule() override;
+
+  /// DefaultVLIWScheduler takes ownership of the Mutation object.
+  void addMutation(std::unique_ptr<ScheduleDAGMutation> Mutation) {
+    Mutations.push_back(std::move(Mutation));
+  }
+
+protected:
+  void postProcessDAG();
+};
 
 class DFAPacketizer {
 private:
@@ -75,19 +100,19 @@ public:
 
   // Check if the resources occupied by a MCInstrDesc are available in
   // the current state.
-  bool canReserveResources(const MCInstrDesc *MID);
+  LLVM_ABI bool canReserveResources(const MCInstrDesc *MID);
 
   // Reserve the resources occupied by a MCInstrDesc and change the current
   // state to reflect that change.
-  void reserveResources(const MCInstrDesc *MID);
+  LLVM_ABI void reserveResources(const MCInstrDesc *MID);
 
   // Check if the resources occupied by a machine instruction are available
   // in the current state.
-  bool canReserveResources(MachineInstr &MI);
+  LLVM_ABI bool canReserveResources(MachineInstr &MI);
 
   // Reserve the resources occupied by a machine instruction and change the
   // current state to reflect that change.
-  void reserveResources(MachineInstr &MI);
+  LLVM_ABI void reserveResources(MachineInstr &MI);
 
   // Return the resources used by the InstIdx'th instruction added to this
   // packet. The resources are returned as a bitvector of functional units.
@@ -96,7 +121,7 @@ public:
   // returns one arbitary valid packing.
   //
   // Requires setTrackResources(true) to have been called.
-  unsigned getUsedResources(unsigned InstIdx);
+  LLVM_ABI unsigned getUsedResources(unsigned InstIdx);
 
   const InstrItineraryData *getInstrItins() const { return InstrItins; }
 };
@@ -108,7 +133,7 @@ public:
 // in the current packet. If no dependency is found, I is added to current
 // packet and the machine resource is marked as taken. If any dependency is
 // found, a target API call is made to prune the dependence.
-class VLIWPacketizerList {
+class LLVM_ABI VLIWPacketizerList {
 protected:
   MachineFunction &MF;
   const TargetInstrInfo *TII;
@@ -127,7 +152,8 @@ public:
   // The AAResults parameter can be nullptr.
   VLIWPacketizerList(MachineFunction &MF, MachineLoopInfo &MLI,
                      AAResults *AA);
-
+  VLIWPacketizerList &operator=(const VLIWPacketizerList &other) = delete;
+  VLIWPacketizerList(const VLIWPacketizerList &other) = delete;
   virtual ~VLIWPacketizerList();
 
   // Implement this API in the backend to bundle instructions.

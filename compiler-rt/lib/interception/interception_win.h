@@ -30,6 +30,14 @@ bool OverrideFunction(uptr old_func, uptr new_func, uptr *orig_old_func = 0);
 // Overrides a function in a system DLL or DLL CRT by its exported name.
 bool OverrideFunction(const char *name, uptr new_func, uptr *orig_old_func = 0);
 
+// Like OverrideFunction(name), but skips any DLL where the |name| export is
+// the same function as the |alias_name| export (same address); patching
+// |alias_name| already covers those. A distinct address that cannot be hooked
+// is reported through the error report callback, but is not fatal; callers
+// are expected to install a safe fallback for REAL().
+bool OverrideFunctionIfNotAliased(const char* name, uptr new_func,
+                                  uptr* orig_old_func, const char* alias_name);
+
 // Windows-only replacement for GetProcAddress. Useful for some sanitizers.
 uptr InternalGetProcAddress(void *module, const char *func_name);
 
@@ -40,6 +48,11 @@ bool OverrideImportedFunction(const char *module_to_patch,
                               const char *imported_module,
                               const char *function_name, uptr new_function,
                               uptr *orig_old_func);
+
+// Sets a callback to be used for reporting errors by interception_win. The
+// callback will be called with printf-like arguments. Intended to be used with
+// __sanitizer::Report. Pass nullptr to disable error reporting (default).
+void SetErrorReportCallback(void (*callback)(const char *format, ...));
 
 #if !SANITIZER_WINDOWS64
 // Exposed for unittests
@@ -57,6 +70,9 @@ bool OverrideFunctionWithTrampoline(
 
 // Exposed for unittests
 void TestOnlyReleaseTrampolineRegions();
+
+// Exposed for unittests
+SIZE_T TestOnlyGetInstructionSize(uptr address, SIZE_T *rel_offset);
 
 }  // namespace __interception
 

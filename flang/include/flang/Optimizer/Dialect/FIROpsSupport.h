@@ -12,16 +12,30 @@
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/APInt.h"
 
 namespace fir {
 
-/// Return true iff the Operation is a non-volatile LoadOp or ArrayLoadOp.
-inline bool nonVolatileLoad(mlir::Operation *op) {
-  if (auto load = mlir::dyn_cast<fir::LoadOp>(op))
-    return !load->getAttr("volatile");
-  if (auto arrLoad = mlir::dyn_cast<fir::ArrayLoadOp>(op))
-    return !arrLoad->getAttr("volatile");
-  return false;
+/// The LLVM dialect represents volatile memory accesses as read and write
+/// effects to an unknown memory location, but this may be overly conservative.
+/// LLVM Language Reference only specifies that volatile memory accesses
+/// must not be reordered relative to other volatile memory accesses, so it
+/// is more precise to use a separate memory resource for volatile memory
+/// accesses.
+inline void addVolatileMemoryEffects(
+    mlir::TypeRange type,
+    llvm::SmallVectorImpl<
+        mlir::SideEffects::EffectInstance<mlir::MemoryEffects::Effect>>
+        &effects) {
+  for (mlir::Type t : type) {
+    if (fir::isa_volatile_type(t)) {
+      effects.emplace_back(mlir::MemoryEffects::Read::get(),
+                           fir::VolatileMemoryResource::get());
+      effects.emplace_back(mlir::MemoryEffects::Write::get(),
+                           fir::VolatileMemoryResource::get());
+      break;
+    }
+  }
 }
 
 /// Return true iff the Operation is a call.
@@ -52,16 +66,19 @@ inline bool pureCall(mlir::Operation *op) {
 /// Get or create a FuncOp in a module.
 ///
 /// If `module` already contains FuncOp `name`, it is returned. Otherwise, a new
-/// FuncOp is created, and that new FuncOp is returned.
-mlir::func::FuncOp
-createFuncOp(mlir::Location loc, mlir::ModuleOp module, llvm::StringRef name,
-             mlir::FunctionType type,
-             llvm::ArrayRef<mlir::NamedAttribute> attrs = {});
+/// FuncOp is created, and that new FuncOp is returned. A symbol table can
+/// be provided to speed-up the lookups.
+mlir::func::FuncOp createFuncOp(mlir::Location loc, mlir::ModuleOp module,
+                                llvm::StringRef name, mlir::FunctionType type,
+                                llvm::ArrayRef<mlir::NamedAttribute> attrs = {},
+                                const mlir::SymbolTable *symbolTable = nullptr);
 
-/// Get or create a GlobalOp in a module.
+/// Get or create a GlobalOp in a module. A symbol table can be provided to
+/// speed-up the lookups.
 fir::GlobalOp createGlobalOp(mlir::Location loc, mlir::ModuleOp module,
                              llvm::StringRef name, mlir::Type type,
-                             llvm::ArrayRef<mlir::NamedAttribute> attrs = {});
+                             llvm::ArrayRef<mlir::NamedAttribute> attrs = {},
+                             const mlir::SymbolTable *symbolTable = nullptr);
 
 /// Attribute to mark Fortran entities with the CONTIGUOUS attribute.
 constexpr llvm::StringRef getContiguousAttrName() { return "fir.contiguous"; }
@@ -71,6 +88,34 @@ constexpr llvm::StringRef getOptionalAttrName() { return "fir.optional"; }
 
 /// Attribute to mark Fortran entities with the TARGET attribute.
 static constexpr llvm::StringRef getTargetAttrName() { return "fir.target"; }
+
+/// Attribute to mark Fortran entities with the ASYNCHRONOUS attribute.
+static constexpr llvm::StringRef getAsynchronousAttrName() {
+  return "fir.asynchronous";
+}
+
+/// Attribute to mark Fortran entities with the VOLATILE attribute.
+static constexpr llvm::StringRef getVolatileAttrName() {
+  return "fir.volatile";
+}
+
+/// Attribute to mark a dummy data object argument as read-only, i.e. the callee
+/// does not write through this argument. Lowered to the LLVM `readonly`
+/// argument attribute by the FunctionAttr pass. CallInterface currently emits
+/// it for a conservative subset of by-reference INTENT(IN) dummies. The
+/// attribute is shallow: on a reference to a descriptor, it only protects the
+/// descriptor storage and does not imply that the described data is read-only.
+static constexpr llvm::StringRef getReadOnlyAttrName() {
+  return "fir.read_only";
+}
+
+/// Dummy intent, attached to the corresponding `func.func` argument.
+/// A function pass reads intent from this signature attribute and does not
+/// inspect another function's body. The `fir.` prefix is required: function
+/// arguments may only carry dialect attributes.
+static constexpr llvm::StringRef getFortranAttrsAttrName() {
+  return "fir.fortran_attrs";
+}
 
 /// Attribute to mark that a function argument is a character dummy procedure.
 /// Character dummy procedure have special ABI constraints.
@@ -88,10 +133,44 @@ static constexpr llvm::StringRef getHostAssocAttrName() {
   return "fir.host_assoc";
 }
 
-/// Attribute to mark an internal procedure.
-static constexpr llvm::StringRef getInternalProcedureAttrName() {
-  return "fir.internal_proc";
+/// Attribute to link an internal procedure to its host procedure symbol.
+static constexpr llvm::StringRef getHostSymbolAttrName() {
+  return "fir.host_symbol";
 }
+
+/// Attribute naming the submodule that defines a separate module procedure.
+/// Such a procedure is mangled with the module that declares its interface, so
+/// this is the only record of where it is really defined. It is only set when
+/// full debug information is requested.
+static constexpr llvm::StringRef getDefiningSubmoduleAttrName() {
+  return "fir.defining_submodule";
+}
+
+/// Attribute containing the original name of a function from before the
+/// ExternalNameConverision pass runs
+static constexpr llvm::StringRef getInternalFuncNameAttrName() {
+  return "fir.internal_name";
+}
+
+/// Attribute to mark alloca that have been given a lifetime marker so that
+/// later pass do not try adding new ones.
+static constexpr llvm::StringRef getHasLifetimeMarkerAttrName() {
+  return "fir.has_lifetime";
+}
+
+/// Attribute to mark the access groups of an operation.
+static constexpr llvm::StringRef getAccessGroupsAttrName() {
+  return "access_groups";
+}
+
+/// Attribute holding the unique name of the Fortran entity an allocation
+/// belongs to. It is an inherent attribute of the FIR allocation operations,
+/// and may also be carried by allocation operations of other dialects that
+/// FIR allocations were rewritten into.
+static constexpr llvm::StringRef getUniqNameAttrName() { return "uniq_name"; }
+
+/// Attribute to mark coarray Fortran entities with the CORANK attribute.
+constexpr llvm::StringRef getCorankAttrName() { return "fir.corank"; }
 
 /// Does the function, \p func, have a host-associations tuple argument?
 /// Some internal procedures may have access to host procedure variables.
@@ -100,8 +179,8 @@ bool hasHostAssociationArgument(mlir::func::FuncOp func);
 /// Is the function, \p func an internal procedure ?
 /// Some internal procedures may have access to saved host procedure
 /// variables even when they do not have a tuple argument.
-inline bool isInternalPorcedure(mlir::func::FuncOp func) {
-  return func->hasAttr(fir::getInternalProcedureAttrName());
+inline bool isInternalProcedure(mlir::func::FuncOp func) {
+  return func->hasAttr(fir::getHostSymbolAttrName());
 }
 
 /// Tell if \p value is:
@@ -132,14 +211,120 @@ bool valueMayHaveFirAttributes(mlir::Value value,
 /// function has any host associations, for example.
 bool anyFuncArgsHaveAttr(mlir::func::FuncOp func, llvm::StringRef attr);
 
-/// Unwrap integer constant from an mlir::Value.
-inline std::optional<std::int64_t> getIntIfConstant(mlir::Value value) {
-  if (auto *definingOp = value.getDefiningOp())
-    if (auto cst = mlir::dyn_cast<mlir::arith::ConstantOp>(definingOp))
-      if (auto intAttr = cst.getValue().dyn_cast<mlir::IntegerAttr>())
-        return intAttr.getInt();
-  return {};
+/// Unwrap an integer constant from an mlir::Value as an APInt.
+std::optional<llvm::APInt> getIntIfConstant(mlir::Value value);
+
+static constexpr llvm::StringRef getAdaptToByRefAttrName() {
+  return "adapt.valuebyref";
 }
+
+static constexpr llvm::StringRef getFuncPureAttrName() {
+  return "fir.func_pure";
+}
+
+static constexpr llvm::StringRef getFuncElementalAttrName() {
+  return "fir.func_elemental";
+}
+
+static constexpr llvm::StringRef getFuncRecursiveAttrName() {
+  return "fir.func_recursive";
+}
+
+static constexpr llvm::StringRef getFortranProcedureFlagsAttrName() {
+  return "fir.proc_attrs";
+}
+
+// Attribute for an alloca that is a trivial adaptor for converting a value to
+// pass-by-ref semantics for a VALUE parameter. The optimizer may be able to
+// eliminate these.
+// Template is used to avoid compiler errors in places that don't include
+// FIRBuilder.h
+template <typename Builder>
+inline mlir::NamedAttribute getAdaptToByRefAttr(Builder &builder) {
+  return {mlir::StringAttr::get(builder.getContext(),
+                                fir::getAdaptToByRefAttrName()),
+          builder.getUnitAttr()};
+}
+
+bool isDummyArgument(mlir::Value v);
+
+/// Intent of function argument `argIdx`.
+enum class FortranDummyIntent { In, Out, InOut };
+
+/// Intent recorded by the `fortran_attrs` attribute of argument `argIdx`.
+/// Empty when that attribute is absent or names no intent. The callee region
+/// is not inspected: a function pass may query another function only through
+/// its signature.
+inline std::optional<FortranDummyIntent>
+getFortranDummyIntent(mlir::func::FuncOp callee, unsigned argIdx) {
+  if (!callee || argIdx >= callee.getNumArguments())
+    return std::nullopt;
+  auto attrs = callee.getArgAttrOfType<FortranVariableFlagsAttr>(
+      argIdx, getFortranAttrsAttrName());
+  if (!attrs)
+    return std::nullopt;
+  switch (attrs.getFlags()) {
+  case FortranVariableFlagsEnum::intent_in:
+    return FortranDummyIntent::In;
+  case FortranVariableFlagsEnum::intent_out:
+    return FortranDummyIntent::Out;
+  case FortranVariableFlagsEnum::intent_inout:
+    return FortranDummyIntent::InOut;
+  default:
+    return std::nullopt;
+  }
+}
+
+template <fir::FortranProcedureFlagsEnum Flag>
+inline bool hasProcedureAttr(fir::FortranProcedureFlagsEnumAttr flags) {
+  return flags && bitEnumContainsAny(flags.getValue(), Flag);
+}
+
+template <fir::FortranProcedureFlagsEnum Flag>
+inline bool hasProcedureAttr(mlir::Operation *op) {
+  if (auto firCallOp = mlir::dyn_cast<fir::CallOp>(op))
+    return hasProcedureAttr<Flag>(firCallOp.getProcedureAttrsAttr());
+  if (auto firCallOp = mlir::dyn_cast<fir::DispatchOp>(op))
+    return hasProcedureAttr<Flag>(firCallOp.getProcedureAttrsAttr());
+  return hasProcedureAttr<Flag>(
+      op->getAttrOfType<fir::FortranProcedureFlagsEnumAttr>(
+          getFortranProcedureFlagsAttrName()));
+}
+
+inline bool hasBindcAttr(mlir::Operation *op) {
+  return hasProcedureAttr<fir::FortranProcedureFlagsEnum::bind_c>(op);
+}
+
+/// Get the allocation size of a given alloca if it has compile time constant
+/// size.
+std::optional<int64_t> getAllocaByteSize(fir::AllocaOp alloca,
+                                         const mlir::DataLayout &dl,
+                                         const fir::KindMapping &kindMap);
+
+/// Return true, if \p rebox operation keeps the input array
+/// continuous if it is initially continuous.
+/// When \p checkWhole is false, then the checking is only done
+/// for continuity in the innermost dimension, otherwise,
+/// the checking is done for continuity of the whole result of rebox.
+/// The caller may specify \p mayHaveNonDefaultLowerBounds, if it is known,
+/// to allow better handling of the rebox operations representing
+/// full array slices.
+bool reboxPreservesContinuity(fir::ReboxOp rebox,
+                              bool mayHaveNonDefaultLowerBounds = true,
+                              bool checkWhole = true);
+
+/// Return true, if \p embox operation produces a contiguous
+/// entity.
+/// When \p checkWhole is false, then the checking is only done
+/// for continuity in the innermost dimension, otherwise,
+/// the checking is done for continuity of the whole result of embox
+bool isContiguousEmbox(fir::EmboxOp embox, bool checkWhole = true);
+
+/// Return true if \p op is nested in code that is offloaded to a device: an
+/// OpenACC compute construct or specialized routine, a CUDA Fortran kernel
+/// loop, a gpu.launch, a gpu.func or a gpu.module. Code there runs on the
+/// device stack, which is far smaller than the host one.
+bool isInOffloadRegion(mlir::Operation *op);
 
 } // namespace fir
 

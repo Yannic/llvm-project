@@ -33,7 +33,7 @@ std::string LVOperation::getOperandsDWARFInfo() {
     // 2.5.1.1 Literal encodings.
     //-----------------------------------------------------------------------
     if (dwarf::DW_OP_lit0 <= Code && Code <= dwarf::DW_OP_lit31) {
-      Stream << format("lit%d", Code - dwarf::DW_OP_lit0);
+      Stream << formatv("lit{0}", Code - dwarf::DW_OP_lit0);
       return;
     }
 
@@ -42,8 +42,8 @@ std::string LVOperation::getOperandsDWARFInfo() {
     //-----------------------------------------------------------------------
     if (dwarf::DW_OP_breg0 <= Code && Code <= dwarf::DW_OP_breg31) {
       std::string RegisterName(getReader().getRegisterName(Code, Operands));
-      Stream << format("breg%d+%d%s", Code - dwarf::DW_OP_breg0, Operands[0],
-                       RegisterName.c_str());
+      Stream << formatv("breg{0}+{1}{2}", Code - dwarf::DW_OP_breg0,
+                        Operands[0], RegisterName);
       return;
     }
 
@@ -52,12 +52,11 @@ std::string LVOperation::getOperandsDWARFInfo() {
     //-----------------------------------------------------------------------
     if (dwarf::DW_OP_reg0 <= Code && Code <= dwarf::DW_OP_reg31) {
       std::string RegisterName(getReader().getRegisterName(Code, Operands));
-      Stream << format("reg%d%s", Code - dwarf::DW_OP_reg0,
-                       RegisterName.c_str());
+      Stream << formatv("reg{0}{1}", Code - dwarf::DW_OP_reg0, RegisterName);
       return;
     }
 
-    Stream << format("#0x%02x ", Code) << hexString(Operands[0]) << " "
+    Stream << formatv("#{0:x2} ", Code) << hexString(Operands[0]) << " "
            << hexString(Operands[1]) << "#";
   };
 
@@ -100,14 +99,14 @@ std::string LVOperation::getOperandsDWARFInfo() {
     break;
   case dwarf::DW_OP_bregx: {
     std::string RegisterName(getReader().getRegisterName(Opcode, Operands));
-    Stream << format("bregx %d%s+%d", Operands[0], RegisterName.c_str(),
-                     unsigned(Operands[1]));
+    Stream << formatv("bregx {0}{1}+{2}", Operands[0], RegisterName,
+                      unsigned(Operands[1]));
     break;
   }
   case dwarf::DW_OP_regval_type: {
     std::string RegisterName(getReader().getRegisterName(Opcode, Operands));
-    Stream << format("regval_type %d%s+%d", Operands[0], RegisterName.c_str(),
-                     unsigned(Operands[1]));
+    Stream << formatv("regval_type {0}{1}+{2}", Operands[0], RegisterName,
+                      unsigned(Operands[1]));
     break;
   }
 
@@ -156,7 +155,7 @@ std::string LVOperation::getOperandsDWARFInfo() {
     Stream << "push_object_address";
     break;
   case dwarf::DW_OP_form_tls_address:
-    Stream << "form_tls_address " << hexString(Operands[0]);
+    Stream << "form_tls_address";
     break;
   case dwarf::DW_OP_call_frame_cfa:
     Stream << "call_frame_cfa";
@@ -308,7 +307,7 @@ std::string LVOperation::getOperandsDWARFInfo() {
     PrintRegisterInfo(dwarf::DW_OP_reg0);
     break;
   case dwarf::DW_OP_GNU_push_tls_address:
-    Stream << "gnu_push_tls_address " << hexString(Operands[0]);
+    Stream << "gnu_push_tls_address";
     break;
   case dwarf::DW_OP_GNU_addr_index:
     Stream << "gnu_addr_index " << unsigned(Operands[0]);
@@ -352,7 +351,7 @@ std::string LVOperation::getOperandsCodeViewInfo() {
   uint16_t OperationCode = getCodeViewOperationCode(Opcode);
 
   switch (OperationCode) {
-  // Operands: [Offset, 0].
+  // Operands: [Offset].
   case codeview::SymbolKind::S_DEFRANGE_FRAMEPOINTER_REL:
     Stream << "frame_pointer_rel " << int(Operands[0]);
     break;
@@ -360,7 +359,7 @@ std::string LVOperation::getOperandsCodeViewInfo() {
     Stream << "frame_pointer_rel_full_scope " << int(Operands[0]);
     break;
 
-  // Operands: [Register, 0].
+  // Operands: [Register].
   case codeview::SymbolKind::S_DEFRANGE_REGISTER:
     Stream << "register " << getReader().getRegisterName(Opcode, Operands);
     break;
@@ -374,8 +373,14 @@ std::string LVOperation::getOperandsCodeViewInfo() {
     Stream << "register_rel " << getReader().getRegisterName(Opcode, Operands)
            << " offset " << int(Operands[1]);
     break;
+  // Operands: [Register, Offset, OffsetInUdt].
+  case codeview::SymbolKind::S_DEFRANGE_REGISTER_REL_INDIR:
+    Stream << "register_rel_indir "
+           << getReader().getRegisterName(Opcode, Operands) << " offset "
+           << int(Operands[1]) << " offset_in_udt " << int(Operands[2]);
+    break;
 
-  // Operands: [Program, 0].
+  // Operands: [Program].
   case codeview::SymbolKind::S_DEFRANGE:
     Stream << "frame " << int(Operands[0]);
     break;
@@ -384,7 +389,7 @@ std::string LVOperation::getOperandsCodeViewInfo() {
     break;
 
   default:
-    Stream << format("#0x%02x: ", Opcode) << hexString(Operands[0]) << " "
+    Stream << formatv("#{0:x2}: ", Opcode) << hexString(Operands[0]) << " "
            << hexString(Operands[1]) << "#";
     break;
   }
@@ -576,11 +581,11 @@ void LVLocationSymbol::addObject(LVAddress LowPC, LVAddress HighPC,
 }
 
 // Add a Location Record.
-void LVLocationSymbol::addObject(LVSmall Opcode, LVUnsigned Operand1,
-                                 LVUnsigned Operand2) {
+void LVLocationSymbol::addObject(LVSmall Opcode,
+                                 ArrayRef<LVUnsigned> Operands) {
   if (!Entries)
-    Entries = new LVAutoOperations();
-  Entries->emplace_back(new LVOperation(Opcode, Operand1, Operand2));
+    Entries = std::make_unique<LVOperations>();
+  Entries->push_back(getReader().createOperation(Opcode, Operands));
 }
 
 // Based on the DWARF attribute, define the location kind.
@@ -603,11 +608,15 @@ void LVLocation::setKind() {
     getParentSymbol()->setFillGaps();
 }
 
+void LVLocation::printCommon(raw_ostream &OS, bool Full) const {
+  print(OS, Full);
+  printExtra(OS, Full);
+}
+
 void LVLocationSymbol::updateKind() {
   // Update the location type for simple ones.
   if (Entries && Entries->size() == 1) {
-    LVOperation *Operation = Entries->front();
-    if (dwarf::DW_OP_fbreg == Operation->getOpcode())
+    if (dwarf::DW_OP_fbreg == Entries->front()->getOpcode())
       setIsStackOffset();
   }
 }
@@ -634,10 +643,10 @@ void LVLocation::print(LVLocations *Locations, raw_ostream &OS, bool Full) {
     // The coverage is dependent on the kind of location.
     std::string String;
     raw_string_ostream Stream(String);
-    Stream << format("%.2f%%", Percentage);
+    Stream << formatv("{0:f2}%", Percentage);
     if (!Location->getIsLocationSimple())
-      Stream << format(" (%d/%d)", Symbol->getCoverageFactor(),
-                       Symbol->getParentScope()->getCoverageFactor());
+      Stream << formatv(" ({0}/{1})", Symbol->getCoverageFactor(),
+                        Symbol->getParentScope()->getCoverageFactor());
     Symbol->printAttributes(OS, Full, "{Coverage} ", Symbol, StringRef(String),
                             /*UseQuotes=*/false,
                             /*PrintRef=*/false);
@@ -660,7 +669,7 @@ void LVLocationSymbol::printExtra(raw_ostream &OS, bool Full) const {
   if (Full && Entries) {
     bool CodeViewLocation = getParentSymbol()->getHasCodeViewLocation();
     std::stringstream Stream;
-    std::string Leading = "";
+    std::string Leading;
     for (LVOperation *Operation : *Entries) {
       Stream << Leading
              << (CodeViewLocation ? Operation->getOperandsCodeViewInfo()

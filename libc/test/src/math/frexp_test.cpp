@@ -10,4 +10,4 @@
 
 #include "src/math/frexp.h"
 
-LIST_FREXP_TESTS(double, __llvm_libc::frexp)
+LIST_FREXP_TESTS(Frexp, double, LIBC_NAMESPACE::frexp)

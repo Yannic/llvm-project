@@ -1,5 +1,7 @@
-# RUN: llc -march=amdgcn -mcpu=gfx900 -verify-machineinstrs -run-pass si-insert-waitcnts -o - %s | FileCheck -check-prefix=GFX9 %s
-# RUN: llc -march=amdgcn -mcpu=gfx1010 -verify-machineinstrs -run-pass si-insert-waitcnts -o - %s | FileCheck -check-prefix=GFX10 %s
+# RUN: llc -mtriple=amdgpu9.00 -verify-machineinstrs -run-pass si-insert-waitcnts -o - %s | FileCheck -check-prefix=GFX9 %s
+# RUN: llc -mtriple=amdgpu9.00 -verify-machineinstrs -run-pass si-insert-waitcnts -o - %s -debugify-and-strip-all-safe | FileCheck -check-prefix=GFX9 %s
+# RUN: llc -mtriple=amdgpu10.10 -verify-machineinstrs -run-pass si-insert-waitcnts -o - %s | FileCheck -check-prefix=GFX10 %s
+# RUN: llc -mtriple=amdgpu12.00 -verify-machineinstrs -run-pass si-insert-waitcnts -o - %s | FileCheck -check-prefix=GFX12 %s
 
 ---
 
@@ -9,17 +11,24 @@
 
 # GFX9-LABEL: waitcnt_vm_loop
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop
 body:             |
   bb.0:
@@ -47,17 +56,24 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop_noterm
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop_noterm
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_noterm
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop_noterm
 body:             |
   bb.0:
@@ -84,10 +100,10 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop_noterm_wait
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
-# GFX9-NOT: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 name:            waitcnt_vm_loop_noterm_wait
 body:             |
@@ -118,17 +134,24 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop_load
 # GFX9-LABEL: bb.0:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop_load
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_load
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop_load
 body:             |
   bb.0:
@@ -159,17 +182,24 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop_no_store
 # GFX9-LABEL: bb.0:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop_no_store
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_no_store
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop_no_store
 body:             |
   bb.0:
@@ -201,17 +231,24 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop_no_use
 # GFX9-LABEL: bb.0:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop_no_use
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_no_use
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop_no_use
 body:             |
   bb.0:
@@ -244,17 +281,25 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop2
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop2
 # GFX10-LABEL: bb.0:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop2
+# GFX12-LABEL: bb.0:
+# GFX12: BUFFER_LOAD_FORMAT_X_IDXEN
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop2
 body:             |
   bb.0:
@@ -283,17 +328,25 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop2_store
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop2_store
 # GFX10-LABEL: bb.0:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop2_store
+# GFX12-LABEL: bb.0:
+# GFX12: BUFFER_LOAD_FORMAT_X_IDXEN
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop2_store
 body:             |
   bb.0:
@@ -323,17 +376,24 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop2_use_in_loop
 # GFX9-LABEL: bb.0:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop2_use_in_loop
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop2_use_in_loop
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop2_use_in_loop
 body:             |
   bb.0:
@@ -364,21 +424,30 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop2_nowait
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.3:
 
 # GFX10-LABEL: waitcnt_vm_loop2_nowait
 # GFX10-LABEL: bb.0:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.3:
+
+# GFX12-LABEL: waitcnt_vm_loop2_nowait
+# GFX12-LABEL: bb.0:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.3:
 name:            waitcnt_vm_loop2_nowait
 body:             |
   bb.0:
@@ -416,17 +485,25 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop2_reginterval
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop2_reginterval
 # GFX10-LABEL: bb.0:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop2_reginterval
+# GFX12-LABEL: bb.0:
+# GFX12: GLOBAL_LOAD_DWORDX4
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop2_reginterval
 body:             |
   bb.0:
@@ -456,17 +533,24 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_loop2_reginterval2
 # GFX9-LABEL: bb.0:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.1:
-# GFX9: S_WAITCNT 39
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_loop2_reginterval2
 # GFX10-LABEL: bb.0:
-# GFX10-NOT: S_WAITCNT 16
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10: S_WAITCNT 16
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop2_reginterval2
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 name:            waitcnt_vm_loop2_reginterval2
 body:             |
   bb.0:
@@ -501,17 +585,26 @@ body:             |
 
 # GFX9-LABEL: waitcnt_vm_zero
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 3952
+# GFX9: S_WAITCNT .Vmcnt_0_Expcnt_0_Lgkmcnt_0
 # GFX9-LABEL: bb.1:
-# GFX9-NOT: S_WAITCNT 39
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX9-LABEL: bb.2:
 
 # GFX10-LABEL: waitcnt_vm_zero
 # GFX10-LABEL: bb.0:
-# GFX10: S_WAITCNT 16240
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.1:
-# GFX10-NOT: S_WAITCNT 16240
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_zero
+# GFX12-LABEL: bb.0:
+# GFX12: BUFFER_LOAD_FORMAT_X_IDXEN
+# GFX12: BUFFER_LOAD_FORMAT_X_IDXEN
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
 
 name:            waitcnt_vm_zero
 body:             |
@@ -542,15 +635,23 @@ body:             |
 
 # GFX10-LABEL: waitcnt_vm_necessary
 # GFX10-LABEL: bb.0:
-# GFX10: S_WAITCNT 16240
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
 # GFX10: $vgpr4
 # GFX10-NOT: S_WAITCNT
 # GFX10-LABEL: bb.1:
 # GFX10-NOT: S_WAITCNT
 
+# GFX12-LABEL: waitcnt_vm_necessary
+# GFX12-LABEL: bb.0:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12: $vgpr4
+# GFX12-NOT: S_WAITCNT
+# GFX12-LABEL: bb.1:
+# GFX12-NOT: S_WAITCNT
+
 # GFX9-LABEL: waitcnt_vm_necessary
 # GFX9-LABEL: bb.0:
-# GFX9: S_WAITCNT 3952
+# GFX9: S_WAITCNT .Vmcnt_0_Expcnt_0_Lgkmcnt_0
 # GFX9: $vgpr4
 # GFX9-NOT: S_WAITCNT
 # GFX9-LABEL: bb.1:
@@ -569,6 +670,198 @@ body:             |
 
     $vgpr5 = BUFFER_LOAD_DWORD_OFFEN $vgpr0, $sgpr4_sgpr5_sgpr6_sgpr7, 0, 0, 0, 0, implicit $exec
     S_CBRANCH_SCC1 %bb.1, implicit killed $scc
+    S_ENDPGM 0
+
+...
+---
+
+# The loop contains a global store, and uses a (global) loaded value outside of the loop.
+
+# GFX9-LABEL: waitcnt_vm_loop_global_mem
+# GFX9-LABEL: bb.0:
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.1:
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.2:
+
+# GFX10-LABEL: waitcnt_vm_loop_global_mem
+# GFX10-LABEL: bb.0:
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX10-LABEL: bb.1:
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
+# GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_global_mem
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
+
+name:            waitcnt_vm_loop_global_mem
+body:             |
+  bb.0:
+    successors: %bb.1
+    $vgpr0 = GLOBAL_LOAD_DWORD $vgpr1_vgpr2, 0, 0, implicit $exec
+    S_BRANCH %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+
+    $vgpr3 = V_ADD_U32_e32 $vgpr0, $vgpr0, implicit $exec
+    GLOBAL_STORE_DWORD $vgpr4_vgpr5, $vgpr6, 0, 0, implicit $exec
+    S_CMP_LG_U32 killed $sgpr3, $sgpr4, implicit-def $scc
+    S_CBRANCH_SCC1 %bb.1, implicit killed $scc
+
+  bb.2:
+    successors: %bb.3
+    S_BRANCH %bb.3
+
+  bb.3:
+    S_ENDPGM 0
+
+...
+---
+
+# Same as above case, but use scratch memory instructions instead
+
+# GFX9-LABEL: waitcnt_vm_loop_scratch_mem
+# GFX9-LABEL: bb.0:
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.1:
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.2:
+
+# GFX10-LABEL: waitcnt_vm_loop_scratch_mem
+# GFX10-LABEL: bb.0:
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX10-LABEL: bb.1:
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
+# GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_scratch_mem
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
+
+name:            waitcnt_vm_loop_scratch_mem
+body:             |
+  bb.0:
+    successors: %bb.1
+    $vgpr0 = SCRATCH_LOAD_DWORD $vgpr1, 0, 0, implicit $exec, implicit $flat_scr
+    S_BRANCH %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+
+    $vgpr3 = V_ADD_U32_e32 $vgpr0, $vgpr0, implicit $exec
+    SCRATCH_STORE_DWORD $vgpr4, $vgpr6, 0, 0, implicit $exec, implicit $flat_scr
+    S_CMP_LG_U32 killed $sgpr3, $sgpr4, implicit-def $scc
+    S_CBRANCH_SCC1 %bb.1, implicit killed $scc
+
+  bb.2:
+    successors: %bb.3
+    S_BRANCH %bb.3
+
+  bb.3:
+    S_ENDPGM 0
+
+...
+---
+
+# Same as above case, but use flat memory instructions instead
+
+# GFX9-LABEL: waitcnt_vm_loop_flat_mem
+# GFX9-LABEL: bb.0:
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.1:
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.2:
+
+# GFX10-LABEL: waitcnt_vm_loop_flat_mem
+# GFX10-LABEL: bb.0:
+# GFX10-NOT: S_WAITCNT .Vmcnt_0_Lgkmcnt_0
+# GFX10-LABEL: bb.1:
+# GFX10: S_WAITCNT .Vmcnt_0_Lgkmcnt_0
+# GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_flat_mem
+# GFX12-LABEL: bb.0:
+# GFX12: FLAT_LOAD_DWORD
+# GFX12-NOT: S_WAIT_LOADCNT_DSCNT .Loadcnt_0_Dscnt_0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT_DSCNT .Loadcnt_0_Dscnt_0
+# GFX12-LABEL: bb.2:
+name:            waitcnt_vm_loop_flat_mem
+body:             |
+  bb.0:
+    successors: %bb.1
+    $vgpr0 = FLAT_LOAD_DWORD $vgpr1_vgpr2, 0, 0, implicit $exec, implicit $flat_scr
+    S_BRANCH %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+
+    $vgpr3 = V_ADD_U32_e32 $vgpr0, $vgpr0, implicit $exec
+    FLAT_STORE_DWORD $vgpr4_vgpr5, $vgpr6, 0, 0, implicit $exec, implicit $flat_scr
+    S_CMP_LG_U32 killed $sgpr3, $sgpr4, implicit-def $scc
+    S_CBRANCH_SCC1 %bb.1, implicit killed $scc
+
+  bb.2:
+    successors: %bb.3
+    S_BRANCH %bb.3
+
+  bb.3:
+    S_ENDPGM 0
+
+...
+---
+
+# The loop contains a store, a load, and uses values loaded both inside and
+# outside the loop.
+# We do not expect the waitcnt to be hoisted out of the loop.
+
+# GFX9-LABEL: waitcnt_vm_loop_flat_load
+# GFX9-LABEL: bb.0:
+# GFX9-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.1:
+# GFX9: S_WAITCNT .Vmcnt_0{{$}}
+# GFX9-LABEL: bb.2:
+
+# GFX10-LABEL: waitcnt_vm_loop_flat_load
+# GFX10-LABEL: bb.0:
+# GFX10-NOT: S_WAITCNT .Vmcnt_0{{$}}
+# GFX10-LABEL: bb.1:
+# GFX10: S_WAITCNT .Vmcnt_0{{$}}
+# GFX10-LABEL: bb.2:
+
+# GFX12-LABEL: waitcnt_vm_loop_flat_load
+# GFX12-LABEL: bb.0:
+# GFX12-NOT: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.1:
+# GFX12: S_WAIT_LOADCNT 0
+# GFX12-LABEL: bb.2:
+name:            waitcnt_vm_loop_flat_load
+body:             |
+  bb.0:
+    successors: %bb.1
+
+    $vgpr0 = GLOBAL_LOAD_DWORD $vgpr1_vgpr2, 0, 0, implicit $exec
+    S_BRANCH %bb.1
+
+  bb.1:
+    successors: %bb.1, %bb.2
+
+    GLOBAL_STORE_DWORD $vgpr4_vgpr5, $vgpr6, 0, 0, implicit $exec
+    $vgpr7 = GLOBAL_LOAD_DWORD $vgpr1_vgpr2, 0, 0, implicit $exec
+    $vgpr1 = V_ADD_U32_e32 $vgpr0, $vgpr7, implicit $exec
+    S_CMP_LG_U32 killed $sgpr3, $sgpr4, implicit-def $scc
+    S_CBRANCH_SCC1 %bb.1, implicit killed $scc
+    S_BRANCH %bb.2
+
+  bb.2:
     S_ENDPGM 0
 
 ...

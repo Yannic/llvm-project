@@ -6,15 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC_SYS_STAT_SETRLIMIT_H
-#define LLVM_LIBC_SRC_SYS_STAT_SETRLIMIT_H
+#ifndef LLVM_LIBC_SRC_SYS_RESOURCE_SETRLIMIT_H
+#define LLVM_LIBC_SRC_SYS_RESOURCE_SETRLIMIT_H
 
-#include <sys/resource.h>
+#include "hdr/types/struct_rlimit.h"
+#include "src/__support/macros/config.h"
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 int setrlimit(int resource, const struct rlimit *lim);
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL
 
-#endif // LLVM_LIBC_SRC_SYS_STAT_SETRLIMIT_H
+#endif // LLVM_LIBC_SRC_SYS_RESOURCE_SETRLIMIT_H

@@ -103,9 +103,8 @@ PlatformSP PlatformRemoteAppleBridge::CreateInstance(bool force,
 #pragma warning(disable : 4065)
 #endif
         switch (triple.getOS()) {
-          // NEED_BRIDGEOS_TRIPLE case llvm::Triple::BridgeOS:
-          //  break;
-
+        case llvm::Triple::BridgeOS:
+          break;
         default:
           create = false;
           break;
@@ -143,8 +142,9 @@ std::vector<ArchSpec> PlatformRemoteAppleBridge::GetSupportedArchitectures(
   return {ArchSpec("arm64-apple-bridgeos")};
 }
 
-llvm::StringRef PlatformRemoteAppleBridge::GetDeviceSupportDirectoryName() {
-  return "BridgeOS DeviceSupport";
+llvm::SmallVector<llvm::StringRef>
+PlatformRemoteAppleBridge::GetDeviceSupportDirectoryNames() {
+  return {"BridgeOS DeviceSupport"};
 }
 
 llvm::StringRef PlatformRemoteAppleBridge::GetPlatformName() {

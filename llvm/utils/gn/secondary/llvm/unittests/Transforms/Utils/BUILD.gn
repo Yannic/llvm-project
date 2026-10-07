@@ -17,8 +17,11 @@ unittest("UtilsTests") {
     "CallPromotionUtilsTest.cpp",
     "CloningTest.cpp",
     "CodeExtractorTest.cpp",
+    "CodeLayoutTest.cpp",
     "CodeMoverUtilsTest.cpp",
+    "DebugSSAUpdaterTest.cpp",
     "DebugifyTest.cpp",
+    "DynamicDebuggingTest.cpp",
     "FunctionComparatorTest.cpp",
     "IntegerDivisionTest.cpp",
     "LocalTest.cpp",
@@ -31,7 +34,6 @@ unittest("UtilsTests") {
     "ScalarEvolutionExpanderTest.cpp",
     "SizeOptsTest.cpp",
     "UnrollLoopTest.cpp",
-    "VFABIUtils.cpp",
     "ValueMapperTest.cpp",
   ]
 }

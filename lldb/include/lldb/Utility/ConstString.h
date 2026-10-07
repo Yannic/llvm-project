@@ -14,6 +14,7 @@
 #include "llvm/Support/FormatVariadic.h"
 
 #include <cstddef>
+#include <string_view>
 
 namespace lldb_private {
 class Stream;
@@ -43,7 +44,7 @@ public:
   /// Initializes the string to an empty string.
   ConstString() = default;
 
-  explicit ConstString(const llvm::StringRef &s);
+  explicit ConstString(llvm::StringRef s);
 
   /// Construct with C String value
   ///
@@ -52,7 +53,7 @@ public:
   /// exist, it is added to the string pool.
   ///
   /// \param[in] cstr
-  ///     A NULL terminated C string to add to the string pool.
+  ///     A null-terminated C string to add to the string pool.
   explicit ConstString(const char *cstr);
 
   /// Construct with C String value with max length
@@ -60,11 +61,11 @@ public:
   /// Constructs this object with a C string with a length. If \a max_cstr_len
   /// is greater than the actual length of the string, the string length will
   /// be truncated. This allows substrings to be created without the need to
-  /// NULL terminate the string as it is passed into this function.
+  /// null-terminate the string as it is passed into this function.
   ///
   /// \param[in] cstr
   ///     A pointer to the first character in the C string. The C
-  ///     string can be NULL terminated in a buffer that contains
+  ///     string can be null-terminated in a buffer that contains
   ///     more characters than the length of the string, or the
   ///     string can be part of another string and a new substring
   ///     can be created.
@@ -76,22 +77,6 @@ public:
   ///     \a max_cstr_len, then only max_cstr_len bytes will be used
   ///     from \a cstr.
   explicit ConstString(const char *cstr, size_t max_cstr_len);
-
-  /// C string equality binary predicate function object for ConstString
-  /// objects.
-  struct StringIsEqual {
-    /// C equality test.
-    ///
-    /// Two C strings are equal when they are contained in ConstString objects
-    /// when their pointer values are equal to each other.
-    ///
-    /// \return
-    ///     Returns \b true if the C string in \a lhs is equal to
-    ///     the C string value in \a rhs, \b false otherwise.
-    bool operator()(const char *lhs, const char *rhs) const {
-      return lhs == rhs;
-    }
-  };
 
   /// Convert to bool operator.
   ///
@@ -180,16 +165,22 @@ public:
 
   bool operator<(ConstString rhs) const;
 
+  // Implicitly convert \class ConstString instances to \class StringRef.
+  operator llvm::StringRef() const { return GetStringRef(); }
+
+  // Explicitly convert \class ConstString instances to \class std::string_view.
+  explicit operator std::string_view() const {
+    return std::string_view(m_string, GetLength());
+  }
+
+  // Explicitly convert \class ConstString instances to \class std::string.
+  explicit operator std::string() const { return GetString(); }
+
   /// Get the string value as a C string.
-  ///
-  /// Get the value of the contained string as a NULL terminated C string
-  /// value.
-  ///
-  /// If \a value_if_empty is nullptr, then nullptr will be returned.
   ///
   /// \return Returns \a value_if_empty if the string is empty, otherwise
   ///     the C string value contained in this object.
-  const char *AsCString(const char *value_if_empty = nullptr) const {
+  const char *AsCString(const char *value_if_empty) const {
     return (IsEmpty() ? value_if_empty : m_string);
   }
 
@@ -202,9 +193,14 @@ public:
     return llvm::StringRef(m_string, GetLength());
   }
 
+  /// Get the string value as a std::string
+  std::string GetString() const {
+    return std::string(AsCString(""), GetLength());
+  }
+
   /// Get the string value as a C string.
   ///
-  /// Get the value of the contained string as a NULL terminated C string
+  /// Get the value of the contained string as a null-terminated C string
   /// value. Similar to the ConstString::AsCString() function, yet this
   /// function will always return nullptr if the string is not valid. So this
   /// function is a direct accessor to the string pointer value.
@@ -221,7 +217,7 @@ public:
   ///
   /// \return
   ///     Returns the number of bytes that this string occupies in
-  ///     memory, not including the NULL termination byte.
+  ///     memory, not including the null terminator.
   size_t GetLength() const;
 
   /// Clear this object's state.
@@ -319,10 +315,10 @@ public:
   /// added to the string pool.
   ///
   /// \param[in] cstr
-  ///     A NULL terminated C string to add to the string pool.
+  ///     A null-terminated C string to add to the string pool.
   void SetCString(const char *cstr);
 
-  void SetString(const llvm::StringRef &s);
+  void SetString(llvm::StringRef s);
 
   /// Set the C string value and its mangled counterpart.
   ///
@@ -373,7 +369,7 @@ public:
   /// added to the string pool.
   ///
   /// \param[in] cstr
-  ///     A NULL terminated C string to add to the string pool.
+  ///     A null-terminated C string to add to the string pool.
   ///
   /// \param[in] cstr_len
   ///     The maximum length of the C string.
@@ -382,7 +378,7 @@ public:
   /// Set the C string value with the minimum length between \a fixed_cstr_len
   /// and the actual length of the C string. This can be used for data
   /// structures that have a fixed length to store a C string where the string
-  /// might not be NULL terminated if the string takes the entire buffer.
+  /// might not be null-terminated if the string takes the entire buffer.
   void SetTrimmedCStringWithLength(const char *cstr, size_t fixed_cstr_len);
 
   /// Get the memory cost of this object.
@@ -416,6 +412,8 @@ protected:
 
   const char *m_string = nullptr;
 };
+static_assert(sizeof(ConstString) <= sizeof(const char *),
+              "High-volume object, size of object must be increased with care");
 
 /// Stream the string value \a str to the stream \a s
 Stream &operator<<(Stream &s, ConstString str);
@@ -431,14 +429,6 @@ template <> struct format_provider<lldb_private::ConstString> {
 /// DenseMapInfo implementation.
 /// \{
 template <> struct DenseMapInfo<lldb_private::ConstString> {
-  static inline lldb_private::ConstString getEmptyKey() {
-    return lldb_private::ConstString::FromStringPoolPointer(
-        DenseMapInfo<const char *>::getEmptyKey());
-  }
-  static inline lldb_private::ConstString getTombstoneKey() {
-    return lldb_private::ConstString::FromStringPoolPointer(
-        DenseMapInfo<const char *>::getTombstoneKey());
-  }
   static unsigned getHashValue(lldb_private::ConstString val) {
     return DenseMapInfo<const char *>::getHashValue(val.m_string);
   }

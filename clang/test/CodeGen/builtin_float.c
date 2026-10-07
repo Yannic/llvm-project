@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -emit-llvm -triple x86_64-windows-pc -o - %s | FileCheck %s --check-prefixes=CHECK,FP16
-// RUN: %clang_cc1 -emit-llvm -triple ppc64-be -o - %s -DNO_FP16 | FileCheck %s --check-prefixes=CHECK,NOFP16
+// RUN: %clang_cc1 -emit-llvm -triple x86_64-windows-pc -o - %s | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm -triple ppc64-be -o - %s -DNO_FP16 | FileCheck %s
 
 // test to ensure that these builtins don't do the variadic promotion of float->double.
 void test_floats(float f1, float f2) {
@@ -49,8 +49,7 @@ void test_half(__fp16 *H, __fp16 *H2) {
   // CHECK: fcmp ogt float
   // CHECK-NEXT: zext i1
   (void)__builtin_isinf(*H);
-  // NOFP16: fcmp oeq float %{{.+}}, 0x7FF
-  // FP16: fcmp oeq half %{{.+}}, 0xH7C
+  // CHECK: call i1 @llvm.is.fpclass.f16(half %{{.*}}, /* (inf) */ i32 516)
 }
 
 void test_mixed(double d1, float f2) {

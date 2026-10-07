@@ -1,109 +1,40 @@
-//===--- A platform independent indirection for a thread class --*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+///
+/// \file
+/// Platform-independent indirection for a thread class.
+///
+//===----------------------------------------------------------------------===//
 
-#ifndef LLVM_LIBC_SRC_SUPPORT_THREADS_THREAD_H
-#define LLVM_LIBC_SRC_SUPPORT_THREADS_THREAD_H
+#ifndef LLVM_LIBC_SRC___SUPPORT_THREADS_THREAD_H
+#define LLVM_LIBC_SRC___SUPPORT_THREADS_THREAD_H
 
-#include "src/__support/CPP/string_view.h"
+#include "hdr/stdint_proxy.h"
+#include "hdr/types/struct_sched_param.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/optional.h"
+#include "src/__support/CPP/string_view.h"
 #include "src/__support/CPP/stringstream.h"
-#include "src/__support/architectures.h"
+#include "src/__support/error_or.h"
+#include "src/__support/macros/attributes.h"
+#include "src/__support/macros/config.h"
+#include "src/__support/macros/properties/architectures.h"
+#include "src/__support/threads/tcb.h"
+#include "src/__support/threads/thread_attributes.h"
 
-#include <stddef.h> // For size_t
-#include <stdint.h>
+// TODO: fix this unguarded linux dep
+#include <linux/param.h> // for exec_pagesize.
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
-using ThreadRunnerPosix = void *(void *);
-using ThreadRunnerStdc = int(void *);
-
-union ThreadRunner {
-  ThreadRunnerPosix *posix_runner;
-  ThreadRunnerStdc *stdc_runner;
-};
-
-union ThreadReturnValue {
-  void *posix_retval;
-  int stdc_retval;
-  constexpr ThreadReturnValue() : posix_retval(nullptr) {}
-  constexpr ThreadReturnValue(int r) : stdc_retval(r) {}
-  constexpr ThreadReturnValue(void *r) : posix_retval(r) {}
-};
-
-#if (defined(LLVM_LIBC_ARCH_AARCH64) || defined(LLVM_LIBC_ARCH_X86_64))
-constexpr unsigned int STACK_ALIGNMENT = 16;
-#endif
-// TODO: Provide stack alignment requirements for other architectures.
-
-enum class DetachState : uint32_t {
-  JOINABLE = 0x11,
-  EXITING = 0x22,
-  DETACHED = 0x33
-};
-
-enum class ThreadStyle : uint8_t { POSIX = 0x1, STDC = 0x2 };
-
-// Detach type is useful in testing the detach operation.
-enum class DetachType : int {
-  // Indicates that the detach operation just set the detach state to DETACHED
-  // and returned.
-  SIMPLE = 1,
-
-  // Indicates that the detach operation performed thread cleanup.
-  CLEANUP = 2
-};
-
-class ThreadAtExitCallbackMgr;
-
-// A data type to hold common thread attributes which have to be stored as
-// thread state. Note that this is different from public attribute types like
-// pthread_attr_t which might contain information which need not be saved as
-// part of a thread's state. For example, the stack guard size.
-//
-// Thread attributes are typically stored on the stack. So, we align as required
-// for the target architecture.
-struct alignas(STACK_ALIGNMENT) ThreadAttributes {
-  // We want the "detach_state" attribute to be an atomic value as it could be
-  // updated by one thread while the self thread is reading it. It is a tristate
-  // variable with the following state transitions:
-  // 1. The a thread is created in a detached state, then user code should never
-  //    call a detach or join function. Calling either of them can lead to
-  //    undefined behavior.
-  //    The value of |detach_state| is expected to be DetachState::DETACHED for
-  //    its lifetime.
-  // 2. If a thread is created in a joinable state, |detach_state| will start
-  //    with the value DetachState::JOINABLE. Another thread can detach this
-  //    thread before it exits. The state transitions will as follows:
-  //      (a) If the detach method sees the state as JOINABLE, then it will
-  //          compare exchange to a state of DETACHED. The thread will clean
-  //          itself up after it finishes.
-  //      (b) If the detach method does not see JOINABLE in (a), then it will
-  //          conclude that the thread is EXITING and will wait until the thread
-  //          exits. It will clean up the thread resources once the thread
-  //          exits.
-  cpp::Atomic<uint32_t> detach_state;
-  void *stack;                   // Pointer to the thread stack
-  unsigned long long stack_size; // Size of the stack
-  uintptr_t tls;                 // Address to the thread TLS memory
-  uintptr_t tls_size;            // The size of area pointed to by |tls|.
-  unsigned char owned_stack; // Indicates if the thread owns this stack memory
-  int tid;
-  ThreadStyle style;
-  ThreadReturnValue retval;
-  ThreadAtExitCallbackMgr *atexit_callback_mgr;
-  void *platform_data;
-
-  constexpr ThreadAttributes()
-      : detach_state(uint32_t(DetachState::DETACHED)), stack(nullptr),
-        stack_size(0), tls(0), tls_size(0), owned_stack(false), tid(-1),
-        style(ThreadStyle::POSIX), retval(), atexit_callback_mgr(nullptr),
-        platform_data(nullptr) {}
+struct SchedParameters {
+  int policy;
+  struct sched_param param;
 };
 
 using TSSDtor = void(void *);
@@ -131,23 +62,35 @@ bool set_tss_value(unsigned int key, void *value);
 void *get_tss_value(unsigned int key);
 
 struct Thread {
+  // NB: Default stacksize of 64kb is exceedingly small compared to the 2mb norm
+  // and will break many programs expecting the full 2mb.
+  static constexpr size_t DEFAULT_STACKSIZE = 1 << 16;
+  static constexpr size_t DEFAULT_GUARDSIZE = EXEC_PAGESIZE;
+  static constexpr bool DEFAULT_DETACHED = false;
+
   ThreadAttributes *attrib;
 
   constexpr Thread() : attrib(nullptr) {}
   constexpr Thread(ThreadAttributes *attr) : attrib(attr) {}
 
-  int run(ThreadRunnerPosix *func, void *arg, void *stack, size_t size,
-          bool detached = false) {
+  int run(ThreadRunnerPosix *func, void *arg, void *stack = nullptr,
+          size_t stacksize = DEFAULT_STACKSIZE,
+          size_t guardsize = DEFAULT_GUARDSIZE,
+          bool detached = DEFAULT_DETACHED) {
     ThreadRunner runner;
     runner.posix_runner = func;
-    return run(ThreadStyle::POSIX, runner, arg, stack, size, detached);
+    return run(ThreadStyle::POSIX, runner, arg, stack, stacksize, guardsize,
+               detached);
   }
 
-  int run(ThreadRunnerStdc *func, void *arg, void *stack, size_t size,
-          bool detached = false) {
+  int run(ThreadRunnerStdc *func, void *arg, void *stack = nullptr,
+          size_t stacksize = DEFAULT_STACKSIZE,
+          size_t guardsize = DEFAULT_GUARDSIZE,
+          bool detached = DEFAULT_DETACHED) {
     ThreadRunner runner;
     runner.stdc_runner = func;
-    return run(ThreadStyle::STDC, runner, arg, stack, size, detached);
+    return run(ThreadStyle::STDC, runner, arg, stack, stacksize, guardsize,
+               detached);
   }
 
   int join(int *val) {
@@ -155,7 +98,8 @@ struct Thread {
     int status = join(retval);
     if (status != 0)
       return status;
-    *val = retval.stdc_retval;
+    if (val != nullptr)
+      *val = retval.stdc_retval;
     return 0;
   }
 
@@ -164,7 +108,8 @@ struct Thread {
     int status = join(retval);
     if (status != 0)
       return status;
-    *val = retval.posix_retval;
+    if (val != nullptr)
+      *val = retval.posix_retval;
     return 0;
   }
 
@@ -172,7 +117,7 @@ struct Thread {
 
   // Return 0 on success or an error value on failure.
   int run(ThreadStyle style, ThreadRunner runner, void *arg, void *stack,
-          size_t stack_size, bool detached);
+          size_t stacksize, size_t guardsize, bool detached);
 
   // Return 0 on success or an error value on failure.
   int join(ThreadReturnValue &retval);
@@ -197,36 +142,45 @@ struct Thread {
   void wait();
 
   // Return true if this thread is equal to the other thread.
-  bool operator==(const Thread &other) const;
+  constexpr bool operator==(const Thread &other) const {
+    return attrib == other.attrib;
+  }
 
   // Set the name of the thread. Return the error number on error.
   int set_name(const cpp::string_view &name);
 
   // Return the name of the thread in |name|. Return the error number of error.
   int get_name(cpp::StringStream &name) const;
+
+  // Set the scheduling policy and parameters of the thread.
+  // Return 0 on success, or an error number on failure.
+  int setschedparam(SchedParameters params);
+
+  // Get the scheduling policy and parameters of the thread.
+  // Return SchedParameters on success, or an error number on failure.
+  ErrorOr<SchedParameters> getschedparam() const;
+
+  // Send a signal to the thread.
+  ErrorOr<void> kill(int sig);
 };
 
-extern thread_local Thread self;
-
 // Platforms should implement this function.
-void thread_exit(ThreadReturnValue retval, ThreadStyle style);
+[[noreturn]] void thread_exit(ThreadReturnValue retval, ThreadStyle style);
 
 namespace internal {
 // Internal namespace containing utilities which are to be used by platform
 // implementations of threads.
 
-// Return the current thread's atexit callback manager. After thread startup
-// but before running the thread function, platform implementations should
-// set the "atexit_callback_mgr" field of the thread's attributes to the value
-// returned by this function.
-ThreadAtExitCallbackMgr *get_thread_atexit_callback_mgr();
-
 // Call the currently registered thread specific atexit callbacks. Useful for
 // implementing the thread_exit function.
-void call_atexit_callbacks(ThreadAttributes *attrib);
+void call_atexit_callbacks();
 
 } // namespace internal
 
-} // namespace __llvm_libc
+LIBC_INLINE Thread current_thread() {
+  return Thread(get_current_thread_attrib());
+}
 
-#endif // LLVM_LIBC_SRC_SUPPORT_THREADS_THREAD_H
+} // namespace LIBC_NAMESPACE_DECL
+
+#endif // LLVM_LIBC_SRC___SUPPORT_THREADS_THREAD_H

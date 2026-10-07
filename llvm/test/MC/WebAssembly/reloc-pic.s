@@ -1,8 +1,8 @@
-# RUN: llvm-mc -triple=wasm32-unknown-unknown -filetype=obj < %s | obj2yaml | FileCheck %s
-# RUN: llvm-mc -triple=wasm32-unknown-unknown -mattr=+reference-types -filetype=obj < %s | obj2yaml | FileCheck --check-prefix=REF %s
+# RUN: sed -e '/^REF-/d' %s | llvm-mc -triple=wasm32-unknown-unknown -mcpu=mvp -filetype=obj | obj2yaml | FileCheck %s
+# RUN: sed -e 's/^REF-//g' %s | llvm-mc -triple=wasm32-unknown-unknown -mattr=+reference-types -filetype=obj | obj2yaml | FileCheck --check-prefix=REF %s
 
 # Verify that @GOT relocation entryes result in R_WASM_GLOBAL_INDEX_LEB against
-# against the corrsponding function or data symbol and that the corresponding
+# against the corresponding function or data symbol and that the corresponding
 # data symbols are imported as a wasm globals.
 
 .functype default_func () -> (i32)
@@ -49,6 +49,9 @@ hidden_func:
 #.hidden hidden_func
 #.hidden hidden_data
 .size default_data, 4
+
+REF-mytable:
+REF-.tabletype mytable, externref
 
 # CHECK:      --- !WASM
 # CHECK-NEXT: FileHeader:
@@ -156,6 +159,7 @@ hidden_func:
 # CHECK-NEXT:   - Type:            CUSTOM
 # CHECK-NEXT:     Name:            linking
 # CHECK-NEXT:     Version:         2
+# CHECK-NEXT:     TargetArch:      wasm32
 # CHECK-NEXT:     SymbolTable:
 # CHECK-NEXT:       - Index:           0
 # CHECK-NEXT:         Kind:            FUNCTION
@@ -208,6 +212,11 @@ hidden_func:
 # CHECK-NEXT:         Flags:           [ BINDING_LOCAL ]
 # CHECK-NEXT:         Function:        5
 # REF:              - Index:           10
+# REF-NEXT:           Kind:            TABLE
+# REF-NEXT:           Name:            mytable
+# REF-NEXT:           Flags:           [ BINDING_LOCAL ]
+# REF-NEXT:           Table:           1
+# REF-NEXT:         - Index:           11
 # REF-NEXT:           Kind:            TABLE
 # REF-NEXT:           Name:            __indirect_function_table
 # REF-NEXT:           Flags:           [ UNDEFINED, NO_STRIP ]

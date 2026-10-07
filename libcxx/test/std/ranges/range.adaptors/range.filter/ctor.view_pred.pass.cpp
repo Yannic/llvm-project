@@ -8,16 +8,18 @@
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
-// constexpr filter_view(View, Pred);
-
-#include <ranges>
+// constexpr explicit filter_view(View, Pred); // explicit since C++23
 
 #include <cassert>
+#include <ranges>
 #include <utility>
+
+#include "test_convertible.h"
+#include "test_macros.h"
 #include "types.h"
 
 struct Range : std::ranges::view_base {
-  constexpr explicit Range(int* b, int* e) : begin_(b), end_(e) { }
+  constexpr explicit Range(int* b, int* e) : begin_(b), end_(e) {}
   constexpr int* begin() const { return begin_; }
   constexpr int* end() const { return end_; }
 
@@ -41,6 +43,11 @@ struct TrackingRange : TrackInitialization, std::ranges::view_base {
   int* end() const;
 };
 
+// SFINAE tests.
+
+static_assert(!test_convertible<std::ranges::filter_view<Range, Pred>, Range, Pred>(),
+              "This constructor must be explicit");
+
 constexpr bool test() {
   int buff[] = {1, 2, 3, 4, 5, 6, 7, 8};
 
@@ -49,19 +56,6 @@ constexpr bool test() {
     Range range(buff, buff + 8);
     Pred pred;
     std::ranges::filter_view<Range, Pred> view(range, pred);
-    auto it = view.begin(), end = view.end();
-    assert(*it++ == 1);
-    assert(*it++ == 3);
-    assert(*it++ == 5);
-    assert(*it++ == 7);
-    assert(it == end);
-  }
-
-  // Test implicit syntax
-  {
-    Range range(buff, buff + 8);
-    Pred pred;
-    std::ranges::filter_view<Range, Pred> view = {range, pred};
     auto it = view.begin(), end = view.end();
     assert(*it++ == 1);
     assert(*it++ == 3);

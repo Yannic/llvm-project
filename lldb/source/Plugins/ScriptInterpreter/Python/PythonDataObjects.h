@@ -44,15 +44,9 @@
 //   nonnull, and use optionals where necessary.
 //
 
+#ifndef LLDB_SOURCE_PLUGINS_SCRIPTINTERPRETER_PYTHON_PYTHONDATAOBJECTS_H
+#define LLDB_SOURCE_PLUGINS_SCRIPTINTERPRETER_PYTHON_PYTHONDATAOBJECTS_H
 
-#ifndef LLDB_PLUGINS_SCRIPTINTERPRETER_PYTHON_PYTHONDATAOBJECTS_H
-#define LLDB_PLUGINS_SCRIPTINTERPRETER_PYTHON_PYTHONDATAOBJECTS_H
-
-#include "lldb/Host/Config.h"
-
-#if LLDB_ENABLE_PYTHON
-
-// LLDB Python header must be included first
 #include "lldb-python.h"
 
 #include "lldb/Host/File.h"
@@ -194,6 +188,8 @@ template <typename T, char F> struct PassthroughFormat {
 };
 
 template <> struct PythonFormat<char *> : PassthroughFormat<char *, 's'> {};
+template <>
+struct PythonFormat<const char *> : PassthroughFormat<const char *, 's'> {};
 template <> struct PythonFormat<char> : PassthroughFormat<char, 'b'> {};
 template <>
 struct PythonFormat<unsigned char> : PassthroughFormat<unsigned char, 'B'> {};
@@ -201,6 +197,7 @@ template <> struct PythonFormat<short> : PassthroughFormat<short, 'h'> {};
 template <>
 struct PythonFormat<unsigned short> : PassthroughFormat<unsigned short, 'H'> {};
 template <> struct PythonFormat<int> : PassthroughFormat<int, 'i'> {};
+template <> struct PythonFormat<bool> : PassthroughFormat<bool, 'p'> {};
 template <>
 struct PythonFormat<unsigned int> : PassthroughFormat<unsigned int, 'I'> {};
 template <> struct PythonFormat<long> : PassthroughFormat<long, 'l'> {};
@@ -246,13 +243,6 @@ public:
   ~PythonObject() { Reset(); }
 
   void Reset();
-
-  void Dump() const {
-    if (m_py_obj)
-      _PyObject_Dump(m_py_obj);
-    else
-      puts("NULL");
-  }
 
   void Dump(Stream &strm) const;
 
@@ -342,6 +332,15 @@ public:
     return python::Take<PythonObject>(obj);
   }
 
+  llvm::Expected<PythonObject> GetType() const {
+    if (!m_py_obj)
+      return nullDeref();
+    PyObject *obj = PyObject_Type(m_py_obj);
+    if (!obj)
+      return exception();
+    return python::Take<PythonObject>(obj);
+  }
+
   llvm::Expected<bool> IsTrue() {
     if (!m_py_obj)
       return nullDeref();
@@ -353,7 +352,7 @@ public:
 
   llvm::Expected<long long> AsLongLong() const;
 
-  llvm::Expected<long long> AsUnsignedLongLong() const;
+  llvm::Expected<unsigned long long> AsUnsignedLongLong() const;
 
   // wraps on overflow, instead of raising an error.
   llvm::Expected<unsigned long long> AsModuloUnsignedLongLong() const;
@@ -479,6 +478,10 @@ public:
   void SetInteger(int64_t value);
 
   StructuredData::IntegerSP CreateStructuredInteger() const;
+
+  StructuredData::UnsignedIntegerSP CreateStructuredUnsignedInteger() const;
+
+  StructuredData::SignedIntegerSP CreateStructuredSignedInteger() const;
 };
 
 class PythonBoolean : public TypedPythonObject<PythonBoolean> {
@@ -548,6 +551,8 @@ public:
 
   static bool Check(PyObject *py_obj);
 
+  bool HasKey(const llvm::Twine &key) const;
+
   uint32_t GetSize() const;
 
   PythonList GetKeys() const;
@@ -610,6 +615,15 @@ public:
 
   llvm::Expected<ArgInfo> GetArgInfo() const;
 
+  // Always derives ArgInfo via a Python-level inspect.signature() call,
+  // regardless of whether the callable's argument count/varargs bit could
+  // have been read directly off its data attributes. GetArgInfo() prefers
+  // the cheaper attribute-based path and only falls back to this for
+  // callables it can't introspect that way (e.g. builtins); exposed
+  // separately so that fallback behavior can be tested directly.
+  static llvm::Expected<ArgInfo>
+  GetArgInfoFromInspectSignature(const PythonCallable &callable);
+
   PythonObject operator()();
 
   PythonObject operator()(std::initializer_list<PyObject *> args);
@@ -629,6 +643,9 @@ public:
   PythonFile() : TypedPythonObject() {} // MSVC requires this for some reason
 
   static bool Check(PyObject *py_obj);
+
+  static int TranslateFdToPython(int our_fd);
+  static int TranslateFdFromPython(int their_fd);
 
   static llvm::Expected<PythonFile> FromFile(File &file,
                                              const char *mode = nullptr);
@@ -762,9 +779,11 @@ private:
   operator=(const StructuredPythonObject &) = delete;
 };
 
+PyObject *RunString(const char *str, int start, PyObject *globals,
+                    PyObject *locals);
+int RunSimpleString(const char *str);
+
 } // namespace python
 } // namespace lldb_private
 
-#endif
-
-#endif // LLDB_PLUGINS_SCRIPTINTERPRETER_PYTHON_PYTHONDATAOBJECTS_H
+#endif // LLDB_SOURCE_PLUGINS_SCRIPTINTERPRETER_PYTHON_PYTHONDATAOBJECTS_H

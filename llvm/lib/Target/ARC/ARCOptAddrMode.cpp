@@ -45,7 +45,6 @@ static cl::opt<unsigned> ArcKillAddrMode("arc-kill-addr-mode", cl::init(0),
 #define KILL_PASS() ((ArcKillAddrMode & 0x0010) != 0)
 
 FunctionPass *createARCOptAddrMode();
-void initializeARCOptAddrModePass(PassRegistry &);
 } // end namespace llvm
 
 namespace {
@@ -60,8 +59,7 @@ public:
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
     MachineFunctionPass::getAnalysisUsage(AU);
-    AU.addRequired<MachineDominatorTree>();
-    AU.addPreserved<MachineDominatorTree>();
+    AU.addRequired<MachineDominatorTreeWrapperPass>();
   }
 
   bool runOnMachineFunction(MachineFunction &MF) override;
@@ -117,11 +115,6 @@ private:
 } // end anonymous namespace
 
 char ARCOptAddrMode::ID = 0;
-INITIALIZE_PASS_BEGIN(ARCOptAddrMode, OPTADDRMODE_NAME, OPTADDRMODE_DESC, false,
-                      false)
-INITIALIZE_PASS_DEPENDENCY(MachineDominatorTree)
-INITIALIZE_PASS_END(ARCOptAddrMode, OPTADDRMODE_NAME, OPTADDRMODE_DESC, false,
-                    false)
 
 // Return true if \p Off can be used as immediate offset
 // operand of load/store instruction (S9 literal)
@@ -153,11 +146,10 @@ static bool dominatesAllUsesOf(const MachineInstr *MI, unsigned VReg,
 
   assert(Register::isVirtualRegister(VReg) && "Expected virtual register!");
 
-  for (auto it = MRI->use_nodbg_begin(VReg), end = MRI->use_nodbg_end();
-       it != end; ++it) {
-    MachineInstr *User = it->getParent();
+  for (const MachineOperand &Use : MRI->use_nodbg_operands(VReg)) {
+    const MachineInstr *User = Use.getParent();
     if (User->isPHI()) {
-      unsigned BBOperandIdx = User->getOperandNo(&*it) + 1;
+      unsigned BBOperandIdx = Use.getOperandNo() + 1;
       MachineBasicBlock *MBB = User->getOperand(BBOperandIdx).getMBB();
       if (MBB->empty()) {
         const MachineBasicBlock *InstBB = MI->getParent();
@@ -217,7 +209,7 @@ MachineInstr *ARCOptAddrMode::tryToCombine(MachineInstr &Ldst) {
   }
 
   Register B = Base.getReg();
-  if (Register::isStackSlot(B) || !Register::isVirtualRegister(B)) {
+  if (!Register::isVirtualRegister(B)) {
     LLVM_DEBUG(dbgs() << "[ABAW] Base is not VReg\n");
     return nullptr;
   }
@@ -509,7 +501,7 @@ bool ARCOptAddrMode::runOnMachineFunction(MachineFunction &MF) {
   AST = &MF.getSubtarget<ARCSubtarget>();
   AII = AST->getInstrInfo();
   MRI = &MF.getRegInfo();
-  MDT = &getAnalysis<MachineDominatorTree>();
+  MDT = &getAnalysis<MachineDominatorTreeWrapperPass>().getDomTree();
 
   bool Changed = false;
   for (auto &MBB : MF)

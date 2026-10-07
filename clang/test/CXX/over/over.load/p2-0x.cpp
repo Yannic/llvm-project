@@ -12,16 +12,21 @@ class Y {
   void h() const &; 
   void h() &&; 
   void i() &; // expected-note{{previous declaration}}
-  void i() const; // expected-error{{cannot overload a member function without a ref-qualifier with a member function with ref-qualifier '&'}}
+  void i() const; // expected-error{{cannot overload a member function with ref-qualifier '&' with a member function without a ref-qualifier}}
 
   template<typename T> void f(T*) &;
   template<typename T> void f(T*) &&;
 
   template<typename T> void g(T*) &; // expected-note{{previous declaration}}
-  template<typename T> void g(T*); // expected-error{{cannot overload a member function without a ref-qualifier with a member function with ref-qualifier '&'}}
+  template<typename T> void g(T*); // expected-error{{cannot overload a member function with ref-qualifier '&' with a member function without a ref-qualifier}}
 
   void k(); // expected-note{{previous declaration}}
-  void k() &&; // expected-error{{cannot overload a member function with ref-qualifier '&&' with a member function without a ref-qualifier}}
+  void k() &&; // expected-error{{cannot overload a member function without a ref-qualifier with a member function with ref-qualifier '&&'}}
+};
+
+struct GH76358 {
+    template<int> void f() && {}
+    template<typename T> void f() const {}
 };
 
 
@@ -50,4 +55,31 @@ static_assert(not test<type<2>&>);
 static_assert(test<type<2>&&>);
 
 }
+
+namespace GH78101 {
+
+template<typename T, typename U, int i>
+concept True = true;
+
+template<typename T, int I>
+struct Template {
+    static constexpr int i = I;
+    friend constexpr auto operator+(True<T, i> auto f) {
+        return i;
+    }
+};
+
+template<int I>
+struct Template<float, I> {
+    static constexpr int i = I;
+    friend constexpr auto operator+(True<float, i> auto f) {
+        return i;
+    }
+};
+
+Template<void, 4> f{};
+static_assert(+Template<float, 5>{} == 5);
+
+}
+
 #endif

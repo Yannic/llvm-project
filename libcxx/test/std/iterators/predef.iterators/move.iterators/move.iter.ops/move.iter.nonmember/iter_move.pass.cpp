@@ -17,8 +17,10 @@
 #include <iterator>
 
 #include <cassert>
+#include <cstddef>
 #include <type_traits>
 #include <utility>
+
 #include "test_iterators.h"
 #include "test_macros.h"
 
@@ -28,7 +30,7 @@ template <bool IsNoexcept>
 struct MaybeNoexceptMove {
   int x;
   using value_type = int;
-  using difference_type = ptrdiff_t;
+  using difference_type = std::ptrdiff_t;
 
   constexpr friend value_type&& iter_move(MaybeNoexceptMove) noexcept(IsNoexcept) {
     return std::move(global);

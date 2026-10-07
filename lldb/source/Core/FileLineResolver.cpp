@@ -8,10 +8,10 @@
 
 #include "lldb/Core/FileLineResolver.h"
 
-#include "lldb/Core/FileSpecList.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/LineTable.h"
 #include "lldb/Utility/ConstString.h"
+#include "lldb/Utility/FileSpecList.h"
 #include "lldb/Utility/Stream.h"
 
 #include <string>
@@ -37,7 +37,7 @@ FileLineResolver::SearchCallback(SearchFilter &filter, SymbolContext &context,
   CompileUnit *cu = context.comp_unit;
 
   if (m_inlines || m_file_spec.Compare(cu->GetPrimaryFile(), m_file_spec,
-                                       (bool)m_file_spec.GetDirectory())) {
+                                       !m_file_spec.GetDirectory().empty())) {
     uint32_t start_file_idx = 0;
     uint32_t file_idx =
         cu->GetSupportFiles().FindFileIndex(start_file_idx, m_file_spec, false);
@@ -48,7 +48,7 @@ FileLineResolver::SearchCallback(SearchFilter &filter, SymbolContext &context,
           // Match all lines in a file...
           const bool append = true;
           while (file_idx != UINT32_MAX) {
-            line_table->FineLineEntriesForFileIndex(file_idx, append,
+            line_table->FindLineEntriesForFileIndex(file_idx, append,
                                                     m_sc_list);
             // Get the next file index in case we have multiple file entries
             // for the same file

@@ -18,11 +18,17 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/MemorySSAUpdater.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/CodeGen/InterleavedLoadCombine.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
@@ -32,7 +38,6 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
@@ -43,6 +48,7 @@
 #include <algorithm>
 #include <cassert>
 #include <list>
+#include <unordered_map>
 
 using namespace llvm;
 
@@ -63,10 +69,10 @@ struct VectorInfo;
 struct InterleavedLoadCombineImpl {
 public:
   InterleavedLoadCombineImpl(Function &F, DominatorTree &DT, MemorySSA &MSSA,
-                             TargetMachine &TM)
+                             const TargetTransformInfo &TTI,
+                             const TargetMachine &TM)
       : F(F), DT(DT), MSSA(MSSA),
-        TLI(*TM.getSubtargetImpl(F)->getTargetLowering()),
-        TTI(TM.getTargetTransformInfo(F)) {}
+        TLI(*TM.getSubtargetImpl(F)->getTargetLowering()), TTI(TTI) {}
 
   /// Scan the function for interleaved load candidates and execute the
   /// replacement if applicable.
@@ -86,7 +92,7 @@ private:
   const TargetLowering &TLI;
 
   /// Target Transform Information
-  const TargetTransformInfo TTI;
+  const TargetTransformInfo &TTI;
 
   /// Find the instruction in sets LIs that dominates all others, return nullptr
   /// if there is none.
@@ -95,14 +101,8 @@ private:
   /// Replace interleaved load candidates. It does additional
   /// analyses if this makes sense. Returns true on success and false
   /// of nothing has been changed.
-  bool combine(std::list<VectorInfo> &InterleavedLoad,
+  bool combine(ArrayRef<VectorInfo *> InterleavedLoad,
                OptimizationRemarkEmitter &ORE);
-
-  /// Given a set of VectorInfo containing candidates for a given interleave
-  /// factor, find a set that represents a 'factor' interleaved load.
-  bool findPattern(std::list<VectorInfo> &Candidates,
-                   std::list<VectorInfo> &InterleavedLoad, unsigned Factor,
-                   const DataLayout &DL);
 }; // InterleavedLoadCombine
 
 /// First Order Polynomial on an n-Bit Integer Value
@@ -318,7 +318,7 @@ public:
 
     // See Proof(2): Trailing zero bits indicate a left shift. This removes
     // leading bits from the result even if they are undefined.
-    decErrorMSBs(C.countTrailingZeros());
+    decErrorMSBs(C.countr_zero());
 
     A *= C;
     pushBOperation(Mul, C);
@@ -475,7 +475,7 @@ public:
     //
     // If this can be proven add shiftAmt to the error counter
     // `ErrorMSBs`. Otherwise set all bits as undefined.
-    if (A.countTrailingZeros() < shiftAmt)
+    if (A.countr_zero() < shiftAmt)
       ErrorMSBs = A.getBitWidth();
     else
       incErrorMSBs(shiftAmt);
@@ -566,10 +566,24 @@ public:
   }
 
   /// Returns true if it can be proven that two Polynomials are equal.
-  bool isProvenEqualTo(const Polynomial &o) {
+  bool isProvenEqualTo(const Polynomial &o) const {
     // Subtract both polynomials and test if it is fully defined and zero.
     Polynomial r = *this - o;
     return (r.ErrorMSBs == 0) && (!r.isFirstOrder()) && (r.A.isZero());
+  }
+
+  /// Returns true if every bit of the polynomial is provably exact. An inexact
+  /// polynomial can never be proven equal to another, so it is never a valid
+  /// match candidate.
+  bool isProvenExact() const { return ErrorMSBs == 0; }
+
+  /// Hash the identity checked by isProvenEqualTo. Only meaningful for exact
+  /// polynomials; two exact, proven-equal polynomials hash identically.
+  friend hash_code hash_value(const Polynomial &P) {
+    hash_code H = hash_combine(P.A.getBitWidth(), P.V);
+    for (const auto &BO : P.B)
+      H = hash_combine(H, BO.first, hash_value(BO.second));
+    return hash_combine(H, hash_value(P.A));
   }
 
   /// Print the polynomial into a stream.
@@ -625,10 +639,34 @@ static raw_ostream &operator<<(raw_ostream &OS, const Polynomial &S) {
 }
 #endif
 
+/// Address key of a candidate's first vector element: the common base pointer,
+/// the vector type and the offset polynomial. Candidates are collected and
+/// matched one basic block at a time and only candidates whose loads live in
+/// that block take part (see run()), so the block is common to a whole index
+/// and need not be part of the key. Two candidates belong to the same
+/// interleaved group iff their keys agree on everything but the constant
+/// offset, so consecutive elements are located by building the neighbouring
+/// keys and looking them up.
+struct OffsetKey {
+  Value *PV;
+  FixedVectorType *VTy;
+  Polynomial Ofs;
+
+  bool operator==(const OffsetKey &O) const {
+    return PV == O.PV && VTy == O.VTy && Ofs.isProvenEqualTo(O.Ofs);
+  }
+};
+
+struct OffsetKeyHash {
+  size_t operator()(const OffsetKey &K) const {
+    return hash_combine(K.PV, K.VTy, hash_value(K.Ofs));
+  }
+};
+
 /// VectorInfo stores abstract the following information for each vector
 /// element:
 ///
-/// 1) The the memory address loaded into the element as Polynomial
+/// 1) The memory address loaded into the element as Polynomial
 /// 2) a set of load instruction necessary to construct the vector,
 /// 3) a set of all other instructions that are necessary to create the vector and
 /// 4) a pointer value that can be used as relative base for all elements.
@@ -678,6 +716,8 @@ public:
     EI = new ElementInfo[VTy->getNumElements()];
   }
 
+  VectorInfo &operator=(const VectorInfo &other) = delete;
+
   virtual ~VectorInfo() { delete[] EI; }
 
   unsigned getDimension() const { return VTy->getNumElements(); }
@@ -690,9 +730,9 @@ public:
   ///
   /// \returns true if this is possible and false if not
   bool isInterleaved(unsigned Factor, const DataLayout &DL) const {
-    unsigned Size = DL.getTypeAllocSize(VTy->getElementType());
+    TypeSize Size = DL.getTypeAllocSize(VTy->getElementType());
     for (unsigned i = 1; i < getDimension(); i++) {
-      if (!EI[i].Ofs.isProvenEqualTo(EI[0].Ofs + i * Factor * Size)) {
+      if (!EI[i].Ofs.isProvenEqualTo(EI[0].Ofs + i * Size * Factor)) {
         return false;
       }
     }
@@ -742,8 +782,8 @@ public:
       return false;
 
     unsigned Factor = Result.VTy->getNumElements() / VTy->getNumElements();
-    unsigned NewSize = DL.getTypeAllocSize(Result.VTy->getElementType());
-    unsigned OldSize = DL.getTypeAllocSize(VTy->getElementType());
+    TypeSize NewSize = DL.getTypeAllocSize(Result.VTy->getElementType());
+    TypeSize OldSize = DL.getTypeAllocSize(VTy->getElementType());
 
     if (NewSize * Factor != OldSize)
       return false;
@@ -874,6 +914,9 @@ public:
     if (LI->isAtomic())
       return false;
 
+    if (!DL.typeSizeEqualsStoreSize(Result.VTy->getElementType()))
+      return false;
+
     // Get the base polynomial
     computePolynomialFromPointer(*LI->getPointerOperand(), Offset, BasePtr, DL);
 
@@ -887,7 +930,7 @@ public:
           ConstantInt::get(Type::getInt32Ty(LI->getContext()), 0),
           ConstantInt::get(Type::getInt32Ty(LI->getContext()), i),
       };
-      int64_t Ofs = DL.getIndexedOffsetInType(Result.VTy, ArrayRef(Idx, 2));
+      int64_t Ofs = DL.getIndexedOffsetInType(Result.VTy, Idx);
       Result.EI[i] = ElementInfo(Offset + Ofs, i == 0 ? LI : nullptr);
     }
 
@@ -1048,54 +1091,6 @@ public:
 
 } // anonymous namespace
 
-bool InterleavedLoadCombineImpl::findPattern(
-    std::list<VectorInfo> &Candidates, std::list<VectorInfo> &InterleavedLoad,
-    unsigned Factor, const DataLayout &DL) {
-  for (auto C0 = Candidates.begin(), E0 = Candidates.end(); C0 != E0; ++C0) {
-    unsigned i;
-    // Try to find an interleaved load using the front of Worklist as first line
-    unsigned Size = DL.getTypeAllocSize(C0->VTy->getElementType());
-
-    // List containing iterators pointing to the VectorInfos of the candidates
-    std::vector<std::list<VectorInfo>::iterator> Res(Factor, Candidates.end());
-
-    for (auto C = Candidates.begin(), E = Candidates.end(); C != E; C++) {
-      if (C->VTy != C0->VTy)
-        continue;
-      if (C->BB != C0->BB)
-        continue;
-      if (C->PV != C0->PV)
-        continue;
-
-      // Check the current value matches any of factor - 1 remaining lines
-      for (i = 1; i < Factor; i++) {
-        if (C->EI[0].Ofs.isProvenEqualTo(C0->EI[0].Ofs + i * Size)) {
-          Res[i] = C;
-        }
-      }
-
-      for (i = 1; i < Factor; i++) {
-        if (Res[i] == Candidates.end())
-          break;
-      }
-      if (i == Factor) {
-        Res[0] = C0;
-        break;
-      }
-    }
-
-    if (Res[0] != Candidates.end()) {
-      // Move the result into the output
-      for (unsigned i = 0; i < Factor; i++) {
-        InterleavedLoad.splice(InterleavedLoad.end(), Candidates, Res[i]);
-      }
-
-      return true;
-    }
-  }
-  return false;
-}
-
 LoadInst *
 InterleavedLoadCombineImpl::findFirstLoad(const std::set<LoadInst *> &LIs) {
   assert(!LIs.empty() && "No load instructions given.");
@@ -1109,14 +1104,14 @@ InterleavedLoadCombineImpl::findFirstLoad(const std::set<LoadInst *> &LIs) {
   return cast<LoadInst>(FLI);
 }
 
-bool InterleavedLoadCombineImpl::combine(std::list<VectorInfo> &InterleavedLoad,
+bool InterleavedLoadCombineImpl::combine(ArrayRef<VectorInfo *> InterleavedLoad,
                                          OptimizationRemarkEmitter &ORE) {
   LLVM_DEBUG(dbgs() << "Checking interleaved load\n");
 
   // The insertion point is the LoadInst which loads the first values. The
   // following tests are used to proof that the combined load can be inserted
   // just before InsertionPoint.
-  LoadInst *InsertionPoint = InterleavedLoad.front().EI[0].LI;
+  LoadInst *InsertionPoint = InterleavedLoad.front()->EI[0].LI;
 
   // Test if the offset is computed
   if (!InsertionPoint)
@@ -1134,17 +1129,17 @@ bool InterleavedLoadCombineImpl::combine(std::list<VectorInfo> &InterleavedLoad,
   unsigned Factor = InterleavedLoad.size();
 
   // Merge all input sets used in analysis
-  for (auto &VI : InterleavedLoad) {
+  for (const VectorInfo *VI : InterleavedLoad) {
     // Generate a set of all load instructions to be combined
-    LIs.insert(VI.LIs.begin(), VI.LIs.end());
+    LIs.insert(VI->LIs.begin(), VI->LIs.end());
 
     // Generate a set of all instructions taking part in load
     // interleaved. This list excludes the instructions necessary for the
     // polynomial construction.
-    Is.insert(VI.Is.begin(), VI.Is.end());
+    Is.insert(VI->Is.begin(), VI->Is.end());
 
     // Generate the set of the final ShuffleVectorInst.
-    SVIs.insert(VI.SVI);
+    SVIs.insert(VI->SVI);
   }
 
   // There is nothing to combine.
@@ -1189,18 +1184,32 @@ bool InterleavedLoadCombineImpl::combine(std::list<VectorInfo> &InterleavedLoad,
   }
   assert(!LIs.empty() && "There are no LoadInst to combine");
 
+  // The wide load reads the whole span at once and is inserted at the first
+  // load, so widening must not pull a later load across an instruction that may
+  // not transfer control to its successor (e.g. a call that might not return or
+  // might throw). Otherwise a load the original program reached only
+  // conditionally would run unconditionally. All combined loads are in one
+  // block, so check the span from the first to the last is barrier-free.
+  LoadInst *Last = First;
+  for (auto *LI : LIs)
+    if (Last->comesBefore(LI))
+      Last = LI;
+  if (!isGuaranteedToTransferExecutionToSuccessor(First->getIterator(),
+                                                  Last->getIterator()))
+    return false;
+
   // It is necessary that insertion point dominates all final ShuffleVectorInst.
-  for (auto &VI : InterleavedLoad) {
-    if (!DT.dominates(InsertionPoint, VI.SVI))
+  for (const VectorInfo *VI : InterleavedLoad) {
+    if (!DT.dominates(InsertionPoint, VI->SVI))
       return false;
   }
 
   // All checks are done. Add instructions detectable by InterleavedAccessPass
   // The old instruction will are left dead.
   IRBuilder<> Builder(InsertionPoint);
-  Type *ETy = InterleavedLoad.front().SVI->getType()->getElementType();
+  Type *ETy = InterleavedLoad.front()->SVI->getType()->getElementType();
   unsigned ElementsPerSVI =
-      cast<FixedVectorType>(InterleavedLoad.front().SVI->getType())
+      cast<FixedVectorType>(InterleavedLoad.front()->SVI->getType())
           ->getNumElements();
   FixedVectorType *ILTy = FixedVectorType::get(ETy, Factor * ElementsPerSVI);
 
@@ -1213,13 +1222,9 @@ bool InterleavedLoadCombineImpl::combine(std::list<VectorInfo> &InterleavedLoad,
     return false;
   }
 
-  // Create a pointer cast for the wide load.
-  auto CI = Builder.CreatePointerCast(InsertionPoint->getOperand(0),
-                                      ILTy->getPointerTo(),
-                                      "interleaved.wide.ptrcast");
-
   // Create the wide load and update the MemorySSA.
-  auto LI = Builder.CreateAlignedLoad(ILTy, CI, InsertionPoint->getAlign(),
+  auto Ptr = InsertionPoint->getPointerOperand();
+  auto LI = Builder.CreateAlignedLoad(ILTy, Ptr, InsertionPoint->getAlign(),
                                       "interleaved.wide.load");
   auto MSSAU = MemorySSAUpdater(&MSSA);
   MemoryUse *MSSALoad = cast<MemoryUse>(MSSAU.createMemoryAccessBefore(
@@ -1228,14 +1233,14 @@ bool InterleavedLoadCombineImpl::combine(std::list<VectorInfo> &InterleavedLoad,
 
   // Create the final SVIs and replace all uses.
   int i = 0;
-  for (auto &VI : InterleavedLoad) {
+  for (const VectorInfo *VI : InterleavedLoad) {
     SmallVector<int, 4> Mask;
     for (unsigned j = 0; j < ElementsPerSVI; j++)
       Mask.push_back(i + j * Factor);
 
-    Builder.SetInsertPoint(VI.SVI);
+    Builder.SetInsertPoint(VI->SVI);
     auto SVI = Builder.CreateShuffleVector(LI, Mask, "interleaved.shuffle");
-    VI.SVI->replaceAllUsesWith(SVI);
+    VI->SVI->replaceAllUsesWith(SVI);
     i++;
   }
 
@@ -1254,45 +1259,97 @@ bool InterleavedLoadCombineImpl::run() {
   bool changed = false;
   unsigned MaxFactor = TLI.getMaxSupportedInterleaveFactor();
 
-  auto &DL = F.getParent()->getDataLayout();
+  auto &DL = F.getDataLayout();
 
   // Start with the highest factor to avoid combining and recombining.
   for (unsigned Factor = MaxFactor; Factor >= 2; Factor--) {
-    std::list<VectorInfo> Candidates;
-
+    // Process one block at a time. A group can only be combined when all of its
+    // loads are in a single block, so keeping the candidate list and the offset
+    // index per block keeps both small.
     for (BasicBlock &BB : F) {
+      std::list<VectorInfo> Candidates;
       for (Instruction &I : BB) {
-        if (auto SVI = dyn_cast<ShuffleVectorInst>(&I)) {
-          // We don't support scalable vectors in this pass.
-          if (isa<ScalableVectorType>(SVI->getType()))
-            continue;
+        auto *SVI = dyn_cast<ShuffleVectorInst>(&I);
+        if (!SVI)
+          continue;
 
-          Candidates.emplace_back(cast<FixedVectorType>(SVI->getType()));
+        // We don't support scalable vectors in this pass.
+        if (isa<ScalableVectorType>(SVI->getType()))
+          continue;
 
-          if (!VectorInfo::computeFromSVI(SVI, Candidates.back(), DL)) {
-            Candidates.pop_back();
-            continue;
-          }
+        Candidates.emplace_back(cast<FixedVectorType>(SVI->getType()));
+        VectorInfo &C = Candidates.back();
 
-          if (!Candidates.back().isInterleaved(Factor, DL)) {
-            Candidates.pop_back();
-          }
+        if (!VectorInfo::computeFromSVI(SVI, C, DL) ||
+            !C.isInterleaved(Factor, DL)) {
+          Candidates.pop_back();
+          continue;
+        }
+
+        // Only combine loads that live in the block being processed. Widening
+        // over loads from another block could read memory that is only
+        // conditionally accessed.
+        if (C.BB != &BB)
+          Candidates.pop_back();
+      }
+
+      // Index every candidate whose first element has a provably exact offset
+      // by its address key. Finding an interleaved group then only needs
+      // lookups of the neighbouring keys. The key embeds a Polynomial, which
+      // has no natural empty/tombstone value, so use std::unordered_map rather
+      // than DenseMap.
+      std::unordered_map<OffsetKey, SmallVector<VectorInfo *, 1>, OffsetKeyHash>
+          OffsetMap;
+      for (VectorInfo &C : Candidates) {
+        if (!C.EI[0].Ofs.isProvenExact())
+          continue;
+        OffsetMap[{C.PV, C.VTy, C.EI[0].Ofs}].push_back(&C);
+      }
+
+      // Candidates already combined (a whole group) or dropped (a failed base).
+      SmallPtrSet<const VectorInfo *, 16> Consumed;
+
+      // Return the last still-available candidate registered under Key.
+      // Iterating in reverse makes a later duplicate offset win over an earlier
+      // one.
+      auto FindNeighbor = [&](const OffsetKey &Key) -> VectorInfo * {
+        auto It = OffsetMap.find(Key);
+        if (It == OffsetMap.end())
+          return nullptr;
+        for (VectorInfo *Cand : reverse(It->second))
+          if (!Consumed.contains(Cand))
+            return Cand;
+        return nullptr;
+      };
+
+      for (VectorInfo &C0 : Candidates) {
+        if (Consumed.contains(&C0) || !C0.EI[0].Ofs.isProvenExact())
+          continue;
+
+        unsigned Size = DL.getTypeAllocSize(C0.VTy->getElementType());
+
+        // Collect C0 and its Factor - 1 consecutive neighbours.
+        SmallVector<VectorInfo *, 4> Group;
+        Group.push_back(&C0);
+        for (unsigned i = 1; i < Factor; i++) {
+          VectorInfo *Nb =
+              FindNeighbor({C0.PV, C0.VTy, C0.EI[0].Ofs + i * Size});
+          if (!Nb)
+            break;
+          Group.push_back(Nb);
+        }
+        if (Group.size() != Factor)
+          continue;
+
+        if (combine(Group, ORE)) {
+          // The whole group is combined and left dead.
+          Consumed.insert(Group.begin(), Group.end());
+          changed = true;
+        } else {
+          // Drop only the base; keep its neighbours available as future bases.
+          Consumed.insert(&C0);
         }
       }
-    }
-
-    std::list<VectorInfo> InterleavedLoad;
-    while (findPattern(Candidates, InterleavedLoad, Factor, DL)) {
-      if (combine(InterleavedLoad, ORE)) {
-        changed = true;
-      } else {
-        // Remove the first element of the Interleaved Load but put the others
-        // back on the list and continue searching
-        Candidates.splice(Candidates.begin(), InterleavedLoad,
-                          std::next(InterleavedLoad.begin()),
-                          InterleavedLoad.end());
-      }
-      InterleavedLoad.clear();
     }
   }
 
@@ -1305,9 +1362,7 @@ namespace {
 struct InterleavedLoadCombine : public FunctionPass {
   static char ID;
 
-  InterleavedLoadCombine() : FunctionPass(ID) {
-    initializeInterleavedLoadCombinePass(*PassRegistry::getPassRegistry());
-  }
+  InterleavedLoadCombine() : FunctionPass(ID) {}
 
   StringRef getPassName() const override {
     return "Interleaved Load Combine Pass";
@@ -1327,6 +1382,7 @@ struct InterleavedLoadCombine : public FunctionPass {
     return InterleavedLoadCombineImpl(
                F, getAnalysis<DominatorTreeWrapperPass>().getDomTree(),
                getAnalysis<MemorySSAWrapperPass>().getMSSA(),
+               getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F),
                TPC->getTM<TargetMachine>())
         .run();
   }
@@ -1334,12 +1390,23 @@ struct InterleavedLoadCombine : public FunctionPass {
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<MemorySSAWrapperPass>();
     AU.addRequired<DominatorTreeWrapperPass>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
     FunctionPass::getAnalysisUsage(AU);
   }
 
 private:
 };
 } // anonymous namespace
+
+PreservedAnalyses
+InterleavedLoadCombinePass::run(Function &F, FunctionAnalysisManager &FAM) {
+
+  auto &DT = FAM.getResult<DominatorTreeAnalysis>(F);
+  auto &MemSSA = FAM.getResult<MemorySSAAnalysis>(F).getMSSA();
+  auto &TTI = FAM.getResult<TargetIRAnalysis>(F);
+  bool Changed = InterleavedLoadCombineImpl(F, DT, MemSSA, TTI, *TM).run();
+  return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+}
 
 char InterleavedLoadCombine::ID = 0;
 
@@ -1349,6 +1416,7 @@ INITIALIZE_PASS_BEGIN(
     false, false)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(MemorySSAWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_END(
     InterleavedLoadCombine, DEBUG_TYPE,
     "Combine interleaved loads into wide loads and shufflevector instructions",

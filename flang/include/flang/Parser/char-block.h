@@ -11,13 +11,12 @@
 
 // Describes a contiguous block of characters; does not own their storage.
 
-#include "flang/Common/interval.h"
+#include "llvm/ADT/StringRef.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
-#include <iosfwd>
 #include <string>
-#include <utility>
 
 namespace llvm {
 class raw_ostream;
@@ -25,118 +24,74 @@ class raw_ostream;
 
 namespace Fortran::parser {
 
-class CharBlock {
+class CharBlock : public llvm::StringRef {
 public:
-  constexpr CharBlock() {}
-  constexpr CharBlock(const char *x, std::size_t n = 1) : interval_{x, n} {}
-  constexpr CharBlock(const char *b, const char *ep1)
-      : interval_{b, static_cast<std::size_t>(ep1 - b)} {}
-  CharBlock(const std::string &s) : interval_{s.data(), s.size()} {}
-  constexpr CharBlock(const CharBlock &) = default;
-  constexpr CharBlock(CharBlock &&) = default;
-  constexpr CharBlock &operator=(const CharBlock &) = default;
-  constexpr CharBlock &operator=(CharBlock &&) = default;
+  using llvm::StringRef::StringRef;
+  CharBlock(const char *begin, const char *end)
+      : llvm::StringRef(begin, end - begin) {}
+  CharBlock(const char *begin) : llvm::StringRef(begin, 1) {}
 
-  constexpr bool empty() const { return interval_.empty(); }
-  constexpr std::size_t size() const { return interval_.size(); }
-  constexpr const char *begin() const { return interval_.start(); }
-  constexpr const char *end() const {
-    return interval_.start() + interval_.size();
-  }
-  constexpr const char &operator[](std::size_t j) const {
-    return interval_.start()[j];
-  }
-
+  // Checks whether the address range of "that" is contained in the
+  // address range of "this".
   bool Contains(const CharBlock &that) const {
-    return interval_.Contains(that.interval_);
+    uintptr_t thisBegin{reinterpret_cast<uintptr_t>(begin())};
+    uintptr_t thisEnd{reinterpret_cast<uintptr_t>(end())};
+    uintptr_t thatBegin{reinterpret_cast<uintptr_t>(that.begin())};
+    uintptr_t thatEnd{reinterpret_cast<uintptr_t>(that.end())};
+    return thisBegin <= thatBegin && thatEnd <= thisEnd;
   }
 
   void ExtendToCover(const CharBlock &that) {
-    interval_.ExtendToCover(that.interval_);
+    if (empty()) {
+      *this = that;
+    } else if (!that.empty()) {
+      *this = CharBlock(
+          std::min(begin(), that.begin()), std::max(end(), that.end()));
+    }
   }
 
+  // Returns the block's first non-blank character, if it has
+  // one; otherwise ' '.
   char FirstNonBlank() const {
+    size_t idx{LocateFirstNonBlank()};
+    return idx != npos ? data()[idx] : ' ';
+  }
+
+  // Returns the block's only non-blank character, if it has
+  // exactly one non-blank character; otherwise ' '.
+  char OnlyNonBlank() const {
+    char result{' '};
     for (char ch : *this) {
       if (ch != ' ' && ch != '\t') {
-        return ch;
+        if (result == ' ') {
+          result = ch;
+        } else {
+          return ' ';
+        }
       }
     }
-    return ' '; // non no-blank character
+    return result;
   }
 
-  bool IsBlank() const { return FirstNonBlank() == ' '; }
-
-  std::string ToString() const {
-    return std::string{interval_.start(), interval_.size()};
+  size_t CountLeadingBlanks() const {
+    size_t idx{LocateFirstNonBlank()};
+    return idx != npos ? idx : size();
   }
+
+  bool IsBlank() const { return LocateFirstNonBlank() == npos; }
+
+  std::string ToString() const { return str(); }
 
   // Convert to string, stopping early at any embedded '\0'.
   std::string NULTerminatedToString() const {
-    return std::string{interval_.start(),
-        /*not in std::*/ strnlen(interval_.start(), interval_.size())};
+    return std::string{begin(), strnlen(begin(), size())};
   }
-
-  bool operator<(const CharBlock &that) const { return Compare(that) < 0; }
-  bool operator<=(const CharBlock &that) const { return Compare(that) <= 0; }
-  bool operator==(const CharBlock &that) const { return Compare(that) == 0; }
-  bool operator!=(const CharBlock &that) const { return Compare(that) != 0; }
-  bool operator>=(const CharBlock &that) const { return Compare(that) >= 0; }
-  bool operator>(const CharBlock &that) const { return Compare(that) > 0; }
-
-  bool operator<(const char *that) const { return Compare(that) < 0; }
-  bool operator<=(const char *that) const { return Compare(that) <= 0; }
-  bool operator==(const char *that) const { return Compare(that) == 0; }
-  bool operator!=(const char *that) const { return Compare(that) != 0; }
-  bool operator>=(const char *that) const { return Compare(that) >= 0; }
-  bool operator>(const char *that) const { return Compare(that) > 0; }
-
-  friend bool operator<(const char *, const CharBlock &);
-  friend bool operator<=(const char *, const CharBlock &);
-  friend bool operator==(const char *, const CharBlock &);
-  friend bool operator!=(const char *, const CharBlock &);
-  friend bool operator>=(const char *, const CharBlock &);
-  friend bool operator>(const char *, const CharBlock &);
 
 private:
-  int Compare(const CharBlock &that) const {
-    std::size_t bytes{std::min(size(), that.size())};
-    int cmp{std::memcmp(static_cast<const void *>(begin()),
-        static_cast<const void *>(that.begin()), bytes)};
-    if (cmp != 0) {
-      return cmp;
-    }
-    return size() < that.size() ? -1 : size() > that.size();
+  size_t LocateFirstNonBlank() const {
+    return find_if_not([](char c) { return c == ' ' || c == '\t'; });
   }
-
-  int Compare(const char *that) const {
-    std::size_t bytes{size()};
-    if (int cmp{std::strncmp(begin(), that, bytes)}) {
-      return cmp;
-    }
-    return that[bytes] == '\0' ? 0 : -1;
-  }
-
-  common::Interval<const char *> interval_{nullptr, 0};
 };
-
-inline bool operator<(const char *left, const CharBlock &right) {
-  return right > left;
-}
-inline bool operator<=(const char *left, const CharBlock &right) {
-  return right >= left;
-}
-inline bool operator==(const char *left, const CharBlock &right) {
-  return right == left;
-}
-inline bool operator!=(const char *left, const CharBlock &right) {
-  return right != left;
-}
-inline bool operator>=(const char *left, const CharBlock &right) {
-  return right <= left;
-}
-inline bool operator>(const char *left, const CharBlock &right) {
-  return right < left;
-}
 
 // An alternative comparator based on pointer values; use with care!
 struct CharBlockPointerComparator {

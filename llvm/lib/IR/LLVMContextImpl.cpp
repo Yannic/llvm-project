@@ -12,30 +12,19 @@
 
 #include "LLVMContextImpl.h"
 #include "AttributeImpl.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringMapEntry.h"
-#include "llvm/ADT/iterator.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/IR/LLVMRemarkStreamer.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/OptBisect.h"
 #include "llvm/IR/Type.h"
-#include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/Remarks/RemarkStreamer.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/TypeSize.h"
 #include <cassert>
-#include <utility>
 
 using namespace llvm;
-
-static cl::opt<bool>
-    OpaquePointersCL("opaque-pointers", cl::desc("Use opaque pointers"),
-                     cl::init(true));
 
 LLVMContextImpl::LLVMContextImpl(LLVMContext &C)
     : DiagHandler(std::make_unique<DiagnosticHandler>()),
@@ -44,15 +33,29 @@ LLVMContextImpl::LLVMContextImpl(LLVMContext &C)
       FloatTy(C, Type::FloatTyID), DoubleTy(C, Type::DoubleTyID),
       MetadataTy(C, Type::MetadataTyID), TokenTy(C, Type::TokenTyID),
       X86_FP80Ty(C, Type::X86_FP80TyID), FP128Ty(C, Type::FP128TyID),
-      PPC_FP128Ty(C, Type::PPC_FP128TyID), X86_MMXTy(C, Type::X86_MMXTyID),
-      X86_AMXTy(C, Type::X86_AMXTyID), Int1Ty(C, 1), Int8Ty(C, 8),
-      Int16Ty(C, 16), Int32Ty(C, 32), Int64Ty(C, 64), Int128Ty(C, 128) {
-  if (OpaquePointersCL.getNumOccurrences()) {
-    OpaquePointers = OpaquePointersCL;
-  }
+      PPC_FP128Ty(C, Type::PPC_FP128TyID), X86_AMXTy(C, Type::X86_AMXTyID),
+      Int1Ty(C, 1), Int8Ty(C, 8), Int16Ty(C, 16), Int32Ty(C, 32),
+      Int64Ty(C, 64), Int128Ty(C, 128), Byte1Ty(C, 1), Byte8Ty(C, 8),
+      Byte16Ty(C, 16), Byte32Ty(C, 32), Byte64Ty(C, 64), Byte128Ty(C, 128) {}
+
+void LLVMContextImpl::getAllMetadataNodes(
+    SmallVectorImpl<MDNode *> &Nodes) const {
+  Nodes.append(DistinctMDNodes.begin(), DistinctMDNodes.end());
+#define HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)                                    \
+  Nodes.append(CLASS##s.begin(), CLASS##s.end());
+#include "llvm/IR/Metadata.def"
+  Nodes.append(TemporaryMDNodes.begin(), TemporaryMDNodes.end());
 }
 
 LLVMContextImpl::~LLVMContextImpl() {
+#ifndef NDEBUG
+  // Check that any variable location records that fell off the end of a block
+  // when it's terminator was removed were eventually replaced. This assertion
+  // firing indicates that DbgVariableRecords went missing during the lifetime
+  // of the LLVMContext.
+  assert(TrailingDbgRecords.empty() && "DbgRecords in blocks not cleaned");
+#endif
+
   // NOTE: We need to delete the contents of OwnedModules, but Module's dtor
   // will call LLVMContextImpl::removeModule, thus invalidating iterators into
   // the container. Avoid iterators during this operation:
@@ -61,22 +64,14 @@ LLVMContextImpl::~LLVMContextImpl() {
 
 #ifndef NDEBUG
   // Check for metadata references from leaked Values.
-  for (auto &Pair : ValueMetadata)
-    Pair.first->dump();
-  assert(ValueMetadata.empty() && "Values with metadata have been leaked");
+  assert((Metadatas.empty() || MetadataRecycleSize + 1 == Metadatas.size()) &&
+         "Values with metadata have been leaked");
 #endif
 
   // Drop references for MDNodes.  Do this before Values get deleted to avoid
   // unnecessary RAUW when nodes are still unresolved.
-  for (auto *I : DistinctMDNodes) {
-    // We may have DIArgList that were uniqued, and as it has a custom
-    // implementation of dropAllReferences, it needs to be explicitly invoked.
-    if (auto *AL = dyn_cast<DIArgList>(I)) {
-      AL->dropAllReferences();
-      continue;
-    }
+  for (auto *I : DistinctMDNodes)
     I->dropAllReferences();
-  }
 #define HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)                                    \
   for (auto *I : CLASS##s)                                                     \
     I->dropAllReferences();
@@ -87,10 +82,20 @@ LLVMContextImpl::~LLVMContextImpl() {
     Pair.second->dropUsers();
   for (auto &Pair : MetadataAsValues)
     Pair.second->dropUse();
+  // Do not untrack ValueAsMetadata references for DIArgLists, as they have
+  // already been more efficiently untracked above.
+  for (DIArgList *AL : DIArgLists) {
+    AL->dropAllReferences(/* Untrack */ false);
+    delete AL;
+  }
+  DIArgLists.clear();
 
   // Destroy MDNodes.
   for (MDNode *I : DistinctMDNodes)
     I->deleteAsSubclass();
+
+  for (auto *ConstantRangeListAttribute : ConstantRangeListAttributes)
+    ConstantRangeListAttribute->~ConstantRangeListAttributeImpl();
 #define HANDLE_MDNODE_LEAF_UNIQUABLE(CLASS)                                    \
   for (CLASS * I : CLASS##s)                                                   \
     delete I;
@@ -109,6 +114,7 @@ LLVMContextImpl::~LLVMContextImpl() {
   ArrayConstants.freeConstants();
   StructConstants.freeConstants();
   VectorConstants.freeConstants();
+  ConstantPtrAuths.freeConstants();
   InlineAsms.freeConstants();
 
   CAZConstants.clear();
@@ -116,8 +122,16 @@ LLVMContextImpl::~LLVMContextImpl() {
   CTNConstants.clear();
   UVConstants.clear();
   PVConstants.clear();
+  IntZeroConstants.clear();
+  IntOneConstants.clear();
   IntConstants.clear();
+  IntSplatConstants.clear();
+  ByteZeroConstants.clear();
+  ByteOneConstants.clear();
+  ByteConstants.clear();
+  ByteSplatConstants.clear();
   FPConstants.clear();
+  FPSplatConstants.clear();
   CDSConstants.clear();
 
   // Destroy attribute node lists.
@@ -141,33 +155,6 @@ LLVMContextImpl::~LLVMContextImpl() {
   // Destroy ValuesAsMetadata.
   for (auto &Pair : ValuesAsMetadata)
     delete Pair.second;
-}
-
-void LLVMContextImpl::dropTriviallyDeadConstantArrays() {
-  SmallSetVector<ConstantArray *, 4> WorkList;
-
-  // When ArrayConstants are of substantial size and only a few in them are
-  // dead, starting WorkList with all elements of ArrayConstants can be
-  // wasteful. Instead, starting WorkList with only elements that have empty
-  // uses.
-  for (ConstantArray *C : ArrayConstants)
-    if (C->use_empty())
-      WorkList.insert(C);
-
-  while (!WorkList.empty()) {
-    ConstantArray *C = WorkList.pop_back_val();
-    if (C->use_empty()) {
-      for (const Use &Op : C->operands()) {
-        if (auto *COp = dyn_cast<ConstantArray>(Op))
-          WorkList.insert(COp);
-      }
-      C->destroyConstant();
-    }
-  }
-}
-
-void Module::dropTriviallyDeadConstantArrays() {
-  Context.pImpl->dropTriviallyDeadConstantArrays();
 }
 
 namespace llvm {
@@ -203,7 +190,7 @@ unsigned MDNodeOpsKey::calculateHash(MDNode *N, unsigned Offset) {
 }
 
 unsigned MDNodeOpsKey::calculateHash(ArrayRef<Metadata *> Ops) {
-  return hash_combine_range(Ops.begin(), Ops.end());
+  return hash_combine_range(Ops);
 }
 
 StringMapEntry<uint32_t> *LLVMContextImpl::getOrInsertBundleTag(StringRef Tag) {
@@ -237,6 +224,16 @@ void LLVMContextImpl::getSyncScopeNames(
     SSNs[SSE.second] = SSE.first();
 }
 
+std::optional<StringRef>
+LLVMContextImpl::getSyncScopeName(SyncScope::ID Id) const {
+  for (const auto &SSE : SSC) {
+    if (SSE.second != Id)
+      continue;
+    return SSE.first();
+  }
+  return std::nullopt;
+}
+
 /// Gets the OptPassGate for this LLVMContextImpl, which defaults to the
 /// singleton OptBisect if not explicitly set.
 OptPassGate &LLVMContextImpl::getOptPassGate() const {
@@ -247,16 +244,4 @@ OptPassGate &LLVMContextImpl::getOptPassGate() const {
 
 void LLVMContextImpl::setOptPassGate(OptPassGate& OPG) {
   this->OPG = &OPG;
-}
-
-bool LLVMContextImpl::getOpaquePointers() {
-  if (LLVM_UNLIKELY(!OpaquePointers))
-    OpaquePointers = OpaquePointersCL;
-  return *OpaquePointers;
-}
-
-void LLVMContextImpl::setOpaquePointers(bool OP) {
-  assert((!OpaquePointers || *OpaquePointers == OP) &&
-         "Cannot change opaque pointers mode once set");
-  OpaquePointers = OP;
 }

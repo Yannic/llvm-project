@@ -2,14 +2,14 @@
 // -fgpu-flush-denormals-to-zero. This should be translated to
 // -fdenormal-fp-math-f32=preserve-sign
 
-// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fgpu-flush-denormals-to-zero -nocudainc -nocudalib %s 2>&1 | FileCheck -check-prefix=FTZ %s
-// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fno-gpu-flush-denormals-to-zero -nocudainc -nocudalib %s 2>&1 | FileCheck -check-prefix=NOFTZ %s
+// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fgpu-flush-denormals-to-zero -nocudainc -nocudalib --cuda-path=%S/Inputs/CUDA/usr/local/cuda %s 2>&1 | FileCheck -check-prefix=FTZ %s
+// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fno-gpu-flush-denormals-to-zero -nocudainc -nocudalib --cuda-path=%S/Inputs/CUDA/usr/local/cuda %s 2>&1 | FileCheck -check-prefix=NOFTZ %s
 // RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_70 -fgpu-flush-denormals-to-zero -nocudainc -nocudalib %s 2>&1 | FileCheck -check-prefix=FTZ %s
 // RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_70 -fno-gpu-flush-denormals-to-zero -nocudainc -nocudalib %s 2>&1 | FileCheck -check-prefix=NOFTZ %s
 
 // Test alias options -f[no-]cuda-flush-denormals-to-zero
-// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fcuda-flush-denormals-to-zero -nocudainc -nocudalib %s 2>&1 | FileCheck -check-prefix=FTZ %s
-// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fno-cuda-flush-denormals-to-zero -nocudainc -nocudalib %s 2>&1 | FileCheck -check-prefix=NOFTZ %s
+// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fcuda-flush-denormals-to-zero -nocudainc -nocudalib --cuda-path=%S/Inputs/CUDA/usr/local/cuda %s 2>&1 | FileCheck -check-prefix=FTZ %s
+// RUN: %clang -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=sm_20 -fno-cuda-flush-denormals-to-zero -nocudainc -nocudalib --cuda-path=%S/Inputs/CUDA/usr/local/cuda %s 2>&1 | FileCheck -check-prefix=NOFTZ %s
 
 // Test explicit argument, with CUDA offload kind
 // RUN: %clang -x hip -### --target=x86_64-linux-gnu -c -march=haswell --cuda-gpu-arch=gfx803 -fgpu-flush-denormals-to-zero -nocudainc -nogpulib %s 2>&1 | FileCheck -check-prefix=FTZ %s
@@ -46,11 +46,11 @@
 // NOFTZ-NOT: "-fdenormal-fp-math-f32"
 
 // MIXED-DEFAULT-MODE-NOT: -denormal-fp-math
-// MIXED-DEFAULT-MODE: "-fdenormal-fp-math-f32=preserve-sign,preserve-sign"
-// MIXED-DEFAULT-MODE-SAME: "-target-cpu" "gfx803"
+// MIXED-DEFAULT-MODE: "-triple" "amdgpu8.03
+// MIXED-DEFAULT-MODE-SAME: "-fdenormal-fp-math-f32=preserve-sign,preserve-sign"
 // MIXED-DEFAULT-MODE-NOT: -denormal-fp-math
 
-// FTZX2: "-fdenormal-fp-math-f32=preserve-sign,preserve-sign"
-// FTZX2-SAME: "-target-cpu" "gfx803"
-// FTZX2: "-fdenormal-fp-math-f32=preserve-sign,preserve-sign"
-// FTZX2-SAME: "-target-cpu" "gfx900"
+// FTZX2: "-triple" "amdgpu8.03
+// FTZX2-SAME: "-fdenormal-fp-math-f32=preserve-sign,preserve-sign"
+// FTZX2: "-triple" "amdgpu9.00
+// FTZX2-SAME: "-fdenormal-fp-math-f32=preserve-sign,preserve-sign"

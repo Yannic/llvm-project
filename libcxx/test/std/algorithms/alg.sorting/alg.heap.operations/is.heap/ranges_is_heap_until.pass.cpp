@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <concepts>
 #include <functional>
 #include <ranges>
@@ -72,8 +73,8 @@ static_assert(!HasIsHeapUntilRange<RandomAccessRangeBadIndex>);
 // !indirect_strict_weak_order<Comp, projected<iterator_t<R>, Proj>>
 static_assert(!HasIsHeapUntilRange<R<NoComparator*>>);
 
-template <class Iter, class Sent, size_t N>
-constexpr void test_one(std::array<int, N> input, size_t until_index) {
+template <class Iter, class Sent, std::size_t N>
+constexpr void test_one(std::array<int, N> input, std::size_t until_index) {
   auto begin = Iter(input.data());
   auto end = Sent(Iter(input.data() + input.size()));
 
@@ -99,6 +100,12 @@ constexpr void test_iter_sent() {
   test_one<Iter, Sent>(std::array{2, 1}, 2);
   // 2-element sequence, not a heap.
   test_one<Iter, Sent>(std::array{1, 2}, 1);
+  // 3-element sequence, a heap.
+  test_one<Iter, Sent>(std::array{3, 2, 1}, 3);
+  // 3-element sequence, LHS not a heap.
+  test_one<Iter, Sent>(std::array{2, 3, 1}, 1);
+  // 3-element sequence, RHS not a heap.
+  test_one<Iter, Sent>(std::array{2, 1, 3}, 2);
   // Longer sequence, a heap.
   test_one<Iter, Sent>(std::array{8, 6, 7, 3, 4, 1, 5, 2}, 8);
   // Longer sequence, not a heap.

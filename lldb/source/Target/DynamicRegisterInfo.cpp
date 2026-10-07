@@ -7,8 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Target/DynamicRegisterInfo.h"
-#include "lldb/Core/StreamFile.h"
 #include "lldb/DataFormatters/FormatManager.h"
+#include "lldb/Host/StreamFile.h"
 #include "lldb/Interpreter/OptionArgParser.h"
 #include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/LLDBLog.h"
@@ -20,10 +20,17 @@
 using namespace lldb;
 using namespace lldb_private;
 
-DynamicRegisterInfo::DynamicRegisterInfo(
-    const lldb_private::StructuredData::Dictionary &dict,
-    const lldb_private::ArchSpec &arch) {
-  SetRegisterInfo(dict, arch);
+std::unique_ptr<DynamicRegisterInfo>
+DynamicRegisterInfo::Create(const StructuredData::Dictionary &dict,
+                            const ArchSpec &arch) {
+  auto dyn_reg_info = std::make_unique<DynamicRegisterInfo>();
+  if (!dyn_reg_info)
+    return nullptr;
+
+  if (dyn_reg_info->SetRegisterInfo(dict, arch) == 0)
+    return nullptr;
+
+  return dyn_reg_info;
 }
 
 DynamicRegisterInfo::DynamicRegisterInfo(DynamicRegisterInfo &&info) {
@@ -40,7 +47,6 @@ void DynamicRegisterInfo::MoveFrom(DynamicRegisterInfo &&info) {
   m_regs = std::move(info.m_regs);
   m_sets = std::move(info.m_sets);
   m_set_reg_nums = std::move(info.m_set_reg_nums);
-  m_set_names = std::move(info.m_set_names);
   m_value_regs_map = std::move(info.m_value_regs_map);
   m_invalidate_regs_map = std::move(info.m_invalidate_regs_map);
 
@@ -50,7 +56,7 @@ void DynamicRegisterInfo::MoveFrom(DynamicRegisterInfo &&info) {
   if (m_finalized) {
     const size_t num_sets = m_sets.size();
     for (size_t set = 0; set < num_sets; ++set)
-      m_sets[set].registers = m_set_reg_nums[set].data();
+      m_sets[set].m_set.registers = m_set_reg_nums[set].data();
   }
 
   info.Clear();
@@ -137,21 +143,21 @@ llvm::Expected<uint32_t> DynamicRegisterInfo::ByteOffsetFromComposite(
   uint32_t composite_offset = UINT32_MAX;
   for (uint32_t composite_idx = 0; composite_idx < num_composite_regs;
        ++composite_idx) {
-    ConstString composite_reg_name;
-    if (!composite_reg_list.GetItemAtIndexAsString(composite_idx,
-                                                   composite_reg_name, nullptr))
+    std::optional<llvm::StringRef> maybe_composite_reg_name =
+        composite_reg_list.GetItemAtIndexAsString(composite_idx);
+    if (!maybe_composite_reg_name)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "\"composite\" list value is not a Python string at index %d",
           composite_idx);
 
     const RegisterInfo *composite_reg_info =
-        GetRegisterInfo(composite_reg_name.GetStringRef());
+        GetRegisterInfo(*maybe_composite_reg_name);
     if (!composite_reg_info)
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "failed to find composite register by name: \"%s\"",
-          composite_reg_name.GetCString());
+          maybe_composite_reg_name->str().c_str());
 
     composite_offset =
         std::min(composite_offset, composite_reg_info->byte_offset);
@@ -199,9 +205,10 @@ DynamicRegisterInfo::SetRegisterInfo(const StructuredData::Dictionary &dict,
   if (dict.GetValueForKeyAsArray("sets", sets)) {
     const uint32_t num_sets = sets->GetSize();
     for (uint32_t i = 0; i < num_sets; ++i) {
-      ConstString set_name;
-      if (sets->GetItemAtIndexAsString(i, set_name) && !set_name.IsEmpty()) {
-        m_sets.push_back({set_name.AsCString(), nullptr, 0, nullptr});
+      std::optional<llvm::StringRef> maybe_set_name =
+          sets->GetItemAtIndexAsString(i);
+      if (maybe_set_name && !maybe_set_name->empty()) {
+        m_sets.push_back({maybe_set_name->str(), std::string(), 0, nullptr});
       } else {
         Clear();
         printf("error: register sets must have valid names\n");
@@ -222,33 +229,36 @@ DynamicRegisterInfo::SetRegisterInfo(const StructuredData::Dictionary &dict,
   //        InvalidateNameMap;
   //        InvalidateNameMap invalidate_map;
   for (uint32_t i = 0; i < num_regs; ++i) {
-    StructuredData::Dictionary *reg_info_dict = nullptr;
-    if (!regs->GetItemAtIndexAsDictionary(i, reg_info_dict)) {
+    std::optional<StructuredData::Dictionary *> maybe_reg_info_dict =
+        regs->GetItemAtIndexAsDictionary(i);
+    if (!maybe_reg_info_dict) {
       Clear();
       printf("error: items in the 'registers' array must be dictionaries\n");
       regs->DumpToStdout();
       return 0;
     }
+    StructuredData::Dictionary *reg_info_dict = *maybe_reg_info_dict;
 
     // { 'name':'rcx'       , 'bitsize' :  64, 'offset' :  16,
     // 'encoding':'uint' , 'format':'hex'         , 'set': 0, 'ehframe' : 2,
     // 'dwarf' : 2, 'generic':'arg4', 'alt-name':'arg4', },
     RegisterInfo reg_info;
-    std::vector<uint32_t> value_regs;
-    std::vector<uint32_t> invalidate_regs;
     memset(&reg_info, 0, sizeof(reg_info));
 
-    ConstString name_val;
-    ConstString alt_name_val;
-    if (!reg_info_dict->GetValueForKeyAsString("name", name_val, nullptr)) {
+    llvm::StringRef name_val;
+    if (!reg_info_dict->GetValueForKeyAsString("name", name_val)) {
       Clear();
       printf("error: registers must have valid names and offsets\n");
       reg_info_dict->DumpToStdout();
       return 0;
     }
-    reg_info.name = name_val.GetCString();
-    reg_info_dict->GetValueForKeyAsString("alt-name", alt_name_val, nullptr);
-    reg_info.alt_name = alt_name_val.GetCString();
+    reg_info.name = ConstString(name_val).GetCString();
+
+    llvm::StringRef alt_name_val;
+    if (reg_info_dict->GetValueForKeyAsString("alt-name", alt_name_val))
+      reg_info.alt_name = ConstString(alt_name_val).GetCString();
+    else
+      reg_info.alt_name = nullptr;
 
     llvm::Expected<uint32_t> byte_offset =
         ByteOffsetFromRegInfoDict(i, *reg_info_dict, byte_order);
@@ -262,7 +272,7 @@ DynamicRegisterInfo::SetRegisterInfo(const StructuredData::Dictionary &dict,
       return 0;
     }
 
-    int64_t bitsize = 0;
+    uint64_t bitsize = 0;
     if (!reg_info_dict->GetValueForKeyAsInteger("bitsize", bitsize)) {
       Clear();
       printf("error: invalid or missing 'bitsize' key/value pair in register "
@@ -296,7 +306,7 @@ DynamicRegisterInfo::SetRegisterInfo(const StructuredData::Dictionary &dict,
                                              eEncodingUint);
 
     size_t set = 0;
-    if (!reg_info_dict->GetValueForKeyAsInteger<size_t>("set", set, -1) ||
+    if (!reg_info_dict->GetValueForKeyAsInteger("set", set) ||
         set >= m_sets.size()) {
       Clear();
       printf("error: invalid 'set' value in register dictionary, valid values "
@@ -335,12 +345,10 @@ DynamicRegisterInfo::SetRegisterInfo(const StructuredData::Dictionary &dict,
       const size_t num_regs = invalidate_reg_list->GetSize();
       if (num_regs > 0) {
         for (uint32_t idx = 0; idx < num_regs; ++idx) {
-          ConstString invalidate_reg_name;
-          uint64_t invalidate_reg_num;
-          if (invalidate_reg_list->GetItemAtIndexAsString(
-                  idx, invalidate_reg_name)) {
+          if (auto maybe_invalidate_reg_name =
+                  invalidate_reg_list->GetItemAtIndexAsString(idx)) {
             const RegisterInfo *invalidate_reg_info =
-                GetRegisterInfo(invalidate_reg_name.GetStringRef());
+                GetRegisterInfo(*maybe_invalidate_reg_name);
             if (invalidate_reg_info) {
               m_invalidate_regs_map[i].push_back(
                   invalidate_reg_info->kinds[eRegisterKindLLDB]);
@@ -349,12 +357,13 @@ DynamicRegisterInfo::SetRegisterInfo(const StructuredData::Dictionary &dict,
               // format
               printf("error: failed to find a 'invalidate-regs' register for "
                      "\"%s\" while parsing register \"%s\"\n",
-                     invalidate_reg_name.GetCString(), reg_info.name);
+                     maybe_invalidate_reg_name->str().c_str(), reg_info.name);
             }
-          } else if (invalidate_reg_list->GetItemAtIndexAsInteger(
-                         idx, invalidate_reg_num)) {
-            if (invalidate_reg_num != UINT64_MAX)
-              m_invalidate_regs_map[i].push_back(invalidate_reg_num);
+          } else if (auto maybe_invalidate_reg_num =
+                         invalidate_reg_list->GetItemAtIndexAsInteger<uint64_t>(
+                             idx)) {
+            if (*maybe_invalidate_reg_num != UINT64_MAX)
+              m_invalidate_regs_map[i].push_back(*maybe_invalidate_reg_num);
             else
               printf("error: 'invalidate-regs' list value wasn't a valid "
                      "integer\n");
@@ -385,6 +394,9 @@ size_t DynamicRegisterInfo::SetRegisterInfo(
     const ArchSpec &arch) {
   assert(!m_finalized);
 
+  llvm::StringMap<uint32_t> set_name_to_idx;
+  uint32_t next_idx = 0;
+
   for (auto it : llvm::enumerate(regs)) {
     uint32_t local_regnum = it.index();
     const DynamicRegisterInfo::Register &reg = it.value();
@@ -401,23 +413,38 @@ size_t DynamicRegisterInfo::SetRegisterInfo(
       m_value_reg_offset_map[local_regnum] = reg.value_reg_offset;
     }
 
-    struct RegisterInfo reg_info {
-      reg.name.AsCString(), reg.alt_name.AsCString(), reg.byte_size,
-          reg.byte_offset, reg.encoding, reg.format,
-          {reg.regnum_ehframe, reg.regnum_dwarf, reg.regnum_generic,
-           reg.regnum_remote, local_regnum},
-          // value_regs and invalidate_regs are filled by Finalize()
-          nullptr, nullptr
-    };
+    struct RegisterInfo reg_info{
+        reg.name.AsCString(nullptr),
+        reg.alt_name.AsCString(nullptr),
+        reg.byte_size,
+        reg.byte_offset,
+        reg.encoding,
+        reg.format,
+        {reg.regnum_ehframe, reg.regnum_dwarf, reg.regnum_generic,
+         reg.regnum_remote, local_regnum},
+        // value_regs and invalidate_regs are filled by Finalize()
+        nullptr,
+        nullptr,
+        reg.register_type};
 
     m_regs.push_back(reg_info);
 
-    uint32_t set = GetRegisterSetIndexByName(reg.set_name, true);
-    assert(set < m_sets.size());
-    assert(set < m_set_reg_nums.size());
-    assert(set < m_set_names.size());
-    m_set_reg_nums[set].push_back(local_regnum);
-  };
+    uint32_t set_idx;
+    if (!set_name_to_idx.contains(reg.set_name)) {
+      set_idx = next_idx;
+
+      set_name_to_idx.insert({reg.set_name, next_idx++});
+      m_set_reg_nums.resize(m_set_reg_nums.size() + 1);
+      m_sets.push_back(
+          {reg.set_name.GetStringRef().str(), std::string(), 0, nullptr});
+    } else {
+      set_idx = set_name_to_idx.lookup(reg.set_name);
+    }
+
+    assert(set_idx < m_sets.size());
+    assert(set_idx < m_set_reg_nums.size());
+    m_set_reg_nums[set_idx].push_back(local_regnum);
+  }
 
   Finalize(arch);
   return m_regs.size();
@@ -431,8 +458,8 @@ void DynamicRegisterInfo::Finalize(const ArchSpec &arch) {
   const size_t num_sets = m_sets.size();
   for (size_t set = 0; set < num_sets; ++set) {
     assert(m_sets.size() == m_set_reg_nums.size());
-    m_sets[set].num_registers = m_set_reg_nums[set].size();
-    m_sets[set].registers = m_set_reg_nums[set].data();
+    m_sets[set].m_set.num_registers = m_set_reg_nums[set].size();
+    m_sets[set].m_set.registers = m_set_reg_nums[set].data();
   }
 
   // make sure value_regs are terminated with LLDB_INVALID_REGNUM
@@ -447,8 +474,8 @@ void DynamicRegisterInfo::Finalize(const ArchSpec &arch) {
   // Now update all value_regs with each register info as needed
   const size_t num_regs = m_regs.size();
   for (size_t i = 0; i < num_regs; ++i) {
-    if (m_value_regs_map.find(i) != m_value_regs_map.end())
-      m_regs[i].value_regs = m_value_regs_map[i].data();
+    if (auto it = m_value_regs_map.find(i); it != m_value_regs_map.end())
+      m_regs[i].value_regs = it->second.data();
     else
       m_regs[i].value_regs = nullptr;
   }
@@ -484,10 +511,7 @@ void DynamicRegisterInfo::Finalize(const ArchSpec &arch) {
        pos != end; ++pos) {
     if (pos->second.size() > 1) {
       llvm::sort(pos->second);
-      reg_num_collection::iterator unique_end =
-          std::unique(pos->second.begin(), pos->second.end());
-      if (unique_end != pos->second.end())
-        pos->second.erase(unique_end, pos->second.end());
+      pos->second.erase(llvm::unique(pos->second), pos->second.end());
     }
     assert(!pos->second.empty());
     if (pos->second.back() != LLDB_INVALID_REGNUM)
@@ -496,8 +520,9 @@ void DynamicRegisterInfo::Finalize(const ArchSpec &arch) {
 
   // Now update all invalidate_regs with each register info as needed
   for (size_t i = 0; i < num_regs; ++i) {
-    if (m_invalidate_regs_map.find(i) != m_invalidate_regs_map.end())
-      m_regs[i].invalidate_regs = m_invalidate_regs_map[i].data();
+    if (auto it = m_invalidate_regs_map.find(i);
+        it != m_invalidate_regs_map.end())
+      m_regs[i].invalidate_regs = it->second.data();
     else
       m_regs[i].invalidate_regs = nullptr;
   }
@@ -604,10 +629,11 @@ void DynamicRegisterInfo::Finalize(const ArchSpec &arch) {
   ConfigureOffsets();
 
   // Check if register info is reconfigurable
-  // AArch64 SVE register set has configurable register sizes
+  // AArch64 SVE register set has configurable register sizes, as does the ZA
+  // register that SME added (the streaming state of SME reuses the SVE state).
   if (arch.GetTriple().isAArch64()) {
     for (const auto &reg : m_regs) {
-      if (strcmp(reg.name, "vg") == 0) {
+      if ((strcmp(reg.name, "vg") == 0) || (strcmp(reg.name, "svg") == 0)) {
         m_is_reconfigurable = true;
         break;
       }
@@ -691,24 +717,8 @@ const RegisterInfo *DynamicRegisterInfo::GetRegisterInfo(uint32_t kind,
 
 const RegisterSet *DynamicRegisterInfo::GetRegisterSet(uint32_t i) const {
   if (i < m_sets.size())
-    return &m_sets[i];
+    return &(m_sets[i].m_set);
   return nullptr;
-}
-
-uint32_t
-DynamicRegisterInfo::GetRegisterSetIndexByName(const ConstString &set_name,
-                                               bool can_create) {
-  name_collection::iterator pos, end = m_set_names.end();
-  for (pos = m_set_names.begin(); pos != end; ++pos) {
-    if (*pos == set_name)
-      return std::distance(m_set_names.begin(), pos);
-  }
-
-  m_set_names.push_back(set_name);
-  m_set_reg_nums.resize(m_set_reg_nums.size() + 1);
-  RegisterSet new_set = {set_name.AsCString(), nullptr, 0, nullptr};
-  m_sets.push_back(new_set);
-  return m_sets.size() - 1;
 }
 
 uint32_t
@@ -727,15 +737,13 @@ void DynamicRegisterInfo::Clear() {
   m_regs.clear();
   m_sets.clear();
   m_set_reg_nums.clear();
-  m_set_names.clear();
   m_value_regs_map.clear();
   m_invalidate_regs_map.clear();
   m_reg_data_byte_size = 0;
   m_finalized = false;
 }
 
-void DynamicRegisterInfo::Dump() const {
-  StreamFile s(stdout, false);
+void DynamicRegisterInfo::Dump(Stream &s) const {
   const size_t num_regs = m_regs.size();
   s.Printf("%p: DynamicRegisterInfo contains %" PRIu64 " registers:\n",
            static_cast<const void *>(this), static_cast<uint64_t>(num_regs));
@@ -756,19 +764,19 @@ void DynamicRegisterInfo::Dump() const {
     if (m_regs[i].alt_name)
       s.Printf(", alt-name = %s", m_regs[i].alt_name);
     if (m_regs[i].value_regs) {
-      s.Printf(", value_regs = [ ");
+      s.PutCString(", value_regs = [ ");
       for (size_t j = 0; m_regs[i].value_regs[j] != LLDB_INVALID_REGNUM; ++j) {
         s.Printf("%s ", m_regs[m_regs[i].value_regs[j]].name);
       }
-      s.Printf("]");
+      s.PutCString("]");
     }
     if (m_regs[i].invalidate_regs) {
-      s.Printf(", invalidate_regs = [ ");
+      s.PutCString(", invalidate_regs = [ ");
       for (size_t j = 0; m_regs[i].invalidate_regs[j] != LLDB_INVALID_REGNUM;
            ++j) {
         s.Printf("%s ", m_regs[m_regs[i].invalidate_regs[j]].name);
       }
-      s.Printf("]");
+      s.PutCString("]");
     }
     s.EOL();
   }
@@ -778,11 +786,11 @@ void DynamicRegisterInfo::Dump() const {
            static_cast<const void *>(this), static_cast<uint64_t>(num_sets));
   for (size_t i = 0; i < num_sets; ++i) {
     s.Printf("set[%" PRIu64 "] name = %s, regs = [", (uint64_t)i,
-             m_sets[i].name);
-    for (size_t idx = 0; idx < m_sets[i].num_registers; ++idx) {
-      s.Printf("%s ", m_regs[m_sets[i].registers[idx]].name);
+             m_sets[i].m_name.c_str());
+    for (size_t idx = 0; idx < m_sets[i].m_set.num_registers; ++idx) {
+      s.Printf("%s ", m_regs[m_sets[i].m_set.registers[idx]].name);
     }
-    s.Printf("]\n");
+    s.PutCString("]\n");
   }
 }
 

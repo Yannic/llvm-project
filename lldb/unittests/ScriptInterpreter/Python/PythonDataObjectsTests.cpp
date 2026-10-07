@@ -11,6 +11,7 @@
 
 #include "Plugins/ScriptInterpreter/Python/PythonDataObjects.h"
 #include "Plugins/ScriptInterpreter/Python/ScriptInterpreterPython.h"
+#include "TestingSupport/SubsystemRAII.h"
 #include "lldb/Host/File.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/HostInfo.h"
@@ -19,12 +20,15 @@
 
 #include "PythonTestSuite.h"
 
+#include <variant>
+
 using namespace lldb_private;
 using namespace lldb_private::python;
-using llvm::Error;
 using llvm::Expected;
 
 class PythonDataObjectsTest : public PythonTestSuite {
+  SubsystemRAII<FileSystem> subsystems;
+
 public:
   void SetUp() override {
     PythonTestSuite::SetUp();
@@ -50,21 +54,24 @@ protected:
 
 TEST_F(PythonDataObjectsTest, TestOwnedReferences) {
   // After creating a new object, the refcount should be >= 1
-  PyObject *obj = PyLong_FromLong(3);
-  Py_ssize_t original_refcnt = obj->ob_refcnt;
+  PyObject *obj = PyBytes_FromString("foo");
+  Py_ssize_t original_refcnt = Py_REFCNT(obj);
   EXPECT_LE(1, original_refcnt);
 
   // If we take an owned reference, the refcount should be the same
-  PythonObject owned_long(PyRefType::Owned, obj);
-  EXPECT_EQ(original_refcnt, owned_long.get()->ob_refcnt);
+  PythonObject owned(PyRefType::Owned, obj);
+  Py_ssize_t owned_refcnt = Py_REFCNT(owned.get());
+  EXPECT_EQ(original_refcnt, owned_refcnt);
 
   // Take another reference and verify that the refcount increases by 1
-  PythonObject strong_ref(owned_long);
-  EXPECT_EQ(original_refcnt + 1, strong_ref.get()->ob_refcnt);
+  PythonObject strong_ref(owned);
+  Py_ssize_t strong_refcnt = Py_REFCNT(strong_ref.get());
+  EXPECT_EQ(original_refcnt + 1, strong_refcnt);
 
   // If we reset the first one, the refcount should be the original value.
-  owned_long.Reset();
-  EXPECT_EQ(original_refcnt, strong_ref.get()->ob_refcnt);
+  owned.Reset();
+  strong_refcnt = Py_REFCNT(strong_ref.get());
+  EXPECT_EQ(original_refcnt, strong_refcnt);
 }
 
 TEST_F(PythonDataObjectsTest, TestResetting) {
@@ -81,12 +88,15 @@ TEST_F(PythonDataObjectsTest, TestResetting) {
 }
 
 TEST_F(PythonDataObjectsTest, TestBorrowedReferences) {
-  PythonInteger long_value(PyRefType::Owned, PyLong_FromLong(3));
-  Py_ssize_t original_refcnt = long_value.get()->ob_refcnt;
+  PythonByteArray byte_value(PyRefType::Owned,
+                             PyByteArray_FromStringAndSize("foo", 3));
+  Py_ssize_t original_refcnt = Py_REFCNT(byte_value.get());
   EXPECT_LE(1, original_refcnt);
 
-  PythonInteger borrowed_long(PyRefType::Borrowed, long_value.get());
-  EXPECT_EQ(original_refcnt + 1, borrowed_long.get()->ob_refcnt);
+  PythonByteArray borrowed_byte(PyRefType::Borrowed, byte_value.get());
+  Py_ssize_t borrowed_refcnt = Py_REFCNT(borrowed_byte.get());
+
+  EXPECT_EQ(original_refcnt + 1, borrowed_refcnt);
 }
 
 TEST_F(PythonDataObjectsTest, TestGlobalNameResolutionNoDot) {
@@ -202,8 +212,8 @@ TEST_F(PythonDataObjectsTest, TestPythonBoolean) {
   };
 
   // Test PythonBoolean constructed from long integer values.
-  test_from_long(0); // Test 'false' value.
-  test_from_long(1); // Test 'true' value.
+  test_from_long(0);  // Test 'false' value.
+  test_from_long(1);  // Test 'true' value.
   test_from_long(~0); // Any value != 0 is 'true'.
 }
 
@@ -266,10 +276,23 @@ TEST_F(PythonDataObjectsTest, TestPythonStringToStr) {
 
 TEST_F(PythonDataObjectsTest, TestPythonIntegerToStr) {}
 
-TEST_F(PythonDataObjectsTest, TestPythonIntegerToStructuredInteger) {
+TEST_F(PythonDataObjectsTest, TestPythonIntegerToStructuredUnsignedInteger) {
   PythonInteger integer(7);
   auto int_sp = integer.CreateStructuredInteger();
-  EXPECT_EQ(7U, int_sp->GetValue());
+  EXPECT_TRUE(
+      std::holds_alternative<StructuredData::UnsignedIntegerSP>(int_sp));
+  StructuredData::UnsignedIntegerSP uint_sp =
+      std::get<StructuredData::UnsignedIntegerSP>(int_sp);
+  EXPECT_EQ(7U, uint_sp->GetValue());
+}
+
+TEST_F(PythonDataObjectsTest, TestPythonIntegerToStructuredSignedInteger) {
+  PythonInteger integer(-42);
+  auto int_sp = integer.CreateStructuredInteger();
+  EXPECT_TRUE(std::holds_alternative<StructuredData::SignedIntegerSP>(int_sp));
+  StructuredData::SignedIntegerSP sint_sp =
+      std::get<StructuredData::SignedIntegerSP>(int_sp);
+  EXPECT_EQ(-42, sint_sp->GetValue());
 }
 
 TEST_F(PythonDataObjectsTest, TestPythonStringToStructuredString) {
@@ -358,7 +381,7 @@ TEST_F(PythonDataObjectsTest, TestPythonListToStructuredList) {
   EXPECT_EQ(lldb::eStructuredDataTypeString,
             array_sp->GetItemAtIndex(1)->GetType());
 
-  auto int_sp = array_sp->GetItemAtIndex(0)->GetAsInteger();
+  auto int_sp = array_sp->GetItemAtIndex(0)->GetAsUnsignedInteger();
   auto string_sp = array_sp->GetItemAtIndex(1)->GetAsString();
 
   EXPECT_EQ(long_value0, long(int_sp->GetValue()));
@@ -467,6 +490,30 @@ TEST_F(PythonDataObjectsTest, TestPythonDictionaryValueEquality) {
   EXPECT_EQ(value_1, chk_str.GetString());
 }
 
+TEST_F(PythonDataObjectsTest, TestPythonDictionaryGetItemWithInvalidKey) {
+  // A PythonString constructed from invalid UTF-8 silently fails (the
+  // PyUnicode_FromStringAndSize call returns NULL) and leaves m_py_obj == NULL.
+  // PythonDictionary::GetItem(const PythonObject&) must not pass that NULL key
+  // through to PyDict_GetItemWithError, which would then dereference it and
+  // crash.
+  llvm::StringRef invalid_utf8("\xd0p", 2);
+  PythonString invalid_key(invalid_utf8);
+  EXPECT_FALSE(invalid_key.IsValid());
+
+  PythonDictionary dict(PyInitialValue::Empty);
+  dict.SetItemForKey(PythonString("real_key"), PythonInteger(42));
+
+  // GetItem must return an error (not crash) when given an invalid key.
+  llvm::Expected<PythonObject> item = dict.GetItem(invalid_key);
+  EXPECT_FALSE(static_cast<bool>(item));
+  llvm::consumeError(item.takeError());
+
+  // GetItemForKey wraps GetItem, consumes any error, and returns an empty
+  // PythonObject.  It must not crash either.
+  PythonObject result = dict.GetItemForKey(invalid_key);
+  EXPECT_FALSE(result.IsAllocated());
+}
+
 TEST_F(PythonDataObjectsTest, TestPythonDictionaryManipulation) {
   // Test that manipulation of a dictionary behaves correctly when wrapped
   // by a PythonDictionary.
@@ -490,6 +537,9 @@ TEST_F(PythonDataObjectsTest, TestPythonDictionaryManipulation) {
     dict.SetItemForKey(keys[i], values[i]);
 
   EXPECT_EQ(dict_entries, dict.GetSize());
+  EXPECT_FALSE(dict.HasKey("not_in_dict"));
+  EXPECT_TRUE(dict.HasKey(key_0));
+  EXPECT_TRUE(dict.HasKey(key_1));
 
   // Verify that the keys and values match
   PythonObject chk_value1 = dict.GetItemForKey(keys[0]);
@@ -522,7 +572,7 @@ TEST_F(PythonDataObjectsTest, TestPythonDictionaryToStructuredDictionary) {
   EXPECT_TRUE(dict_sp->HasKey(string_key1));
 
   auto string_sp = dict_sp->GetValueForKey(string_key0)->GetAsString();
-  auto int_sp = dict_sp->GetValueForKey(string_key1)->GetAsInteger();
+  auto int_sp = dict_sp->GetValueForKey(string_key1)->GetAsUnsignedInteger();
 
   EXPECT_EQ(string_value0, string_sp->GetValue());
   EXPECT_EQ(int_value1, long(int_sp->GetValue()));
@@ -592,7 +642,7 @@ TEST_F(PythonDataObjectsTest, TestExtractingUInt64ThroughStructuredData) {
           structured_dict_ptr->GetValueForKey(key_name);
       EXPECT_TRUE((bool)structured_addr_value_sp);
       const uint64_t extracted_value =
-          structured_addr_value_sp->GetIntegerValue(123);
+          structured_addr_value_sp->GetUnsignedIntegerValue(123);
       EXPECT_TRUE(extracted_value == value);
     }
   }
@@ -606,8 +656,8 @@ TEST_F(PythonDataObjectsTest, TestCallable) {
   ASSERT_FALSE(error);
 
   {
-    PyObject *o = PyRun_String("lambda x : x", Py_eval_input, globals.get(),
-                               globals.get());
+    PyObject *o =
+        RunString("lambda x : x", Py_eval_input, globals.get(), globals.get());
     ASSERT_FALSE(o == NULL);
     auto lambda = Take<PythonCallable>(o);
     auto arginfo = lambda.GetArgInfo();
@@ -616,8 +666,8 @@ TEST_F(PythonDataObjectsTest, TestCallable) {
   }
 
   {
-    PyObject *o = PyRun_String("lambda x,y=0: x", Py_eval_input, globals.get(),
-                               globals.get());
+    PyObject *o = RunString("lambda x,y=0: x", Py_eval_input, globals.get(),
+                            globals.get());
     ASSERT_FALSE(o == NULL);
     auto lambda = Take<PythonCallable>(o);
     auto arginfo = lambda.GetArgInfo();
@@ -626,8 +676,8 @@ TEST_F(PythonDataObjectsTest, TestCallable) {
   }
 
   {
-    PyObject *o = PyRun_String("lambda x,y=0, **kw: x", Py_eval_input,
-                               globals.get(), globals.get());
+    PyObject *o = RunString("lambda x,y=0, **kw: x", Py_eval_input,
+                            globals.get(), globals.get());
     ASSERT_FALSE(o == NULL);
     auto lambda = Take<PythonCallable>(o);
     auto arginfo = lambda.GetArgInfo();
@@ -636,8 +686,8 @@ TEST_F(PythonDataObjectsTest, TestCallable) {
   }
 
   {
-    PyObject *o = PyRun_String("lambda x,y,*a: x", Py_eval_input, globals.get(),
-                               globals.get());
+    PyObject *o = RunString("lambda x,y,*a: x", Py_eval_input, globals.get(),
+                            globals.get());
     ASSERT_FALSE(o == NULL);
     auto lambda = Take<PythonCallable>(o);
     auto arginfo = lambda.GetArgInfo();
@@ -647,8 +697,8 @@ TEST_F(PythonDataObjectsTest, TestCallable) {
   }
 
   {
-    PyObject *o = PyRun_String("lambda x,y,*a,**kw: x", Py_eval_input,
-                               globals.get(), globals.get());
+    PyObject *o = RunString("lambda x,y,*a,**kw: x", Py_eval_input,
+                            globals.get(), globals.get());
     ASSERT_FALSE(o == NULL);
     auto lambda = Take<PythonCallable>(o);
     auto arginfo = lambda.GetArgInfo();
@@ -685,9 +735,20 @@ class NewStyle(object):
   def __init__(self, one, two, three):
     pass
 
+class NoConstructorAtAll:
+  pass
+
+class NewOnlyVarArgs:
+  def __new__(cls, *args, **kwargs):
+    return super().__new__(cls)
+
+class NewOnlyFixedArgs:
+  def __new__(cls, a, b):
+    return super().__new__(cls)
+
 )";
     PyObject *o =
-        PyRun_String(script, Py_file_input, globals.get(), globals.get());
+        RunString(script, Py_file_input, globals.get(), globals.get());
     ASSERT_FALSE(o == NULL);
     Take<PythonObject>(o);
 
@@ -732,22 +793,40 @@ class NewStyle(object):
     arginfo = newstyle.get().GetArgInfo();
     ASSERT_THAT_EXPECTED(arginfo, llvm::Succeeded());
     EXPECT_EQ(arginfo.get().max_positional_args, 3u);
+
+    // Neither __init__ nor __new__ overridden: object.__init__ truly takes
+    // no extra arguments here.
+    auto no_ctor = As<PythonCallable>(globals.GetItem("NoConstructorAtAll"));
+    ASSERT_THAT_EXPECTED(no_ctor, llvm::Succeeded());
+    arginfo = no_ctor.get().GetArgInfo();
+    ASSERT_THAT_EXPECTED(arginfo, llvm::Succeeded());
+    EXPECT_EQ(arginfo.get().max_positional_args, 0u);
+
+    // __init__ not overridden, but __new__ is: object.__init__ becomes
+    // lenient about extra arguments once __new__ is overridden, so the
+    // argument count has to come from __new__, not from __init__ alone.
+    auto new_varargs = As<PythonCallable>(globals.GetItem("NewOnlyVarArgs"));
+    ASSERT_THAT_EXPECTED(new_varargs, llvm::Succeeded());
+    arginfo = new_varargs.get().GetArgInfo();
+    ASSERT_THAT_EXPECTED(arginfo, llvm::Succeeded());
+    EXPECT_EQ(arginfo.get().max_positional_args,
+              PythonCallable::ArgInfo::UNBOUNDED);
+
+    auto new_fixed = As<PythonCallable>(globals.GetItem("NewOnlyFixedArgs"));
+    ASSERT_THAT_EXPECTED(new_fixed, llvm::Succeeded());
+    arginfo = new_fixed.get().GetArgInfo();
+    ASSERT_THAT_EXPECTED(arginfo, llvm::Succeeded());
+    EXPECT_EQ(arginfo.get().max_positional_args, 2u);
   }
-
-#if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 3
-
-  // the old implementation of GetArgInfo just doesn't work on builtins.
 
   {
     auto builtins = PythonModule::BuiltinsModule();
     auto hex = As<PythonCallable>(builtins.GetAttribute("hex"));
     ASSERT_THAT_EXPECTED(hex, llvm::Succeeded());
-    auto arginfo = hex.get().GetArgInfo();
+    auto arginfo = PythonCallable::GetArgInfoFromInspectSignature(hex.get());
     ASSERT_THAT_EXPECTED(arginfo, llvm::Succeeded());
     EXPECT_EQ(arginfo.get().max_positional_args, 1u);
   }
-
-#endif
 }
 
 TEST_F(PythonDataObjectsTest, TestScript) {
@@ -788,7 +867,8 @@ main = foo
                                 testing::ContainsRegex("line 7, in baz"),
                                 testing::ContainsRegex("ZeroDivisionError")))));
 
-#if !((defined(_WIN32) || defined(_WIN64)) && (defined(__aarch64__) || defined(_M_ARM64)))
+#if !((defined(_WIN32) || defined(_WIN64)) &&                                  \
+      (defined(__aarch64__) || defined(_M_ARM64)))
 
   static const char script2[] = R"(
 class MyError(Exception):
@@ -802,10 +882,13 @@ def main():
 
   PythonScript lol(script2);
 
-  EXPECT_THAT_EXPECTED(lol(),
-                       llvm::Failed<PythonException>(testing::Property(
-                           &PythonException::ReadBacktrace,
-                           testing::ContainsRegex("unprintable MyError"))));
+  EXPECT_THAT_EXPECTED(
+      lol(),
+      llvm::Failed<PythonException>(testing::Property(
+          &PythonException::ReadBacktrace,
+          testing::AnyOf(
+              testing::ContainsRegex("MyError: <exception str\\(\\) failed>"),
+              testing::ContainsRegex("unprintable MyError")))));
 
 #endif
 }

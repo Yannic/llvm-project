@@ -20,9 +20,11 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Analysis/ConstantFolding.h"
+#include "llvm/IR/ConstantFold.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilderFolder.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/Support/Compiler.h"
 
 namespace llvm {
 
@@ -31,7 +33,7 @@ class DataLayout;
 class Type;
 
 /// TargetFolder - Create constants with target dependent folding.
-class TargetFolder final : public IRBuilderFolder {
+class LLVM_ABI TargetFolder final : public IRBuilderFolder {
   const DataLayout &DL;
 
   /// Fold - Fold the constant using target specific information.
@@ -39,7 +41,7 @@ class TargetFolder final : public IRBuilderFolder {
     return ConstantFoldConstant(C, DL);
   }
 
-  virtual void anchor();
+  LLVM_DECLARE_VIRTUAL_ANCHOR_FUNCTION();
 
 public:
   explicit TargetFolder(const DataLayout &DL) : DL(DL) {}
@@ -99,11 +101,11 @@ public:
     return FoldBinOp(Opc, LHS, RHS);
   }
 
-  Value *FoldICmp(CmpInst::Predicate P, Value *LHS, Value *RHS) const override {
+  Value *FoldCmp(CmpInst::Predicate P, Value *LHS, Value *RHS) const override {
     auto *LC = dyn_cast<Constant>(LHS);
     auto *RC = dyn_cast<Constant>(RHS);
     if (LC && RC)
-      return Fold(ConstantExpr::getCompare(P, LC, RC));
+      return ConstantFoldCompareInstOperands(P, LC, RC, DL);
     return nullptr;
   }
 
@@ -114,26 +116,31 @@ public:
     return nullptr;
   }
 
-  Value *FoldGEP(Type *Ty, Value *Ptr, ArrayRef<Value *> IdxList,
-                 bool IsInBounds = false) const override {
+  Value *FoldGEP(const DataLayout &, Type *Ty, Value *Ptr,
+                 ArrayRef<Value *> IdxList, GEPNoWrapFlags NW) const override {
+    if (!ConstantExpr::isSupportedGetElementPtr(Ty))
+      return nullptr;
+
     if (auto *PC = dyn_cast<Constant>(Ptr)) {
       // Every index must be constant.
       if (any_of(IdxList, [](Value *V) { return !isa<Constant>(V); }))
         return nullptr;
-      if (IsInBounds)
-        return Fold(ConstantExpr::getInBoundsGetElementPtr(Ty, PC, IdxList));
-      else
-        return Fold(ConstantExpr::getGetElementPtr(Ty, PC, IdxList));
+      ArrayRef<Constant *> ConstIdxList =
+          ArrayRef((Constant *const *)IdxList.data(), IdxList.size());
+      if (Constant *GEP =
+              ConstantExpr::getGetElementPtr(DL, Ty, PC, ConstIdxList, NW))
+        return Fold(GEP);
     }
     return nullptr;
   }
 
-  Value *FoldSelect(Value *C, Value *True, Value *False) const override {
+  Value *FoldSelect(Value *C, Value *True, Value *False,
+                    FastMathFlags FMF) const override {
     auto *CC = dyn_cast<Constant>(C);
     auto *TC = dyn_cast<Constant>(True);
     auto *FC = dyn_cast<Constant>(False);
     if (CC && TC && FC)
-      return Fold(ConstantExpr::getSelect(CC, TC, FC));
+      return ConstantFoldSelectInstruction(CC, TC, FC);
 
     return nullptr;
   }
@@ -181,55 +188,39 @@ public:
     return nullptr;
   }
 
+  Value *FoldBitInsert(Value *Base, Value *Val, Value *Offset) const override {
+    return nullptr;
+  }
+
+  Value *FoldBitExtract(Type *Ty, Value *Src, Value *Offset) const override {
+    return nullptr;
+  }
+
+  Value *FoldCast(Instruction::CastOps Op, Value *V,
+                  Type *DestTy) const override {
+    if (auto *C = dyn_cast<Constant>(V))
+      return ConstantFoldCastOperand(Op, C, DestTy, DL);
+    return nullptr;
+  }
+
+  Value *FoldIntrinsic(Intrinsic::ID ID, ArrayRef<Value *> Ops, Type *Ty,
+                       FastMathFlags FMF = {},
+                       Function *CtxF = nullptr) const override {
+    if (all_of(Ops, IsaPred<Constant>))
+      return ConstantFoldIntrinsic(
+          ID, ArrayRef((Constant *const *)Ops.data(), Ops.size()), Ty, DL,
+          CtxF);
+    return nullptr;
+  }
+
   //===--------------------------------------------------------------------===//
   // Cast/Conversion Operators
   //===--------------------------------------------------------------------===//
 
-  Constant *CreateCast(Instruction::CastOps Op, Constant *C,
-                       Type *DestTy) const override {
-    if (C->getType() == DestTy)
-      return C; // avoid calling Fold
-    return Fold(ConstantExpr::getCast(Op, C, DestTy));
-  }
-  Constant *CreateIntCast(Constant *C, Type *DestTy,
-                          bool isSigned) const override {
-    if (C->getType() == DestTy)
-      return C; // avoid calling Fold
-    return Fold(ConstantExpr::getIntegerCast(C, DestTy, isSigned));
-  }
   Constant *CreatePointerCast(Constant *C, Type *DestTy) const override {
     if (C->getType() == DestTy)
       return C; // avoid calling Fold
     return Fold(ConstantExpr::getPointerCast(C, DestTy));
-  }
-  Constant *CreateFPCast(Constant *C, Type *DestTy) const override {
-    if (C->getType() == DestTy)
-      return C; // avoid calling Fold
-    return Fold(ConstantExpr::getFPCast(C, DestTy));
-  }
-  Constant *CreateBitCast(Constant *C, Type *DestTy) const override {
-    return CreateCast(Instruction::BitCast, C, DestTy);
-  }
-  Constant *CreateIntToPtr(Constant *C, Type *DestTy) const override {
-    return CreateCast(Instruction::IntToPtr, C, DestTy);
-  }
-  Constant *CreatePtrToInt(Constant *C, Type *DestTy) const override {
-    return CreateCast(Instruction::PtrToInt, C, DestTy);
-  }
-  Constant *CreateZExtOrBitCast(Constant *C, Type *DestTy) const override {
-    if (C->getType() == DestTy)
-      return C; // avoid calling Fold
-    return Fold(ConstantExpr::getZExtOrBitCast(C, DestTy));
-  }
-  Constant *CreateSExtOrBitCast(Constant *C, Type *DestTy) const override {
-    if (C->getType() == DestTy)
-      return C; // avoid calling Fold
-    return Fold(ConstantExpr::getSExtOrBitCast(C, DestTy));
-  }
-  Constant *CreateTruncOrBitCast(Constant *C, Type *DestTy) const override {
-    if (C->getType() == DestTy)
-      return C; // avoid calling Fold
-    return Fold(ConstantExpr::getTruncOrBitCast(C, DestTy));
   }
 
   Constant *CreatePointerBitCastOrAddrSpaceCast(Constant *C,
@@ -238,17 +229,7 @@ public:
       return C; // avoid calling Fold
     return Fold(ConstantExpr::getPointerBitCastOrAddrSpaceCast(C, DestTy));
   }
-
-  //===--------------------------------------------------------------------===//
-  // Compare Instructions
-  //===--------------------------------------------------------------------===//
-
-  Constant *CreateFCmp(CmpInst::Predicate P, Constant *LHS,
-                       Constant *RHS) const override {
-    return Fold(ConstantExpr::getCompare(P, LHS, RHS));
-  }
 };
-
 }
 
 #endif

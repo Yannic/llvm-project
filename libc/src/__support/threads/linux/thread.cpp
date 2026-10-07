@@ -1,47 +1,56 @@
-//===--- Implementation of a Linux thread class -----------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+///
+/// \file
+/// Implementation of a Linux thread class.
+///
+//===----------------------------------------------------------------------===//
 
 #include "src/__support/threads/thread.h"
-#include "config/linux/app.h"
+#include "config/app.h"
 #include "src/__support/CPP/atomic.h"
 #include "src/__support/CPP/string_view.h"
 #include "src/__support/CPP/stringstream.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/clone.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/close.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/getpid.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/mmap.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/mprotect.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/munmap.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/open.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/read.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/sched_getparam.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/sched_getscheduler.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/sched_setscheduler.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/tgkill.h"
+#include "src/__support/OSUtil/linux/syscall_wrappers/write.h"
 #include "src/__support/OSUtil/syscall.h" // For syscall functions.
 #include "src/__support/common.h"
 #include "src/__support/error_or.h"
-#include "src/__support/threads/linux/futex_word.h" // For FutexWordType
+#include "src/__support/libc_errno.h" // For error macros
+#include "src/__support/macros/config.h"
+#include "src/__support/threads/linux/futex_utils.h" // For FutexWordType
+#include "src/__support/threads/linux/futex_word.h"
+#include "src/__support/threads/thread_attributes.h"
 
-#ifdef LLVM_LIBC_ARCH_AARCH64
-#include <arm_acle.h>
-#endif
+#include "hdr/errno_macros.h"
+#include "hdr/fcntl_macros.h"
+#include "hdr/sched_macros.h" // For CLONE_* flags.
+#include "hdr/signal_macros.h"
+#include "hdr/stdint_proxy.h"
+#include "hdr/sys_mman_macros.h" // For PROT_* and MAP_* definitions.
+#include <linux/param.h>         // For EXEC_PAGESIZE.
+#include <linux/prctl.h>         // For PR_SET_NAME
+#include <sys/syscall.h>         // For syscall numbers.
 
-#include <errno.h>
-#include <fcntl.h>
-#include <linux/futex.h>
-#include <linux/prctl.h> // For PR_SET_NAME
-#include <linux/sched.h> // For CLONE_* flags.
-#include <stdint.h>
-#include <sys/mman.h>    // For PROT_* and MAP_* definitions.
-#include <sys/syscall.h> // For syscall numbers.
-
-namespace __llvm_libc {
-
-#ifdef SYS_mmap2
-static constexpr long MMAP_SYSCALL_NUMBER = SYS_mmap2;
-#elif SYS_mmap
-static constexpr long MMAP_SYSCALL_NUMBER = SYS_mmap;
-#else
-#error "SYS_mmap or SYS_mmap2 not available on the target platform"
-#endif
+namespace LIBC_NAMESPACE_DECL {
 
 static constexpr size_t NAME_SIZE_MAX = 16; // Includes the null terminator
-static constexpr size_t DEFAULT_STACK_SIZE = (1 << 16); // 64KB
-static constexpr uint32_t CLEAR_TID_VALUE = 0xABCD1234;
 static constexpr unsigned CLONE_SYSCALL_FLAGS =
     CLONE_VM        // Share the memory space with the parent.
     | CLONE_FS      // Share the file system with the parent.
@@ -55,23 +64,65 @@ static constexpr unsigned CLONE_SYSCALL_FLAGS =
                            // wake the joining thread.
     | CLONE_SETTLS;        // Setup the thread pointer of the new thread.
 
-LIBC_INLINE ErrorOr<void *> alloc_stack(size_t size) {
-  long mmap_result =
-      __llvm_libc::syscall_impl(MMAP_SYSCALL_NUMBER,
-                                0, // No special address
-                                size,
-                                PROT_READ | PROT_WRITE, // Read and write stack
-                                MAP_ANONYMOUS | MAP_PRIVATE, // Process private
-                                -1, // Not backed by any file
-                                0   // No offset
-      );
-  if (mmap_result < 0 && (uintptr_t(mmap_result) >= UINTPTR_MAX - size))
-    return Error{int(-mmap_result)};
-  return reinterpret_cast<void *>(mmap_result);
+static constexpr ErrorOr<size_t> add_no_overflow(size_t lhs, size_t rhs) {
+  if (lhs > SIZE_MAX - rhs)
+    return Error{EINVAL};
+  if (rhs > SIZE_MAX - lhs)
+    return Error{EINVAL};
+  return lhs + rhs;
 }
 
-LIBC_INLINE void free_stack(void *stack, size_t size) {
-  __llvm_libc::syscall_impl(SYS_munmap, stack, size);
+static constexpr ErrorOr<size_t> round_to_page(size_t v) {
+  auto vp_or_err = add_no_overflow(v, EXEC_PAGESIZE - 1);
+  if (!vp_or_err)
+    return vp_or_err;
+
+  return vp_or_err.value() & -EXEC_PAGESIZE;
+}
+
+LIBC_INLINE ErrorOr<void *> alloc_stack(size_t stacksize, size_t guardsize) {
+
+  // Guard needs to be mapped with PROT_NONE
+  int prot = guardsize ? PROT_NONE : PROT_READ | PROT_WRITE;
+  auto size_or_err = add_no_overflow(stacksize, guardsize);
+  if (!size_or_err)
+    return Error{int(size_or_err.error())};
+  size_t size = size_or_err.value();
+
+  // TODO: Maybe add MAP_STACK? Currently unimplemented on linux but helps
+  // future-proof.
+  ErrorOr<void *> mmap_result =
+      linux_syscalls::mmap(nullptr, size, prot,
+                           MAP_ANONYMOUS | MAP_PRIVATE, // Process private.
+                           -1, // Not backed by any file
+                           0   // No offset
+      );
+  if (!mmap_result.has_value())
+    return mmap_result;
+
+  char *stack = static_cast<char *>(mmap_result.value()) + guardsize;
+
+  if (guardsize) {
+    // Give read/write permissions to actual stack.
+    // TODO: We are assuming stack growsdown here.
+    auto result =
+        linux_syscalls::mprotect(stack, stacksize, PROT_READ | PROT_WRITE);
+
+    if (!result)
+      return Error{result.error()};
+  }
+  return stack;
+}
+
+// This must always be inlined as we may be freeing the calling threads stack in
+// which case a normal return from the top the stack would cause an invalid
+// memory read.
+[[gnu::always_inline]] LIBC_INLINE void
+free_stack(void *stack, size_t stacksize, size_t guardsize) {
+  uintptr_t stackaddr = reinterpret_cast<uintptr_t>(stack);
+  stackaddr -= guardsize;
+  stack = reinterpret_cast<void *>(stackaddr);
+  linux_syscalls::munmap(stack, stacksize + guardsize);
 }
 
 struct Thread;
@@ -87,81 +138,105 @@ struct alignas(STACK_ALIGNMENT) StartArgs {
   void *arg;
 };
 
-static void cleanup_thread_resources(ThreadAttributes *attrib) {
+// This must always be inlined as we may be freeing the calling threads stack in
+// which case a normal return from the top the stack would cause an invalid
+// memory read.
+[[gnu::always_inline]] LIBC_INLINE void
+cleanup_thread_resources(ThreadAttributes *attrib) {
   // Cleanup the TLS before the stack as the TLS information is stored on
   // the stack.
   cleanup_tls(attrib->tls, attrib->tls_size);
   if (attrib->owned_stack)
-    free_stack(attrib->stack, attrib->stack_size);
+    free_stack(attrib->stack, attrib->stacksize, attrib->guardsize);
 }
 
-__attribute__((always_inline)) inline uintptr_t get_start_args_addr() {
-// NOTE: For __builtin_frame_address to work reliably across compilers,
-// architectures and various optimization levels, the TU including this file
-// should be compiled with -fno-omit-frame-pointer.
-#ifdef LLVM_LIBC_ARCH_X86_64
-  return reinterpret_cast<uintptr_t>(__builtin_frame_address(0))
-         // The x86_64 call instruction pushes resume address on to the stack.
-         // Next, The x86_64 SysV ABI requires that the frame pointer be pushed
-         // on to the stack. So, we have to step past two 64-bit values to get
-         // to the start args.
-         + sizeof(uintptr_t) * 2;
-#elif defined(LLVM_LIBC_ARCH_AARCH64)
-  // The frame pointer after cloning the new thread in the Thread::run method
-  // is set to the stack pointer where start args are stored. So, we fetch
-  // from there.
-  return reinterpret_cast<uintptr_t>(__builtin_frame_address(1));
-#endif
-}
-
-__attribute__((noinline)) static void start_thread() {
-  auto *start_args = reinterpret_cast<StartArgs *>(get_start_args_addr());
+static int start_thread(void *arg) {
+  auto *start_args = reinterpret_cast<StartArgs *>(arg);
   auto *attrib = start_args->thread_attrib;
-  self.attrib = attrib;
-  self.attrib->atexit_callback_mgr = internal::get_thread_atexit_callback_mgr();
 
   if (attrib->style == ThreadStyle::POSIX) {
-    attrib->retval.posix_retval =
-        start_args->runner.posix_runner(start_args->arg);
-    thread_exit(ThreadReturnValue(attrib->retval.posix_retval),
-                ThreadStyle::POSIX);
+    ThreadReturnValue retval = start_args->runner.posix_runner(start_args->arg);
+    thread_exit(retval, ThreadStyle::POSIX);
   } else {
-    attrib->retval.stdc_retval =
-        start_args->runner.stdc_runner(start_args->arg);
-    thread_exit(ThreadReturnValue(attrib->retval.stdc_retval),
-                ThreadStyle::STDC);
+    ThreadReturnValue retval = start_args->runner.stdc_runner(start_args->arg);
+    thread_exit(retval, ThreadStyle::STDC);
   }
+  return 0;
 }
 
 int Thread::run(ThreadStyle style, ThreadRunner runner, void *arg, void *stack,
-                size_t size, bool detached) {
+                size_t stacksize, size_t guardsize, bool detached) {
   bool owned_stack = false;
   if (stack == nullptr) {
-    if (size == 0)
-      size = DEFAULT_STACK_SIZE;
-    auto alloc = alloc_stack(size);
+    // TODO: Should we return EINVAL here? Should we have a generic concept of a
+    //       minimum stacksize (like 16384 for pthread).
+    if (stacksize == 0)
+      stacksize = DEFAULT_STACKSIZE;
+    // Roundup stacksize/guardsize to page size.
+    // TODO: Should be also add sizeof(ThreadAttribute) and other internal
+    //       meta data?
+    auto round_or_err = round_to_page(guardsize);
+    if (!round_or_err)
+      return round_or_err.error();
+    guardsize = round_or_err.value();
+
+    round_or_err = round_to_page(stacksize);
+    if (!round_or_err)
+      return round_or_err.error();
+
+    stacksize = round_or_err.value();
+    auto alloc = alloc_stack(stacksize, guardsize);
     if (!alloc)
       return alloc.error();
     else
       stack = alloc.value();
     owned_stack = true;
+  } else {
+    // The user is responsible for setting up the stack guard (or not) for the
+    // provided stack.
+    guardsize = 0;
+  }
+
+  // Validate that stack/stacksize are validly aligned.
+  uintptr_t stackaddr = reinterpret_cast<uintptr_t>(stack);
+  if ((stackaddr % STACK_ALIGNMENT != 0) ||
+      ((stackaddr + stacksize) % STACK_ALIGNMENT != 0)) {
+    if (owned_stack)
+      free_stack(stack, stacksize, guardsize);
+    return EINVAL;
   }
 
   TLSDescriptor tls;
   init_tls(tls);
 
   // When the new thread is spawned by the kernel, the new thread gets the
-  // stack we pass to the clone syscall. However, this stack is empty and does
-  // not have any local vars present in this function. Hence, one cannot
-  // pass arguments to the thread start function, or use any local vars from
-  // here. So, we pack them into the new stack from where the thread can sniff
-  // them out.
-  //
-  // Likewise, the actual thread state information is also stored on the
-  // stack memory.
-  uintptr_t adjusted_stack = reinterpret_cast<uintptr_t>(stack) + size -
-                             sizeof(StartArgs) - sizeof(ThreadAttributes) -
-                             sizeof(cpp::Atomic<FutexWordType>);
+  // stack we pass to the clone syscall. Thread initialization structures
+  // (StartArgs, ThreadAttributes, and the clear_tid Futex) are allocated on
+  // the new thread's stack memory so their lifetime is managed with the stack
+  // without requiring heap allocation. A pointer to StartArgs is passed
+  // directly to start_thread via the clone syscall wrapper's argument.
+
+  static constexpr size_t INTERNAL_STACK_DATA_SIZE =
+      sizeof(StartArgs) + sizeof(ThreadAttributes) + sizeof(Futex);
+
+  // This is pretty arbitrary, but at the moment we don't adjust user provided
+  // stacksize (or default) to account for this data as its assumed minimal. If
+  // this assert starts failing we probably should. Likewise if we can't bound
+  // this we may overflow when we subtract it from the top of the stack.
+  static_assert(INTERNAL_STACK_DATA_SIZE < EXEC_PAGESIZE);
+
+  // TODO: We are assuming stack growsdown here.
+  auto adjusted_stack_or_err =
+      add_no_overflow(reinterpret_cast<uintptr_t>(stack), stacksize);
+  if (!adjusted_stack_or_err) {
+    cleanup_tls(tls.addr, tls.size);
+    if (owned_stack)
+      free_stack(stack, stacksize, guardsize);
+    return adjusted_stack_or_err.error();
+  }
+
+  uintptr_t adjusted_stack =
+      adjusted_stack_or_err.value() - INTERNAL_STACK_DATA_SIZE;
   adjusted_stack &= ~(uintptr_t(STACK_ALIGNMENT) - 1);
 
   auto *start_args = reinterpret_cast<StartArgs *>(adjusted_stack);
@@ -172,60 +247,60 @@ int Thread::run(ThreadStyle style, ThreadRunner runner, void *arg, void *stack,
   attrib->detach_state =
       uint32_t(detached ? DetachState::DETACHED : DetachState::JOINABLE);
   attrib->stack = stack;
-  attrib->stack_size = size;
+  attrib->stacksize = stacksize;
+  attrib->guardsize = guardsize;
   attrib->owned_stack = owned_stack;
   attrib->tls = tls.addr;
   attrib->tls_size = tls.size;
+  attrib->joiner = nullptr;
 
   start_args->thread_attrib = attrib;
   start_args->runner = runner;
   start_args->arg = arg;
 
-  auto clear_tid = reinterpret_cast<cpp::Atomic<FutexWordType> *>(
+  auto clear_tid = reinterpret_cast<Futex *>(
       adjusted_stack + sizeof(StartArgs) + sizeof(ThreadAttributes));
-  clear_tid->val = CLEAR_TID_VALUE;
+  clear_tid->set(1);
   attrib->platform_data = clear_tid;
 
-  // The clone syscall takes arguments in an architecture specific order.
-  // Also, we want the result of the syscall to be in a register as the child
-  // thread gets a completely different stack after it is created. The stack
-  // variables from this function will not be availalbe to the child thread.
-#ifdef LLVM_LIBC_ARCH_X86_64
-  long register clone_result asm("rax");
-  clone_result = __llvm_libc::syscall_impl(
-      SYS_clone, CLONE_SYSCALL_FLAGS, adjusted_stack,
-      &attrib->tid,    // The address where the child tid is written
-      &clear_tid->val, // The futex where the child thread status is signalled
-      tls.tp           // The thread pointer value for the new thread.
-  );
-#elif defined(LLVM_LIBC_ARCH_AARCH64)
-  long register clone_result asm("x0");
-  clone_result = __llvm_libc::syscall_impl(
-      SYS_clone, CLONE_SYSCALL_FLAGS, adjusted_stack,
-      &attrib->tid,   // The address where the child tid is written
-      tls.tp,         // The thread pointer value for the new thread.
-      &clear_tid->val // The futex where the child thread status is signalled
-  );
-#else
-#error "Unsupported architecture for the clone syscall."
-#endif
+  get_tcb(tls.tp)->attrib = attrib;
 
-  if (clone_result == 0) {
-#ifdef LLVM_LIBC_ARCH_AARCH64
-    // We set the frame pointer to be the same as the "sp" so that start args
-    // can be sniffed out from start_thread.
-    __arm_wsr64("x29", __arm_rsr64("sp"));
-#endif
-    start_thread();
-  } else if (clone_result < 0) {
+  auto clone_result = linux_syscalls::clone(
+      start_thread, reinterpret_cast<void *>(adjusted_stack),
+      CLONE_SYSCALL_FLAGS, start_args, &attrib->tid,
+      reinterpret_cast<void *>(tls.tp),
+      reinterpret_cast<pid_t *>(&clear_tid->val));
+
+  if (!clone_result.has_value()) {
     cleanup_thread_resources(attrib);
-    return -clone_result;
+    return clone_result.error();
   }
 
   return 0;
 }
 
 int Thread::join(ThreadReturnValue &retval) {
+  if (current_thread().attrib) {
+    // Reject self join.
+    if (current_thread().attrib == attrib)
+      return EDEADLK;
+
+    // Do a best-effort check of concurrent/repeated join.
+    // This cmpxchg establishes exclusive joiner role by setting the joiner
+    // field iff there is no previous joiner
+    ThreadAttributes *expected = nullptr;
+    if (!attrib->joiner.compare_exchange_strong(
+            expected, current_thread().attrib, cpp::MemoryOrder::ACQ_REL))
+      return EINVAL;
+
+    // Reject mutual join.
+    if (current_thread().attrib->joiner.load(cpp::MemoryOrder::ACQUIRE) ==
+        attrib) {
+      attrib->joiner.store(nullptr, cpp::MemoryOrder::RELEASE);
+      return EDEADLK;
+    }
+  }
+
   wait();
 
   if (attrib->style == ThreadStyle::POSIX)
@@ -259,24 +334,18 @@ void Thread::wait() {
   // The kernel should set the value at the clear tid address to zero.
   // If not, it is a spurious wake and we should continue to wait on
   // the futex.
-  auto *clear_tid =
-      reinterpret_cast<cpp::Atomic<FutexWordType> *>(attrib->platform_data);
-  while (clear_tid->load() != 0) {
-    // We cannot do a FUTEX_WAIT_PRIVATE here as the kernel does a
-    // FUTEX_WAKE and not a FUTEX_WAKE_PRIVATE.
-    __llvm_libc::syscall_impl(SYS_futex, &clear_tid->val, FUTEX_WAIT,
-                              CLEAR_TID_VALUE, nullptr);
-  }
-}
-
-bool Thread::operator==(const Thread &thread) const {
-  return attrib->tid == thread.attrib->tid;
+  auto *clear_tid = reinterpret_cast<Futex *>(attrib->platform_data);
+  // We cannot do a FUTEX_WAIT_PRIVATE here as the kernel does a
+  // FUTEX_WAKE and not a FUTEX_WAKE_PRIVATE.
+  FutexWordType clear_tid_value;
+  while ((clear_tid_value = clear_tid->load()) != 0)
+    clear_tid->wait(clear_tid_value, cpp::nullopt, true);
 }
 
 static constexpr cpp::string_view THREAD_NAME_PATH_PREFIX("/proc/self/task/");
 static constexpr size_t THREAD_NAME_PATH_SIZE =
     THREAD_NAME_PATH_PREFIX.size() +
-    IntegerToString::dec_bufsize<int>() + // Size of tid
+    IntegerToString<int>::buffer_size() + // Size of tid
     1 +                                   // For '/' character
     5; // For the file name "comm" and the nullterminator.
 
@@ -290,10 +359,11 @@ int Thread::set_name(const cpp::string_view &name) {
   if (name.size() >= NAME_SIZE_MAX)
     return ERANGE;
 
-  if (*this == self) {
+  if (*this == current_thread()) {
     // If we are setting the name of the current thread, then we can
     // use the syscall to set the name.
-    int retval = __llvm_libc::syscall_impl(SYS_prctl, PR_SET_NAME, name.data());
+    int retval =
+        LIBC_NAMESPACE::syscall_impl<int>(SYS_prctl, PR_SET_NAME, name.data());
     if (retval < 0)
       return -retval;
     else
@@ -303,22 +373,17 @@ int Thread::set_name(const cpp::string_view &name) {
   char path_name_buffer[THREAD_NAME_PATH_SIZE];
   cpp::StringStream path_stream(path_name_buffer);
   construct_thread_name_file_path(path_stream, attrib->tid);
-#ifdef SYS_open
-  int fd = __llvm_libc::syscall_impl(SYS_open, path_name_buffer, O_RDWR);
-#else
-  int fd =
-      __llvm_libc::syscall_impl(SYS_openat, AT_FDCWD, path_name_buffer, O_RDWR);
-#endif
-  if (fd < 0)
-    return -fd;
+  ErrorOr<int> fd = linux_syscalls::open(path_name_buffer, O_RDWR, 0);
+  if (!fd)
+    return fd.error();
 
-  int retval =
-      __llvm_libc::syscall_impl(SYS_write, fd, name.data(), name.size());
-  __llvm_libc::syscall_impl(SYS_close, fd);
+  auto write_result =
+      linux_syscalls::write(fd.value(), name.data(), name.size());
+  linux_syscalls::close(fd.value());
 
-  if (retval < 0)
-    return -retval;
-  else if (retval != int(name.size()))
+  if (!write_result)
+    return write_result.error();
+  else if (write_result.value() != static_cast<ssize_t>(name.size()))
     return EIO;
   else
     return 0;
@@ -330,45 +395,100 @@ int Thread::get_name(cpp::StringStream &name) const {
 
   char name_buffer[NAME_SIZE_MAX];
 
-  if (*this == self) {
+  if (*this == current_thread()) {
     // If we are getting the name of the current thread, then we can
     // use the syscall to get the name.
-    int retval = __llvm_libc::syscall_impl(SYS_prctl, PR_GET_NAME, name_buffer);
+    int retval =
+        LIBC_NAMESPACE::syscall_impl<int>(SYS_prctl, PR_GET_NAME, name_buffer);
     if (retval < 0)
       return -retval;
-    name << name_buffer;
+    name << name_buffer << cpp::StringStream::ENDS;
     return 0;
   }
 
   char path_name_buffer[THREAD_NAME_PATH_SIZE];
   cpp::StringStream path_stream(path_name_buffer);
   construct_thread_name_file_path(path_stream, attrib->tid);
-#ifdef SYS_open
-  int fd = __llvm_libc::syscall_impl(SYS_open, path_name_buffer, O_RDONLY);
-#else
-  int fd = __llvm_libc::syscall_impl(SYS_openat, AT_FDCWD, path_name_buffer,
-                                     O_RDONLY);
-#endif
-  if (fd < 0)
-    return -fd;
+  ErrorOr<int> fd = linux_syscalls::open(path_name_buffer, O_RDONLY, 0);
+  if (!fd)
+    return fd.error();
 
-  int retval =
-      __llvm_libc::syscall_impl(SYS_read, fd, name_buffer, NAME_SIZE_MAX);
-  __llvm_libc::syscall_impl(SYS_close, fd);
-  if (retval < 0)
-    return -retval;
+  auto read_result =
+      linux_syscalls::read(fd.value(), name_buffer, NAME_SIZE_MAX);
+  linux_syscalls::close(fd.value());
+  if (!read_result)
+    return read_result.error();
+  int retval = static_cast<int>(read_result.value());
   if (retval == NAME_SIZE_MAX)
     return ERANGE;
   if (name_buffer[retval - 1] == '\n')
     name_buffer[retval - 1] = '\0';
   else
     name_buffer[retval] = '\0';
-  name << name_buffer;
+  name << name_buffer << cpp::StringStream::ENDS;
   return 0;
 }
 
+int Thread::setschedparam(SchedParameters params) {
+  auto result = linux_syscalls::sched_setscheduler(attrib->tid, params.policy,
+                                                   &params.param);
+  if (!result.has_value())
+    return result.error();
+  return 0;
+}
+
+ErrorOr<SchedParameters> Thread::getschedparam() const {
+  auto pol_result = linux_syscalls::sched_getscheduler(attrib->tid);
+  if (!pol_result.has_value())
+    return Error(pol_result.error());
+
+  struct sched_param param;
+  auto param_result = linux_syscalls::sched_getparam(attrib->tid, &param);
+  if (!param_result.has_value())
+    return Error(param_result.error());
+
+  return SchedParameters{pol_result.value(), param};
+}
+
+ErrorOr<void> Thread::kill(int sig) {
+  auto state = static_cast<DetachState>(
+      attrib->detach_state.load(cpp::MemoryOrder::RELAXED));
+  switch (state) {
+  case DetachState::EXITING:
+    // The thread is exiting, or has already exited. POSIX.1-2024 requires that
+    // pthread_kill does not return ESRCH because the pthread_t (unlike the OS
+    // TID) is still valid. Calling tgkill would return ESRCH (or target a
+    // recycled TID), so we return success directly. We only need to "request
+    // that a signal be delivered", and not actually make sure it has been
+    // handled. A zombie thread cannot handle signals.
+    return {};
+  case DetachState::JOINABLE:
+  case DetachState::DETACHED:
+    // A thread in these states can handle a signal. Note that a JOINABLE thread
+    // can transition to the EXITING state at any moment (and a DETACHED thread
+    // can disappear), but we're not allowed to take any locks to prevent that
+    // from happening (this function needs to be async-signal-safe).
+    break;
+  }
+
+  pid_t pid = linux_syscalls::getpid();
+  auto result = linux_syscalls::tgkill(pid, attrib->tid, sig);
+
+  if (!result.has_value()) {
+    if (result.error() == ESRCH) {
+      // Either the thread has exited since we've checked its state, or this
+      // object is corrupted. The latter is UB, so we're going to assume the
+      // former.
+      return {};
+    }
+    return Error(result.error());
+  }
+  return {};
+}
+
 void thread_exit(ThreadReturnValue retval, ThreadStyle style) {
-  auto attrib = self.attrib;
+  auto attrib = current_thread().attrib;
+  attrib->retval = retval;
 
   // The very first thing we do is to call the thread's atexit callbacks.
   // These callbacks could be the ones registered by the language runtimes,
@@ -378,7 +498,7 @@ void thread_exit(ThreadReturnValue retval, ThreadStyle style) {
   // cleanup_thread_resources function as that function can be called from a
   // different thread. The destructors of thread local and TSS objects should
   // be called by the thread which owns them.
-  internal::call_atexit_callbacks(attrib);
+  internal::call_atexit_callbacks();
 
   uint32_t joinable_state = uint32_t(DetachState::JOINABLE);
   if (!attrib->detach_state.compare_exchange_strong(
@@ -388,13 +508,19 @@ void thread_exit(ThreadReturnValue retval, ThreadStyle style) {
 
     // Set the CLEAR_TID address to nullptr to prevent the kernel
     // from signalling at a non-existent futex location.
-    __llvm_libc::syscall_impl(SYS_set_tid_address, 0);
+    LIBC_NAMESPACE::syscall_impl<long>(SYS_set_tid_address, 0);
+    // Return value for detached thread should be unused. We need to avoid
+    // referencing `style` or `retval.*` because they may be stored on the stack
+    // and we have deallocated our stack!
+    LIBC_NAMESPACE::syscall_impl<long>(SYS_exit, 0);
+    __builtin_unreachable();
   }
 
   if (style == ThreadStyle::POSIX)
-    __llvm_libc::syscall_impl(SYS_exit, retval.posix_retval);
+    LIBC_NAMESPACE::syscall_impl<long>(SYS_exit, retval.posix_retval);
   else
-    __llvm_libc::syscall_impl(SYS_exit, retval.stdc_retval);
+    LIBC_NAMESPACE::syscall_impl<long>(SYS_exit, retval.stdc_retval);
+  __builtin_unreachable();
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

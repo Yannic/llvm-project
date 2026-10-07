@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/AliasSetTracker.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
@@ -15,6 +14,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -26,13 +26,13 @@ TEST(AliasSetTracker, AliasUnknownInst) {
 
     ; Function Attrs: nounwind ssp uwtable
     define i32 @read_a() #0 {
-      %1 = load i32, i32* @a, align 4, !tbaa !3
+      %1 = load i32, ptr @a, align 4, !tbaa !3
       ret i32 %1
     }
 
     ; Function Attrs: nounwind ssp uwtable
     define void @write_b() #0 {
-      store float 1.000000e+01, float* @b, align 4, !tbaa !7
+      store float 1.000000e+01, ptr @b, align 4, !tbaa !7
       ret void
     }
 
@@ -62,7 +62,7 @@ TEST(AliasSetTracker, AliasUnknownInst) {
   TargetLibraryInfoImpl TLII(Trip);
   TargetLibraryInfo TLI(TLII);
   AAResults AA(TLI);
-  TypeBasedAAResult TBAAR;
+  TypeBasedAAResult TBAAR(false);
   AA.addAAResult(TBAAR);
 
   // Initialize the alias set tracker for the @test function.
@@ -72,7 +72,7 @@ TEST(AliasSetTracker, AliasUnknownInst) {
   AliasSetTracker AST(BAA);
   for (auto &BB : *Test)
     AST.add(BB);
-  // There should be 2 disjoint alias sets. 1 from each call. 
+  // There should be 2 disjoint alias sets. 1 from each call.
   ASSERT_EQ((int)AST.getAliasSets().size(), 2);
 
   // Directly test aliasesUnknownInst.

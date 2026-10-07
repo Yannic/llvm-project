@@ -1,39 +1,110 @@
-; Do setup work for all below tests: generate bitcode and combined index
-; RUN: opt -module-summary %s -o %t.bc
-; RUN: opt -module-summary %p/Inputs/thinlto_indirect_call_promotion.ll -o %t2.bc
-; RUN: llvm-lto -thinlto -o %t3 %t.bc %t2.bc
+; RUN: rm -rf %t && split-file %s %t
 
-; RUN: opt -passes=function-import -summary-file %t3.thinlto.bc %t.bc -o %t4.bc -print-imports 2>&1 | FileCheck %s --check-prefix=IMPORTS
-; IMPORTS-DAG: Import a
-; IMPORTS-DAG: Import c
+; RUN: llvm-profdata merge %t/a.proftext -o %t/a.profdata
+; RUN: opt -passes=pgo-instr-use -pgo-test-profile-file=%t/a.profdata -module-summary %t/main.ll -o %t/main.bc
+; RUN: opt -passes=pgo-instr-use -pgo-test-profile-file=%t/a.profdata -module-summary %t/lib.ll -o %t/lib.bc
+; RUN: llvm-lto -thinlto -o %t/summary %t/main.bc %t/lib.bc
 
-; RUN: opt %t4.bc -icp-lto -passes=pgo-icall-prom -S | FileCheck %s --check-prefix=ICALL-PROM
-; RUN: opt %t4.bc -icp-lto -passes=pgo-icall-prom -S -pass-remarks=pgo-icall-prom 2>&1 | FileCheck %s --check-prefix=PASS-REMARK
-; PASS-REMARK: Promote indirect call to a with count 1 out of 1
-; PASS-REMARK: Promote indirect call to c.llvm.0 with count 1 out of 1
+; Test that internal callee has !guid metadata.
+; RUN: llvm-dis %t/lib.bc -o - | FileCheck %s --check-prefix=PGONAME
+; PGONAME-DAG: define void @_Z7callee1v() {{.*}} !prof ![[#]]
+; PGONAME-DAG: define internal void @_ZL7callee0v() {{.*}} !prof ![[#]] !guid ![[#]]
+; PGONAME-NOT: !PGOFuncName
 
-target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+; Tests that both external and internal callees are correctly imported.
+; RUN: opt -passes=function-import -summary-file %t/summary.thinlto.bc %t/main.bc -o %t/main.import.bc -print-imports 2>&1 | FileCheck %s --check-prefix=IMPORTS
+; IMPORTS-DAG: Import _Z7callee1v
+; IMPORTS-DAG: Import _ZL7callee0v.llvm.[[#]]
+; IMPORTS-DAG: Import _Z11global_funcv
+
+; Tests that ICP transformations happen.
+; Both candidates are ICP'ed, check there is no `!VP` in the IR.
+; RUN: opt %t/main.import.bc -icp-lto -passes=pgo-icall-prom -S | FileCheck %s --check-prefix=ICALL-PROM --implicit-check-not="!VP"
+; RUN: opt %t/main.import.bc -icp-lto -passes=pgo-icall-prom -S -pass-remarks=pgo-icall-prom 2>&1 | FileCheck %s --check-prefix=PASS-REMARK
+
+; PASS-REMARK: Promote indirect call to _ZL7callee0v.llvm.[[#]] with count 1 out of 1
+; PASS-REMARK: Promote indirect call to _Z7callee1v with count 1 out of 1
+
+; ICALL-PROM:   br i1 %[[#]], label %if.true.direct_targ, label %if.false.orig_indirect, !prof ![[#BRANCH_WEIGHT1:]]
+; ICALL-PROM:   br i1 %[[#]], label %if.true.direct_targ1, label %if.false.orig_indirect2, !prof ![[#BRANCH_WEIGHT1]]
+
+; ICALL-PROM: ![[#BRANCH_WEIGHT1]] = !{!"branch_weights", i32 1, i32 0}
+
+;--- main.ll
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
-@foo = external local_unnamed_addr global ptr, align 8
-@bar = external local_unnamed_addr global ptr, align 8
-
-define i32 @main() local_unnamed_addr {
-entry:
-  %0 = load ptr, ptr @foo, align 8
-; ICALL-PROM:   br i1 %{{[0-9]+}}, label %if.true.direct_targ, label %if.false.orig_indirect, !prof [[BRANCH_WEIGHT:![0-9]+]]
-  tail call void %0(), !prof !1
-  %1 = load ptr, ptr @bar, align 8
-; ICALL-PROM:   br i1 %{{[0-9]+}}, label %if.true.direct_targ1, label %if.false.orig_indirect2, !prof [[BRANCH_WEIGHT:![0-9]+]]
-  tail call void %1(), !prof !2
+define i32 @main() {
+  call void @_Z11global_funcv()
   ret i32 0
 }
 
-!1 = !{!"VP", i32 0, i64 1, i64 -6289574019528802036, i64 1}
-!2 = !{!"VP", i32 0, i64 1, i64 591260329866125152, i64 1}
+declare void @_Z11global_funcv()
 
-; Should not have a VP annotation on new indirect call (check before and after
-; branch_weights annotation).
-; ICALL-PROM-NOT: !"VP"
-; ICALL-PROM: [[BRANCH_WEIGHT]] = !{!"branch_weights", i32 1, i32 0}
-; ICALL-PROM-NOT: !"VP"
+;--- lib.ll
+source_filename = "lib.cc"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-linux-gnu"
+
+@calleeAddrs = global [2 x ptr] [ptr @_ZL7callee0v, ptr @_Z7callee1v]
+
+define void @_Z7callee1v() {
+  ret void
+}
+
+define internal void @_ZL7callee0v() {
+  ret void
+}
+
+define void @_Z11global_funcv() {
+entry:
+  %0 = load ptr, ptr @calleeAddrs
+  call void %0()
+  %1 = load ptr, ptr getelementptr inbounds ([2 x ptr], ptr @calleeAddrs, i64 0, i64 1)
+  call void %1()
+  ret void
+}
+
+;--- a.proftext
+:ir
+_Z7callee1v
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1
+
+main
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1
+
+lib.cc;_ZL7callee0v
+# Func Hash:
+742261418966908927
+# Num Counters:
+1
+# Counter Values:
+1
+
+_Z11global_funcv
+# Func Hash:
+567090795815895039
+# Num Counters:
+1
+# Counter Values:
+1
+# Num Value Kinds:
+1
+# ValueKind = IPVK_IndirectCallTarget:
+0
+# NumValueSites:
+2
+1
+lib.cc;_ZL7callee0v:1
+1
+_Z7callee1v:1

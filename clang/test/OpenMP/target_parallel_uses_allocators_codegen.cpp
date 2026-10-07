@@ -1,7 +1,7 @@
 // Test host codegen.
-// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=50 -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-llvm %s -o - | FileCheck %s --check-prefix CHECK --check-prefix CHECK-64
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=50 -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=50 -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefix CHECK --check-prefix CHECK-64
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-llvm %s -o - | FileCheck %s --check-prefix CHECK --check-prefix CHECK-64
+// RUN: %clang_cc1 -fopenmp -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefix CHECK --check-prefix CHECK-64
 
 // expected-no-diagnostics
 #ifndef HEADER
@@ -57,8 +57,8 @@ typedef struct omp_alloctrait_t {
 } omp_alloctrait_t;
 
 // Just map the traits variable as a firstprivate variable.
-// CHECK-DAG: [[SIZES:@.+]] = private unnamed_addr constant [1 x i64] [i64 160]
-// CHECK-DAG: [[MAPTYPES:@.+]] = private unnamed_addr constant [1 x i64] [i64 673]
+// CHECK-DAG: [[SIZES:@.+]] = private unnamed_addr constant [2 x i64] [i64 160, i64 0]
+// CHECK-DAG: [[MAPTYPES:@.+]] = private unnamed_addr constant [2 x i64] [i64 673, i64 288]
 
 // CHECK: define {{.*}}[[FOO:@.+]]()
 void foo() {
@@ -69,17 +69,16 @@ void foo() {
 // CHECK: [[CMP:%.+]] = icmp ne i32 [[RES]], 0
 // CHECK: br i1 [[CMP]], label %[[FAILED:.+]], label %[[DONE:.+]]
 // CHECK: [[FAILED]]:
-// CHECK: call void @[[TGT_REGION]](ptr %{{[^,]+}})
+// CHECK: call void @[[TGT_REGION]](ptr %{{[^,]+}}, ptr null)
 #pragma omp target parallel uses_allocators(omp_null_allocator, omp_thread_mem_alloc, my_allocator(traits))
   ;
 }
 
-// CHECK: define internal void @[[TGT_REGION]](ptr {{.+}})
+// CHECK: define internal void @[[TGT_REGION]](ptr {{.+}}, ptr {{[^)]*}})
 // CHECK: [[TRAITS_ADDR_REF:%.+]] = alloca ptr,
 // CHECK: [[MY_ALLOCATOR_ADDR:%.+]] = alloca i64,
 // CHECK: [[TRAITS_ADDR:%.+]] = load ptr, ptr [[TRAITS_ADDR_REF]],
-// CHECK: [[TRAITS:%.+]] = load ptr, ptr [[TRAITS_ADDR]],
-// CHECK: [[ALLOCATOR:%.+]] = call ptr @__kmpc_init_allocator(i32 %{{.+}}, ptr null, i32 10, ptr [[TRAITS]])
+// CHECK: [[ALLOCATOR:%.+]] = call ptr @__kmpc_init_allocator(i32 %{{.+}}, ptr null, i32 10, ptr [[TRAITS_ADDR]])
 // CHECK: [[CONV:%.+]] = ptrtoint ptr [[ALLOCATOR]] to i64
 // CHECK: store i64 [[CONV]], ptr [[MY_ALLOCATOR_ADDR]],
 

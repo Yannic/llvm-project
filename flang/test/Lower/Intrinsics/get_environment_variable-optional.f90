@@ -1,60 +1,57 @@
 ! Test GET_ENVIRONMENT_VARIABLE with dynamically optional arguments.
-! RUN: bbc -emit-fir %s -o - | FileCheck %s
+! RUN: %flang_fc1 -emit-hlfir %s -o - | FileCheck %s
 
 
 ! CHECK-LABEL: func @_QPtest(
-! CHECK-SAME:  %[[VAL_0:.*]]: !fir.boxchar<1> {fir.bindc_name = "name", fir.optional},
-! CHECK-SAME:  %[[VAL_1:.*]]: !fir.boxchar<1> {fir.bindc_name = "value", fir.optional},
-! CHECK-SAME:  %[[VAL_2:.*]]: !fir.ref<i32> {fir.bindc_name = "length", fir.optional},
-! CHECK-SAME:  %[[VAL_3:.*]]: !fir.ref<i32> {fir.bindc_name = "status", fir.optional},
-! CHECK-SAME:  %[[VAL_4:.*]]: !fir.ref<!fir.logical<4>> {fir.bindc_name = "trim_name", fir.optional},
-! CHECK-SAME:  %[[VAL_5:.*]]: !fir.boxchar<1> {fir.bindc_name = "errmsg", fir.optional}) {
-subroutine test(name, value, length, status, trim_name, errmsg) 
+! CHECK-SAME:  %[[ARG_0:.*]]: !fir.boxchar<1> {fir.bindc_name = "name", fir.optional},
+! CHECK-SAME:  %[[ARG_1:.*]]: !fir.boxchar<1> {fir.bindc_name = "value", fir.optional},
+! CHECK-SAME:  %[[ARG_2:.*]]: !fir.ref<i32> {fir.bindc_name = "length", fir.optional},
+! CHECK-SAME:  %[[ARG_3:.*]]: !fir.ref<i32> {fir.bindc_name = "status", fir.optional},
+! CHECK-SAME:  %[[ARG_4:.*]]: !fir.ref<!fir.logical<4>> {fir.bindc_name = "trim_name", fir.optional},
+! CHECK-SAME:  %[[ARG_5:.*]]: !fir.boxchar<1> {fir.bindc_name = "errmsg", fir.optional}) {
+subroutine test(name, value, length, status, trim_name, errmsg)
   integer, optional :: status, length
   character(*), optional :: name, value, errmsg
   logical, optional :: trim_name
-  ! Note: name is not optional in et_environment_variable and must be present
-  call get_environment_variable(name, value, length, status, trim_name, errmsg) 
-! CHECK:  %[[VAL_6:.*]]:2 = fir.unboxchar %[[VAL_5]] : (!fir.boxchar<1>) -> (!fir.ref<!fir.char<1,?>>, index)
-! CHECK:  %[[VAL_7:.*]]:2 = fir.unboxchar %[[VAL_0]] : (!fir.boxchar<1>) -> (!fir.ref<!fir.char<1,?>>, index)
-! CHECK:  %[[VAL_8:.*]]:2 = fir.unboxchar %[[VAL_1]] : (!fir.boxchar<1>) -> (!fir.ref<!fir.char<1,?>>, index)
-! CHECK:  %[[VAL_9:.*]] = fir.embox %[[VAL_7]]#0 typeparams %[[VAL_7]]#1 : (!fir.ref<!fir.char<1,?>>, index) -> !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_10:.*]] = fir.is_present %[[VAL_8]]#0 : (!fir.ref<!fir.char<1,?>>) -> i1
-! CHECK:  %[[VAL_11:.*]] = fir.embox %[[VAL_8]]#0 typeparams %[[VAL_8]]#1 : (!fir.ref<!fir.char<1,?>>, index) -> !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_12:.*]] = fir.absent !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_13:.*]] = arith.select %[[VAL_10]], %[[VAL_11]], %[[VAL_12]] : !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_14:.*]] = fir.is_present %[[VAL_6]]#0 : (!fir.ref<!fir.char<1,?>>) -> i1
-! CHECK:  %[[VAL_15:.*]] = fir.embox %[[VAL_6]]#0 typeparams %[[VAL_6]]#1 : (!fir.ref<!fir.char<1,?>>, index) -> !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_16:.*]] = fir.absent !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_17:.*]] = arith.select %[[VAL_14]], %[[VAL_15]], %[[VAL_16]] : !fir.box<!fir.char<1,?>>
-! CHECK:  %[[VAL_18:.*]] = fir.convert %[[VAL_4]] : (!fir.ref<!fir.logical<4>>) -> i64
-! CHECK:  %[[VAL_19:.*]] = arith.constant 0 : i64
-! CHECK:  %[[VAL_20:.*]] = arith.cmpi ne, %[[VAL_18]], %[[VAL_19]] : i64
-! CHECK:  %[[VAL_21:.*]] = fir.if %[[VAL_20]] -> (i1) {
-! CHECK:    %[[VAL_22:.*]] = fir.load %[[VAL_4]] : !fir.ref<!fir.logical<4>>
-! CHECK:    %[[VAL_23:.*]] = fir.convert %[[VAL_22]] : (!fir.logical<4>) -> i1
-! CHECK:    fir.result %[[VAL_23]] : i1
+  ! Note: name is not optional in get_environment_variable and must be present
+  call get_environment_variable(name, value, length, status, trim_name, errmsg)
+! CHECK:  %[[errmsgUnbox:.*]]:2 = fir.unboxchar %[[ARG_5]] : (!fir.boxchar<1>) -> (!fir.ref<!fir.char<1,?>>, index)
+! CHECK:  %[[errmsgDeclare:.*]]:2 = hlfir.declare %[[errmsgUnbox]]#0 typeparams %[[errmsgUnbox]]#1
+! CHECK:  %[[lengthDeclare:.*]]:2 = hlfir.declare %[[ARG_2]]
+! CHECK:  %[[nameUnbox:.*]]:2 = fir.unboxchar %[[ARG_0]] : (!fir.boxchar<1>) -> (!fir.ref<!fir.char<1,?>>, index)
+! CHECK:  %[[nameDeclare:.*]]:2 = hlfir.declare %[[nameUnbox]]#0 typeparams %[[nameUnbox]]#1
+! CHECK:  %[[statusDeclare:.*]]:2 = hlfir.declare %[[ARG_3]]
+! CHECK:  %[[trimNameDeclare:.*]]:2 = hlfir.declare %[[ARG_4]]
+! CHECK:  %[[valueUnbox:.*]]:2 = fir.unboxchar %[[ARG_1]] : (!fir.boxchar<1>) -> (!fir.ref<!fir.char<1,?>>, index)
+! CHECK:  %[[valueDeclare:.*]]:2 = hlfir.declare %[[valueUnbox]]#0 typeparams %[[valueUnbox]]#1
+! CHECK:  %[[valueIsPresent:.*]] = fir.is_present %[[valueDeclare]]#0 : (!fir.boxchar<1>) -> i1
+! CHECK:  %[[lengthIsPresent:.*]] = fir.is_present %[[lengthDeclare]]#0 : (!fir.ref<i32>) -> i1
+! CHECK:  %[[errmsgIsPresent:.*]] = fir.is_present %[[errmsgDeclare]]#0 : (!fir.boxchar<1>) -> i1
+! CHECK:  %[[nameBox:.*]] = fir.embox %[[nameDeclare]]#1 typeparams %[[nameUnbox]]#1 : (!fir.ref<!fir.char<1,?>>, index) -> !fir.box<!fir.char<1,?>>
+! CHECK:  %[[valueReboxed:.*]] = fir.embox %[[valueDeclare]]#1 typeparams %[[valueUnbox]]#1 : (!fir.ref<!fir.char<1,?>>, index) -> !fir.box<!fir.char<1,?>>
+! CHECK:  %[[valueAbsent:.*]] = fir.absent !fir.box<!fir.char<1,?>>
+! CHECK:  %[[valueOrAbsent:.*]] = arith.select %[[valueIsPresent]], %[[valueReboxed]], %[[valueAbsent]] : !fir.box<!fir.char<1,?>>
+! CHECK:  %[[lengthBox:.*]] = fir.embox %[[lengthDeclare]]#0 : (!fir.ref<i32>) -> !fir.box<i32>
+! CHECK:  %[[lengthAbsent:.*]] = fir.absent !fir.box<i32>
+! CHECK:  %[[lengthOrAbsent:.*]] = arith.select %[[lengthIsPresent]], %[[lengthBox]], %[[lengthAbsent]] : !fir.box<i32>
+! CHECK:  %[[errmsgReboxed:.*]] = fir.embox %[[errmsgDeclare]]#1 typeparams %[[errmsgUnbox]]#1 : (!fir.ref<!fir.char<1,?>>, index) -> !fir.box<!fir.char<1,?>>
+! CHECK:  %[[errmsgAbsent:.*]] = fir.absent !fir.box<!fir.char<1,?>>
+! CHECK:  %[[errmsgOrAbsent:.*]] = arith.select %[[errmsgIsPresent]], %[[errmsgReboxed]], %[[errmsgAbsent]] : !fir.box<!fir.char<1,?>>
+! CHECK:  %[[trimName:.*]] = fir.if %{{.*}} -> (i1) {
+! CHECK:    %[[trimLoad:.*]] = fir.load %[[trimNameDeclare]]#0 : !fir.ref<!fir.logical<4>>
+! CHECK:    %[[trimCast:.*]] = fir.convert %[[trimLoad]] : (!fir.logical<4>) -> i1
+! CHECK:    fir.result %[[trimCast]] : i1
 ! CHECK:  } else {
-! CHECK:    %[[VAL_24:.*]] = arith.constant true
-! CHECK:    fir.result %[[VAL_24]] : i1
+! CHECK:    %[[trueVal:.*]] = arith.constant true
+! CHECK:    fir.result %[[trueVal]] : i1
 ! CHECK:  }
-! CHECK:  %[[VAL_27:.*]] = fir.convert %[[VAL_9]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
-! CHECK:  %[[VAL_28:.*]] = fir.convert %[[VAL_13]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
-! CHECK:  %[[VAL_29:.*]] = fir.convert %[[VAL_17]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
-! CHECK:  %[[VAL_31:.*]] = fir.call @_FortranAEnvVariableValue(%[[VAL_27]], %[[VAL_28]], %[[VAL_32:.*]], %[[VAL_29]], %{{.*}}, %{{.*}}) {{.*}}: (!fir.box<none>, !fir.box<none>, i1, !fir.box<none>, !fir.ref<i8>, i32) -> i32
-! CHECK:  %[[VAL_33:.*]] = fir.convert %[[VAL_3]] : (!fir.ref<i32>) -> i64
-! CHECK:  %[[VAL_34:.*]] = arith.constant 0 : i64
-! CHECK:  %[[VAL_35:.*]] = arith.cmpi ne, %[[VAL_33]], %[[VAL_34]] : i64
-! CHECK:  fir.if %[[VAL_35]] {
-! CHECK:    fir.store %[[VAL_31]] to %[[VAL_3]] : !fir.ref<i32>
-! CHECK:  }
-! CHECK:  %[[VAL_36:.*]] = fir.convert %[[VAL_2]] : (!fir.ref<i32>) -> i64
-! CHECK:  %[[VAL_37:.*]] = arith.constant 0 : i64
-! CHECK:  %[[VAL_38:.*]] = arith.cmpi ne, %[[VAL_36]], %[[VAL_37]] : i64
-! CHECK:  fir.if %[[VAL_38]] {
-! CHECK:    %[[VAL_41:.*]] = fir.convert %[[VAL_9]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
-! CHECK:    %[[VAL_43:.*]] = fir.call @_FortranAEnvVariableLength(%[[VAL_41]], %[[VAL_32]], %{{.*}}, %{{.*}}) {{.*}}: (!fir.box<none>, i1, !fir.ref<i8>, i32) -> i64
-! CHECK:    %[[VAL_44:.*]] = fir.convert %[[VAL_43]] : (i64) -> i32
-! CHECK:    fir.store %[[VAL_44]] to %[[VAL_2]] : !fir.ref<i32>
+! CHECK:  %[[sourceLine:.*]] = arith.constant 17 : i32
+! CHECK:  %[[name:.*]] = fir.convert %[[nameBox]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
+! CHECK:  %[[value:.*]] = fir.convert %[[valueOrAbsent]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
+! CHECK:  %[[length:.*]] = fir.convert %[[lengthOrAbsent]] : (!fir.box<i32>) -> !fir.box<none>
+! CHECK:  %[[errmsg:.*]] = fir.convert %[[errmsgOrAbsent]] : (!fir.box<!fir.char<1,?>>) -> !fir.box<none>
+! CHECK:  %[[status:.*]] = fir.call @_FortranAGetEnvVariable(%[[name]], %[[value]], %[[length]], %[[trimName]], %[[errmsg]], %{{.*}}, %[[sourceLine]]) {{.*}}: (!fir.box<none>, !fir.box<none>, !fir.box<none>, i1, !fir.box<none>, !fir.ref<i8>, i32) -> i32
+! CHECK:  fir.if {{.*}} {
+! CHECK:    fir.store %[[status]] to %[[statusDeclare]]#0 : !fir.ref<i32>
 ! CHECK:  }
 end subroutine

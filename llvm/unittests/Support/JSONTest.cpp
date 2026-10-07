@@ -12,6 +12,7 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <utility>
 
 namespace llvm {
 namespace json {
@@ -50,6 +51,18 @@ TEST(JSONTest, Constructors) {
   EXPECT_EQ("2.5", s(std::optional<double>(2.5)));
   EXPECT_EQ("[[2.5,null]]", s(std::vector<std::vector<std::optional<double>>>{
                                 {2.5, std::nullopt}}));
+}
+
+TEST(JSONTest, Move) {
+  std::string S = "Hello";
+  Value CopyS = S;
+  EXPECT_EQ(R"("Hello")", s(Value(std::move(CopyS))));
+  EXPECT_EQ("null", s(CopyS));
+
+  int N = 5;
+  Value CopyN = N;
+  EXPECT_EQ("5", s(Value(std::move(CopyN))));
+  EXPECT_EQ("null", s(CopyN));
 }
 
 TEST(JSONTest, StringOwnership) {
@@ -142,8 +155,8 @@ TEST(JSONTest, Object) {
   auto E = O.find("e");
   EXPECT_EQ(E, O.end());
 
-  O.erase("b");
   O.erase(D);
+  O.erase("b");
   EXPECT_EQ(O.size(), 2u);
   EXPECT_EQ(R"({"a":1,"c":3})", s(std::move(O)));
 }
@@ -442,6 +455,39 @@ TEST(JSONTest, U64Integers) {
   }
 }
 
+template <typename T> void checkCppIntegers() {
+  Value Val = T{10};
+  T Var = 10;
+  EXPECT_EQ(Val, Var);
+
+  Val = T{std::numeric_limits<T>::max()};
+  Var = std::numeric_limits<T>::max();
+  EXPECT_EQ(Val, Var);
+
+  Val = T{std::numeric_limits<T>::min()};
+  Var = std::numeric_limits<T>::min();
+  EXPECT_EQ(Val, Var);
+}
+
+// Test that underlying C++ integer types behave as expected.
+TEST(JSONTest, CppIntegers) {
+  checkCppIntegers<char>();
+  checkCppIntegers<signed char>();
+  checkCppIntegers<unsigned char>();
+
+  checkCppIntegers<short>();
+  checkCppIntegers<unsigned short>();
+
+  checkCppIntegers<int>();
+  checkCppIntegers<unsigned int>();
+
+  checkCppIntegers<long>();
+  checkCppIntegers<unsigned long>();
+
+  checkCppIntegers<long long>();
+  checkCppIntegers<unsigned long long>();
+}
+
 // Sample struct with typical JSON-mapping rules.
 struct CustomStruct {
   CustomStruct() : B(false) {}
@@ -469,7 +515,7 @@ static std::string errorContext(const Value &V, const Path::Root &R) {
   std::string Context;
   llvm::raw_string_ostream OS(Context);
   R.printErrorContext(V, OS);
-  return OS.str();
+  return Context;
 }
 
 TEST(JSONTest, Deserialize) {
@@ -570,7 +616,7 @@ TEST(JSONTest, Stream) {
       J.attributeEnd();
       J.attribute("baz", "xyz");
     });
-    return OS.str();
+    return S;
   };
 
   const char *Plain =

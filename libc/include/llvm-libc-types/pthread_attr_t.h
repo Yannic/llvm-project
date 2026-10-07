@@ -6,16 +6,20 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef __LLVM_LIBC_TYPES_PTHREAD_ATTR_T_H
-#define __LLVM_LIBC_TYPES_PTHREAD_ATTR_T_H
+#ifndef LLVM_LIBC_TYPES_PTHREAD_ATTR_T_H
+#define LLVM_LIBC_TYPES_PTHREAD_ATTR_T_H
 
-#include <llvm-libc-types/size_t.h>
+#include "size_t.h"
+#include "struct_sched_param.h"
 
 typedef struct {
   int __detachstate;
+  int __inheritsched;
+  int __schedpolicy;
+  struct sched_param __schedparam;
   void *__stack;
   size_t __stacksize;
   size_t __guardsize;
 } pthread_attr_t;
 
-#endif // __LLVM_LIBC_TYPES_PTHREAD_ATTR_T_H
+#endif // LLVM_LIBC_TYPES_PTHREAD_ATTR_T_H

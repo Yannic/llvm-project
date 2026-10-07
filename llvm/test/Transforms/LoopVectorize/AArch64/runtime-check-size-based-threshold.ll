@@ -1,5 +1,7 @@
-; RUN: opt -passes=loop-vectorize -mtriple=arm64-apple-iphoneos -vectorizer-min-trip-count=8 -S %s | FileCheck --check-prefixes=CHECK,DEFAULT %s
-; RUN: opt -passes=loop-vectorize -mtriple=arm64-apple-iphoneos -vectorizer-min-trip-count=8 -vectorize-memory-check-threshold=1 -S %s | FileCheck --check-prefixes=CHECK,THRESHOLD %s
+; RUN: opt -passes=loop-vectorize -mtriple=arm64-apple-iphoneos -vectorizer-min-trip-count=8 \
+; RUN:   -enable-epilogue-vectorization=false -S %s | FileCheck --check-prefixes=CHECK,DEFAULT %s
+; RUN: opt -passes=loop-vectorize -mtriple=arm64-apple-iphoneos -vectorizer-min-trip-count=8 \
+; RUN:   -enable-epilogue-vectorization=false -vectorize-memory-check-threshold=1 -S %s | FileCheck --check-prefixes=CHECK,THRESHOLD %s
 
 ; Tests for loops with large numbers of runtime checks. Check that loops are
 ; vectorized, if the loop trip counts are large and the impact of the runtime
@@ -14,7 +16,7 @@ define void @test_tc_too_small(ptr %ptr.1, ptr %ptr.2, ptr %ptr.3, ptr %ptr.4, i
 entry:
   br label %loop
 
-loop:                                             ; preds = %bb54, %bb37
+loop:
   %iv = phi i64 [ 0, %entry ], [ %iv.next, %loop ]
   %gep.1 = getelementptr inbounds i16, ptr %ptr.1, i64 %iv
   %lv.1 = load i16, ptr %gep.1, align 2
@@ -69,7 +71,7 @@ define void @test_tc_big_enough(ptr %ptr.1, ptr %ptr.2, ptr %ptr.3, ptr %ptr.4, 
 entry:
   br label %loop
 
-loop:                                             ; preds = %bb54, %bb37
+loop:
   %iv = phi i64 [ 0, %entry ], [ %iv.next, %loop ]
   %gep.1 = getelementptr inbounds i16, ptr %ptr.1, i64 %iv
   %lv.1 = load i16, ptr %gep.1, align 2
@@ -124,7 +126,7 @@ define void @test_tc_unknown(ptr %ptr.1, ptr %ptr.2, ptr %ptr.3, ptr %ptr.4, i64
 entry:
   br label %loop
 
-loop:                                             ; preds = %bb54, %bb37
+loop:
   %iv = phi i64 [ 0, %entry ], [ %iv.next, %loop ]
   %gep.1 = getelementptr inbounds i16, ptr %ptr.1, i64 %iv
   %lv.1 = load i16, ptr %gep.1, align 2

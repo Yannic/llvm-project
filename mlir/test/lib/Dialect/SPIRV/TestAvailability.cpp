@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVAttributes.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
 #include "mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h"
 #include "mlir/Pass/Pass.h"
@@ -20,7 +21,7 @@ using namespace mlir;
 namespace {
 /// A pass for testing SPIR-V op availability.
 struct PrintOpAvailability
-    : public PassWrapper<PrintOpAvailability, OperationPass<func::FuncOp>> {
+    : public PassWrapper<PrintOpAvailability, OperationPass<mlir::ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrintOpAvailability)
 
   void runOnOperation() override;
@@ -32,12 +33,10 @@ struct PrintOpAvailability
 } // namespace
 
 void PrintOpAvailability::runOnOperation() {
-  auto f = getOperation();
-  llvm::outs() << f.getName() << "\n";
-
+  mlir::ModuleOp moduleOp = getOperation();
   Dialect *spirvDialect = getContext().getLoadedDialect("spirv");
 
-  f->walk([&](Operation *op) {
+  auto opCallback = [&](Operation *op) {
     if (op->getDialect() != spirvDialect)
       return WalkResult::advance();
 
@@ -88,6 +87,16 @@ void PrintOpAvailability::runOnOperation() {
     os.flush();
 
     return WalkResult::advance();
+  };
+
+  moduleOp.walk([&](func::FuncOp f) {
+    llvm::outs() << f.getName() << "\n";
+    f->walk(opCallback);
+  });
+
+  moduleOp.walk([&](spirv::GraphARMOp g) {
+    llvm::outs() << g.getName() << "\n";
+    g->walk(opCallback);
   });
 }
 
@@ -159,7 +168,7 @@ struct ConvertToGroupNonUniformBallot : RewritePattern {
                                 PatternRewriter &rewriter) const override {
     Value predicate = op->getOperand(0);
     rewriter.replaceOpWithNewOp<spirv::GroupNonUniformBallotOp>(
-        op, op->getResult(0).getType(), spirv::Scope::Workgroup, predicate);
+        op, op->getResult(0).getType(), spirv::Scope::Subgroup, predicate);
     return success();
   }
 };
@@ -199,8 +208,24 @@ struct ConvertToIntegerDotProd : RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
+    typename SPIRVOp::Properties properties{};
+    SPIRVOp::populateDefaultProperties(
+        OperationName(SPIRVOp::getOperationName(), rewriter.getContext()),
+        properties);
+    if (failed(SPIRVOp::setPropertiesFromAttr(
+            properties, op->getDiscardableAttrDictionary(),
+            [&]() { return op->emitError("invalid SPIR-V properties"); })))
+      return failure();
+    auto propertiesAttr = dyn_cast_or_null<DictionaryAttr>(
+        SPIRVOp::getPropertiesAsAttr(rewriter.getContext(), properties));
+    SmallVector<NamedAttribute> discardableAttrs;
+    for (NamedAttribute attr : op->getDiscardableAttrDictionary().getValue()) {
+      if (!propertiesAttr || !propertiesAttr.contains(attr.getName()))
+        discardableAttrs.push_back(attr);
+    }
     rewriter.replaceOpWithNewOp<SPIRVOp>(op, op->getResultTypes(),
-                                         op->getOperands(), op->getAttrs());
+                                         op->getOperands(), properties,
+                                         discardableAttrs);
     return success();
   }
 };
@@ -210,9 +235,8 @@ void ConvertToTargetEnv::runOnOperation() {
   MLIRContext *context = &getContext();
   func::FuncOp fn = getOperation();
 
-  auto targetEnv = fn.getOperation()
-                       ->getAttr(spirv::getTargetEnvAttrName())
-                       .cast<spirv::TargetEnvAttr>();
+  auto targetEnv = dyn_cast_or_null<spirv::TargetEnvAttr>(
+      fn.getOperation()->getDiscardableAttr(spirv::getTargetEnvAttrName()));
   if (!targetEnv) {
     fn.emitError("missing 'spirv.target_env' attribute");
     return signalPassFailure();

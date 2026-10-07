@@ -1,4 +1,4 @@
-;RUN: llc < %s -march=r600 -mcpu=redwood < %s | FileCheck %s
+;RUN: llc < %s -mtriple=r600 -mcpu=redwood < %s | FileCheck %s
 
 ;CHECK: ALU_PUSH
 ;CHECK: LOOP_START_DX10 @11
@@ -24,7 +24,7 @@ for.end:                                          ; preds = %for.body, %entry
   ret void
 }
 
-attributes #0 = { nounwind "fp-contract-model"="standard" "relocation-model"="pic" "ssp-buffers-size"="8" }
+attributes #0 = { nounwind }
 
 !opencl.kernels = !{!0, !1, !2, !3}
 

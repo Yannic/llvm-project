@@ -6,29 +6,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/__support/OSUtil/linux/syscall_wrappers/wait4.h"
+#include "src/__support/common.h"
+#include "src/__support/libc_assert.h"
+#include "src/__support/libc_errno.h"
+
+#include "src/__support/macros/config.h"
 #include "src/sys/wait/wait.h"
 
-#include "src/__support/OSUtil/syscall.h" // For internal syscall function.
-#include "src/__support/common.h"
-
-#include <errno.h>
-#include <sys/syscall.h> // For syscall numbers.
-#include <sys/wait.h>
-
-namespace __llvm_libc {
-
-// The implementation of wait here is very minimal. We will add more
-// functionality and standard compliance in future.
+namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(pid_t, wait, (int *wait_status)) {
-  pid_t pid = __llvm_libc::syscall_impl(SYS_wait4, -1, wait_status, 0, 0);
-  if (pid < 0) {
-    // Error case, a child process was not created.
-    errno = -pid;
+  auto result = linux_syscalls::wait4(-1, wait_status, 0, nullptr);
+  if (!result.has_value()) {
+    libc_errno = result.error();
     return -1;
   }
-
-  return pid;
+  return result.value();
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

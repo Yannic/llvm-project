@@ -10,7 +10,9 @@
 #define LLDB_CORE_ARCHITECTURE_H
 
 #include "lldb/Core/PluginInterface.h"
+#include "lldb/Target/DynamicRegisterInfo.h"
 #include "lldb/Target/MemoryTagManager.h"
+#include "lldb/Target/RegisterContextUnwind.h"
 
 namespace lldb_private {
 
@@ -58,6 +60,16 @@ public:
   virtual void AdjustBreakpointAddress(const Symbol &func,
                                        Address &addr) const {}
 
+  /// If \a addr falls within the non-executable header at a function's start,
+  /// return the address of the first instruction past the header. Otherwise
+  /// return \a addr unchanged.
+  ///
+  /// Some formats begin a function with bytes that are part of the function but
+  /// are not executable instructions, so an address at the raw function start
+  /// cannot hold a breakpoint and cannot be disassembled. This is specifically
+  /// used for WebAssembly, where a function begins with a local variable
+  /// declaration header.
+  virtual Address SkipFunctionHeader(Address addr) const { return addr; }
 
   /// Get \a load_addr as a callable code load address for this target
   ///
@@ -108,6 +120,45 @@ public:
   // architecture.
   virtual const MemoryTagManager *GetMemoryTagManager() const {
     return nullptr;
+  }
+
+  // This returns true if a write to the named register should cause lldb to
+  // reconfigure its register information. For example on AArch64 writing to vg
+  // to change the vector length means lldb has to change the size of registers.
+  virtual bool
+  RegisterWriteCausesReconfigure(const llvm::StringRef name) const {
+    return false;
+  }
+
+  // Call this after writing a register for which RegisterWriteCausesReconfigure
+  // returns true. This method will update the layout of registers according to
+  // the new state e.g. the new length of scalable vector registers.
+  // Returns true if anything changed, which means existing register values must
+  // be invalidated.
+  virtual bool ReconfigureRegisterInfo(DynamicRegisterInfo &reg_info,
+                                       DataExtractor &reg_data,
+                                       RegisterContext &reg_context) const {
+    return false;
+  }
+
+  /// Return an UnwindPlan that allows architecture-defined rules for finding
+  /// saved registers, given a particular set of register values.
+  virtual lldb::UnwindPlanSP GetArchitectureUnwindPlan(
+      lldb_private::Thread &thread, lldb_private::RegisterContextUnwind *regctx,
+      std::shared_ptr<const UnwindPlan> current_unwindplan) {
+    return lldb::UnwindPlanSP();
+  }
+
+  /// Returns whether a given byte sequence is a valid trap instruction for the
+  /// architecture. Some architectures feature instructions that have immediates
+  /// that can take on any value, resulting in a family of valid byte sequences.
+  /// If the observed byte sequence is shorter than the reference then they are
+  /// considered not to match, even if the initial bytes would match.
+  virtual bool IsValidTrapInstruction(llvm::ArrayRef<uint8_t> reference,
+                                      llvm::ArrayRef<uint8_t> observed) const {
+    if (reference.size() > observed.size())
+      return false;
+    return !std::memcmp(reference.data(), observed.data(), reference.size());
   }
 };
 

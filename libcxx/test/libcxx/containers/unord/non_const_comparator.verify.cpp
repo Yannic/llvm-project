@@ -12,12 +12,13 @@
 // Test that libc++ generates a warning diagnostic when the container is
 // provided a non-const callable comparator or a non-const hasher.
 
+#include <__type_traits/invoke.h>
 #include <unordered_set>
 #include <unordered_map>
 
 struct BadHash {
   template <class T>
-  size_t operator()(T const& t) {
+  std::size_t operator()(T const& t) {
     return std::hash<T>{}(t);
   }
 };
@@ -29,9 +30,9 @@ struct BadEqual {
   }
 };
 
-int main(int, char**) {
-  static_assert(!std::__invokable<BadEqual const&, int const&, int const&>::value, "");
-  static_assert(std::__invokable<BadEqual&, int const&, int const&>::value, "");
+void f() {
+  static_assert(!std::__is_invocable_v<BadEqual const&, int const&, int const&>, "");
+  static_assert(std::__is_invocable_v<BadEqual&, int const&, int const&>, "");
 
   // expected-warning@unordered_set:* 2 {{the specified comparator type does not provide a viable const call operator}}
   // expected-warning@unordered_map:* 2 {{the specified comparator type does not provide a viable const call operator}}
@@ -41,19 +42,21 @@ int main(int, char**) {
   {
     using C = std::unordered_set<int, BadHash, BadEqual>;
     C s;
+    (void)s;
   }
   {
     using C = std::unordered_multiset<long, BadHash, BadEqual>;
     C s;
+    (void)s;
   }
   {
     using C = std::unordered_map<int, int, BadHash, BadEqual>;
     C s;
+    (void)s;
   }
   {
     using C = std::unordered_multimap<long, int, BadHash, BadEqual>;
     C s;
+    (void)s;
   }
-
-  return 0;
 }

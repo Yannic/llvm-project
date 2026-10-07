@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "type_classification/moveconstructible.h"
@@ -163,5 +164,3 @@ struct is_equality_comparable {
   bool operator==(is_equality_comparable const&) const = default;
 };
 static_assert(std::regular<is_equality_comparable>);
-
-int main(int, char**) { return 0; }

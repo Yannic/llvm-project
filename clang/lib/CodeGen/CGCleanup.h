@@ -16,8 +16,12 @@
 #include "EHScopeStack.h"
 
 #include "Address.h"
+#include "clang/CodeGenUtils/EHPersonality.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Instruction.h"
 
 namespace llvm {
 class BasicBlock;
@@ -40,6 +44,10 @@ struct CatchTypeInfo {
 
 /// A protected scope for zero-cost EH handling.
 class EHScope {
+public:
+  enum Kind { Cleanup, Catch, Terminate, Filter };
+
+private:
   llvm::BasicBlock *CachedLandingPad;
   llvm::BasicBlock *CachedEHDispatchBlock;
 
@@ -47,6 +55,7 @@ class EHScope {
 
   class CommonBitFields {
     friend class EHScope;
+    LLVM_PREFERRED_TYPE(Kind)
     unsigned Kind : 3;
   };
   enum { NumCommonBits = 3 };
@@ -64,22 +73,38 @@ protected:
     unsigned : NumCommonBits;
 
     /// Whether this cleanup needs to be run along normal edges.
+    LLVM_PREFERRED_TYPE(bool)
     unsigned IsNormalCleanup : 1;
 
     /// Whether this cleanup needs to be run along exception edges.
+    LLVM_PREFERRED_TYPE(bool)
     unsigned IsEHCleanup : 1;
 
     /// Whether this cleanup is currently active.
+    LLVM_PREFERRED_TYPE(bool)
     unsigned IsActive : 1;
 
     /// Whether this cleanup is a lifetime marker
+    LLVM_PREFERRED_TYPE(bool)
     unsigned IsLifetimeMarker : 1;
 
+    /// Whether this cleanup is a fake use
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned IsFakeUse : 1;
+
     /// Whether the normal cleanup should test the activation flag.
+    LLVM_PREFERRED_TYPE(bool)
     unsigned TestFlagInNormalCleanup : 1;
 
     /// Whether the EH cleanup should test the activation flag.
+    LLVM_PREFERRED_TYPE(bool)
     unsigned TestFlagInEHCleanup : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned IsSEHFinallyCleanup : 1;
+
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned IsStackRestore : 1;
 
     /// The amount of extra storage needed by the Cleanup.
     /// Always a multiple of the scope-stack alignment.
@@ -101,8 +126,6 @@ protected:
   };
 
 public:
-  enum Kind { Cleanup, Catch, Terminate, Filter };
-
   EHScope(Kind kind, EHScopeStack::stable_iterator enclosingEHScope)
     : CachedLandingPad(nullptr), CachedEHDispatchBlock(nullptr),
       EnclosingEHScope(enclosingEHScope) {
@@ -257,6 +280,51 @@ class alignas(8) EHCleanupScope : public EHScope {
   };
   mutable struct ExtInfo *ExtInfo;
 
+  /// Erases auxillary allocas and their usages for an unused cleanup.
+  /// Cleanups should mark these allocas as 'used' if the cleanup is
+  /// emitted, otherwise these instructions would be erased.
+  struct AuxillaryAllocas {
+    SmallVector<llvm::Instruction *, 1> AuxAllocas;
+    bool used = false;
+
+    // Records a potentially unused instruction to be erased later.
+    void Add(llvm::AllocaInst *Alloca) { AuxAllocas.push_back(Alloca); }
+
+    // Mark all recorded instructions as used. These will not be erased later.
+    void MarkUsed() {
+      used = true;
+      AuxAllocas.clear();
+    }
+
+    ~AuxillaryAllocas() {
+      if (used)
+        return;
+      llvm::SetVector<llvm::Instruction *> Uses;
+      for (auto *Inst : llvm::reverse(AuxAllocas))
+        CollectUses(Inst, Uses);
+      // Delete uses in the reverse order of insertion.
+      for (auto *I : llvm::reverse(Uses))
+        I->eraseFromParent();
+    }
+
+  private:
+    void CollectUses(llvm::Instruction *I,
+                     llvm::SetVector<llvm::Instruction *> &Uses) {
+      if (!I || !Uses.insert(I))
+        return;
+      for (auto *User : I->users())
+        CollectUses(cast<llvm::Instruction>(User), Uses);
+    }
+  };
+  mutable struct AuxillaryAllocas *AuxAllocas;
+
+  AuxillaryAllocas &getAuxillaryAllocas() {
+    if (!AuxAllocas) {
+      AuxAllocas = new struct AuxillaryAllocas();
+    }
+    return *AuxAllocas;
+  }
+
   /// The number of fixups required by enclosing scopes (not including
   /// this one).  If this is the top cleanup scope, all the fixups
   /// from this index onwards belong to this scope.
@@ -289,12 +357,15 @@ public:
                  EHScopeStack::stable_iterator enclosingEH)
       : EHScope(EHScope::Cleanup, enclosingEH),
         EnclosingNormal(enclosingNormal), NormalBlock(nullptr),
-        ActiveFlag(Address::invalid()), ExtInfo(nullptr),
+        ActiveFlag(Address::invalid()), ExtInfo(nullptr), AuxAllocas(nullptr),
         FixupDepth(fixupDepth) {
     CleanupBits.IsNormalCleanup = isNormal;
     CleanupBits.IsEHCleanup = isEH;
     CleanupBits.IsActive = true;
     CleanupBits.IsLifetimeMarker = false;
+    CleanupBits.IsFakeUse = false;
+    CleanupBits.IsSEHFinallyCleanup = false;
+    CleanupBits.IsStackRestore = false;
     CleanupBits.TestFlagInNormalCleanup = false;
     CleanupBits.TestFlagInEHCleanup = false;
     CleanupBits.CleanupSize = cleanupSize;
@@ -303,8 +374,15 @@ public:
   }
 
   void Destroy() {
+    if (AuxAllocas)
+      delete AuxAllocas;
     delete ExtInfo;
   }
+  void AddAuxAllocas(llvm::SmallVector<llvm::AllocaInst *> Allocas) {
+    for (auto *Alloca : Allocas)
+      getAuxillaryAllocas().Add(Alloca);
+  }
+  void MarkEmitted() { getAuxillaryAllocas().MarkUsed(); }
   // Objects of EHCleanupScope are not destructed. Use Destroy().
   ~EHCleanupScope() = delete;
 
@@ -320,11 +398,24 @@ public:
   bool isLifetimeMarker() const { return CleanupBits.IsLifetimeMarker; }
   void setLifetimeMarker() { CleanupBits.IsLifetimeMarker = true; }
 
+  bool isStackRestore() const { return CleanupBits.IsStackRestore; }
+  void setStackRestore() { CleanupBits.IsStackRestore = true; }
+
+  bool isRedundantBeforeReturn() const {
+    return isLifetimeMarker() || isStackRestore();
+  }
+
+  bool isFakeUse() const { return CleanupBits.IsFakeUse; }
+  void setFakeUse() { CleanupBits.IsFakeUse = true; }
+
+  bool isSEHFinallyCleanup() const { return CleanupBits.IsSEHFinallyCleanup; }
+  void setSEHFinallyCleanup() { CleanupBits.IsSEHFinallyCleanup = true; }
+
   bool hasActiveFlag() const { return ActiveFlag.isValid(); }
   Address getActiveFlag() const {
     return ActiveFlag;
   }
-  void setActiveFlag(Address Var) {
+  void setActiveFlag(RawAddress Var) {
     assert(Var.getAlignment().isOne());
     ActiveFlag = Var;
   }
@@ -584,51 +675,16 @@ EHScopeStack::stabilize(iterator ir) const {
   return stable_iterator(EndOfBuffer - ir.Ptr);
 }
 
-/// The exceptions personality for a function.
-struct EHPersonality {
-  const char *PersonalityFn;
+using CodeGenUtils::EHPersonality;
 
-  // If this is non-null, this personality requires a non-standard
-  // function for rethrowing an exception after a catchall cleanup.
-  // This function must have prototype void(void*).
-  const char *CatchallRethrowFn;
+/// Selects the personality function to use for \p FD, or for the translation
+/// unit as a whole when \p FD is null.
+const EHPersonality &getEHPersonality(CodeGenModule &CGM,
+                                      const FunctionDecl *FD);
 
-  static const EHPersonality &get(CodeGenModule &CGM, const FunctionDecl *FD);
-  static const EHPersonality &get(CodeGenFunction &CGF);
-
-  static const EHPersonality GNU_C;
-  static const EHPersonality GNU_C_SJLJ;
-  static const EHPersonality GNU_C_SEH;
-  static const EHPersonality GNU_ObjC;
-  static const EHPersonality GNU_ObjC_SJLJ;
-  static const EHPersonality GNU_ObjC_SEH;
-  static const EHPersonality GNUstep_ObjC;
-  static const EHPersonality GNU_ObjCXX;
-  static const EHPersonality NeXT_ObjC;
-  static const EHPersonality GNU_CPlusPlus;
-  static const EHPersonality GNU_CPlusPlus_SJLJ;
-  static const EHPersonality GNU_CPlusPlus_SEH;
-  static const EHPersonality MSVC_except_handler;
-  static const EHPersonality MSVC_C_specific_handler;
-  static const EHPersonality MSVC_CxxFrameHandler3;
-  static const EHPersonality GNU_Wasm_CPlusPlus;
-  static const EHPersonality XL_CPlusPlus;
-
-  /// Does this personality use landingpads or the family of pad instructions
-  /// designed to form funclets?
-  bool usesFuncletPads() const {
-    return isMSVCPersonality() || isWasmPersonality();
-  }
-
-  bool isMSVCPersonality() const {
-    return this == &MSVC_except_handler || this == &MSVC_C_specific_handler ||
-           this == &MSVC_CxxFrameHandler3;
-  }
-
-  bool isWasmPersonality() const { return this == &GNU_Wasm_CPlusPlus; }
-
-  bool isMSVCXXPersonality() const { return this == &MSVC_CxxFrameHandler3; }
-};
+/// Selects the personality function to use for the function currently being
+/// emitted.
+const EHPersonality &getEHPersonality(CodeGenFunction &CGF);
 }
 }
 

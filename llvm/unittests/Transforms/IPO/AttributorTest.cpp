@@ -17,7 +17,6 @@
 #include "llvm/Testing/Support/Error.h"
 #include "llvm/Transforms/Utils/CallGraphUpdater.h"
 #include "gtest/gtest.h"
-#include <memory>
 
 namespace llvm {
 
@@ -63,7 +62,7 @@ TEST_F(AttributorTestBase, TestCast) {
   Function *F = M.getFunction("foo");
 
   const AbstractAttribute *AA =
-      &A.getOrCreateAAFor<AAIsDead>(IRPosition::function(*F));
+      A.getOrCreateAAFor<AAIsDead>(IRPosition::function(*F));
 
   EXPECT_TRUE(AA);
 
@@ -78,17 +77,17 @@ TEST_F(AttributorTestBase, AAReachabilityTest) {
   const char *ModuleString = R"(
     @x = external global i32
     define void @func4() {
-      store i32 0, i32* @x
+      store i32 0, ptr @x
       ret void
     }
 
     define internal void @func3() {
-      store i32 0, i32* @x
+      store i32 0, ptr @x
       ret void
     }
 
     define internal void @func8() {
-      store i32 0, i32* @x
+      store i32 0, ptr @x
       ret void
     }
 
@@ -105,7 +104,7 @@ TEST_F(AttributorTestBase, AAReachabilityTest) {
     }
 
     declare void @unknown()
-    define internal void @func5(void ()* %ptr) {
+    define internal void @func5(ptr %ptr) {
     entry:
       call void %ptr()
       call void @unknown()
@@ -114,8 +113,8 @@ TEST_F(AttributorTestBase, AAReachabilityTest) {
 
     define void @func6() {
     entry:
-      store i32 0, i32* @x
-      call void @func5(void ()* @func3)
+      store i32 0, ptr @x
+      call void @func5(ptr @func3)
       ret void
     }
 
@@ -171,16 +170,16 @@ TEST_F(AttributorTestBase, AAReachabilityTest) {
   Instruction &F9SecondInst = *++(F9.getEntryBlock().begin());
 
   const AAInterFnReachability &F1AA =
-      A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F1));
+      *A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F1));
 
   const AAInterFnReachability &F6AA =
-      A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F6));
+      *A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F6));
 
   const AAInterFnReachability &F7AA =
-      A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F7));
+      *A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F7));
 
   const AAInterFnReachability &F9AA =
-      A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F9));
+      *A.getOrCreateAAFor<AAInterFnReachability>(IRPosition::function(F9));
 
   F1AA.canReach(A, F3);
   F1AA.canReach(A, F4);

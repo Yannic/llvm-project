@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <utility>
+
 #include "TestAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -33,8 +35,13 @@ struct TestElementsAttrInterface
   }
   void runOnOperation() override {
     getOperation().walk([&](Operation *op) {
-      for (NamedAttribute attr : op->getAttrs()) {
-        auto elementsAttr = attr.getValue().dyn_cast<ElementsAttr>();
+      NamedAttrList attrs(op->getDiscardableAttrDictionary());
+      if (op->getPropertiesStorageSize())
+        op->getName().walkInherentAttrs(
+            op,
+            [&](StringRef name, Attribute &attr) { attrs.append(name, attr); });
+      for (NamedAttribute attr : attrs) {
+        auto elementsAttr = dyn_cast<ElementsAttr>(attr.getValue());
         if (!elementsAttr)
           continue;
         testElementsAttrIteration<int64_t>(op, elementsAttr, "int64_t");
@@ -51,14 +58,20 @@ struct TestElementsAttrInterface
     InFlightDiagnostic diag = op->emitError()
                               << "Test iterating `" << type << "`: ";
 
+    if (!isa<mlir::IntegerType>(attr.getElementType())) {
+      diag << "expected element type to be an integer type";
+      return;
+    }
+
     auto values = attr.tryGetValues<T>();
     if (!values) {
       diag << "unable to iterate type";
       return;
     }
 
-    llvm::interleaveComma(*values, diag,
-                          [&](T value) { printOneElement(diag, value); });
+    llvm::interleaveComma(*values, diag, [&](T value) {
+      printOneElement(diag, std::move(value));
+    });
   }
 };
 } // namespace

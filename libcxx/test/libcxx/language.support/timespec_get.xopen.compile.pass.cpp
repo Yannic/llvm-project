@@ -6,6 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// This test breaks when enabling LSV.
+// ADDITIONAL_COMPILE_FLAGS: -fno-modules
+
 // UNSUPPORTED: c++03, c++11, c++14
 
 // Make sure that <ctime> can be included even when _XOPEN_SOURCE is defined.

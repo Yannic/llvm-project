@@ -1,5 +1,4 @@
 // RUN: %clang_cc1 -emit-llvm-only -std=c++11 -fblocks -o - -triple x86_64-apple-darwin10 -fobjc-runtime=macosx-fragile-10.5 %s
-// rdar://9362021
 
 @class DYFuture;
 @interface NSCache
@@ -68,4 +67,15 @@ namespace PR9982 {
     Curry<__decltype(add)> c = Curry<__decltype(add)>(add);
     auto t = c(1)(10)(100);
   }
+}
+
+namespace ThisCaptureViaDependentBase {
+  // This used to crash.
+  struct Base { int m; };
+
+  template <typename T> struct S : T {
+    void f() { ^{ (void)T::m; }(); }
+  };
+
+  template struct S<Base>;
 }

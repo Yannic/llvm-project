@@ -18,20 +18,19 @@
 #  pragma GCC system_header
 #endif
 
-_LIBCPP_BEGIN_NAMESPACE_STD
+#if _LIBCPP_STD_VER >= 20
 
-#if _LIBCPP_STD_VER > 17
+_LIBCPP_BEGIN_NAMESPACE_STD
 
 // [concept.commonref]
 
-template<class _Tp, class _Up>
+template <class _Tp, class _Up>
 concept common_reference_with =
-  same_as<common_reference_t<_Tp, _Up>, common_reference_t<_Up, _Tp>> &&
-  convertible_to<_Tp, common_reference_t<_Tp, _Up>> &&
-  convertible_to<_Up, common_reference_t<_Tp, _Up>>;
-
-#endif // _LIBCPP_STD_VER > 17
+    same_as<common_reference_t<_Tp, _Up>, common_reference_t<_Up, _Tp>> &&
+    convertible_to<_Tp, common_reference_t<_Tp, _Up>> && convertible_to<_Up, common_reference_t<_Tp, _Up>>;
 
 _LIBCPP_END_NAMESPACE_STD
+
+#endif // _LIBCPP_STD_VER >= 20
 
 #endif // _LIBCPP___CONCEPTS_COMMON_REFERENCE_WITH_H

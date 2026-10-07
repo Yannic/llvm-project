@@ -1,11 +1,11 @@
-// RUN: %check_clang_tidy %s bugprone-branch-clone %t -- -- -std=c++17
+// RUN: %check_clang_tidy -std=c++17-or-later %s bugprone-branch-clone %t
 
 void handle(int);
 
 template <unsigned Index>
 void shouldFail() {
   if constexpr (Index == 0) {
-    // CHECK-MESSAGES: :[[@LINE-1]]:29: warning: repeated branch in conditional chain [bugprone-branch-clone]
+    // CHECK-MESSAGES: :[[@LINE-1]]:29: warning: repeated branch body in conditional chain [bugprone-branch-clone]
     handle(0);
   } else if constexpr (Index == 1) {
     handle(1);
@@ -28,7 +28,7 @@ void shouldPass() {
 void shouldFailNonTemplate() {
   constexpr unsigned Index = 1;
   if constexpr (Index == 0) {
-    // CHECK-MESSAGES: :[[@LINE-1]]:29: warning: repeated branch in conditional chain [bugprone-branch-clone]
+    // CHECK-MESSAGES: :[[@LINE-1]]:29: warning: repeated branch body in conditional chain [bugprone-branch-clone]
     handle(0);
   } else if constexpr (Index == 1) {
     handle(1);

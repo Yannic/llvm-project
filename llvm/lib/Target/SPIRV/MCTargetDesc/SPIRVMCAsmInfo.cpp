@@ -11,12 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "SPIRVMCAsmInfo.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/TargetParser/Triple.h"
 
 using namespace llvm;
 
-SPIRVMCAsmInfo::SPIRVMCAsmInfo(const Triple &TT,
-                               const MCTargetOptions &Options) {
+SPIRVMCAsmInfo::SPIRVMCAsmInfo(const Triple &TT, const MCTargetOptions &Options)
+    : MCAsmInfo(Options) {
   IsLittleEndian = true;
 
   HasSingleParameterDotFile = false;
@@ -27,6 +27,9 @@ SPIRVMCAsmInfo::SPIRVMCAsmInfo(const Triple &TT,
   CodePointerSize = 4;
   CommentString = ";";
   HasFunctionAlignment = false;
+
+  HiddenDeclarationVisibilityAttr = HiddenVisibilityAttr = MCSA_Invalid;
+  ProtectedVisibilityAttr = MCSA_Invalid;
 }
 
 bool SPIRVMCAsmInfo::shouldOmitSectionDirective(StringRef SectionName) const {

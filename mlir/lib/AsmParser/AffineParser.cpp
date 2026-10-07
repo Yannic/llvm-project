@@ -11,9 +11,22 @@
 //===----------------------------------------------------------------------===//
 
 #include "Parser.h"
+#include "ParserState.h"
+#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/AsmState.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/IR/OpImplementation.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cassert>
+#include <cstdint>
+#include <limits>
+#include <utility>
 
 using namespace mlir;
 using namespace mlir::detail;
@@ -45,21 +58,26 @@ enum AffineHighPrecOp {
 /// bodies.
 class AffineParser : public Parser {
 public:
-  AffineParser(ParserState &state, bool allowParsingSSAIds = false,
-               function_ref<ParseResult(bool)> parseElement = nullptr)
+  AffineParser(
+      ParserState &state, bool allowParsingSSAIds = false,
+      function_ref<FailureOr<OpAsmParser::UnresolvedOperand>()> parseElement =
+          nullptr,
+      function_ref<void(bool, OpAsmParser::UnresolvedOperand)> addOperand =
+          nullptr)
       : Parser(state), allowParsingSSAIds(allowParsingSSAIds),
-        parseElement(parseElement) {}
+        parseElement(parseElement), addOperand(addOperand) {}
 
   ParseResult parseAffineMapRange(unsigned numDims, unsigned numSymbols,
                                   AffineMap &result);
   ParseResult parseAffineMapOrIntegerSetInline(AffineMap &map, IntegerSet &set);
+  ParseResult
+  parseAffineExprInline(ArrayRef<std::pair<StringRef, AffineExpr>> symbolSet,
+                        AffineExpr &expr);
   ParseResult parseIntegerSetConstraints(unsigned numDims, unsigned numSymbols,
                                          IntegerSet &result);
   ParseResult parseAffineMapOfSSAIds(AffineMap &map,
                                      OpAsmParser::Delimiter delimiter);
   ParseResult parseAffineExprOfSSAIds(AffineExpr &expr);
-  void getDimsAndSymbolSSAIds(SmallVectorImpl<StringRef> &dimAndSymbolSSAIds,
-                              unsigned &numDims);
 
 private:
   // Binary affine op parsing.
@@ -93,10 +111,12 @@ private:
 
 private:
   bool allowParsingSSAIds;
-  function_ref<ParseResult(bool)> parseElement;
+  function_ref<FailureOr<OpAsmParser::UnresolvedOperand>()> parseElement;
+  function_ref<void(bool, OpAsmParser::UnresolvedOperand)> addOperand;
   unsigned numDimOperands = 0;
   unsigned numSymbolOperands = 0;
-  SmallVector<std::pair<StringRef, AffineExpr>, 4> dimsAndSymbols;
+  SmallVector<std::pair<std::pair<StringRef, unsigned>, AffineExpr>, 4>
+      dimsAndSymbols;
 };
 } // namespace
 
@@ -282,7 +302,7 @@ AffineExpr AffineParser::parseBareIdExpr() {
 
   StringRef sRef = getTokenSpelling();
   for (auto entry : dimsAndSymbols) {
-    if (entry.first == sRef) {
+    if (entry.first.first == sRef) {
       consumeToken();
       return entry.second;
     }
@@ -297,21 +317,21 @@ AffineExpr AffineParser::parseSSAIdExpr(bool isSymbol) {
     return emitWrongTokenError("unexpected ssa identifier"), nullptr;
   if (getToken().isNot(Token::percent_identifier))
     return emitWrongTokenError("expected ssa identifier"), nullptr;
-  auto name = getTokenSpelling();
-  // Check if we already parsed this SSA id.
-  for (auto entry : dimsAndSymbols) {
-    if (entry.first == name) {
-      consumeToken(Token::percent_identifier);
-      return entry.second;
-    }
-  }
-  // Parse the SSA id and add an AffineDim/SymbolExpr to represent it.
-  if (parseElement(isSymbol))
+  FailureOr<OpAsmParser::UnresolvedOperand> operand = parseElement();
+  if (failed(operand))
     return nullptr;
+  // Check if we already parsed this SSA id.
+  for (auto entry : dimsAndSymbols)
+    if (entry.first.first == operand->name &&
+        entry.first.second == operand->number)
+      return entry.second;
+  // If we have not, register it in the dim/symbol operand list, and create an
+  // AffineDim/SymbolExpr to represent it.
+  addOperand(isSymbol, *operand);
   auto idExpr = isSymbol
                     ? getAffineSymbolExpr(numSymbolOperands++, getContext())
                     : getAffineDimExpr(numDimOperands++, getContext());
-  dimsAndSymbols.push_back({name, idExpr});
+  dimsAndSymbols.push_back({{operand->name, operand->number}, idExpr});
   return idExpr;
 }
 
@@ -332,7 +352,14 @@ AffineExpr AffineParser::parseSymbolSSAIdExpr() {
 ///   affine-expr ::= integer-literal
 AffineExpr AffineParser::parseIntegerExpr() {
   auto val = getToken().getUInt64IntegerValue();
-  if (!val.has_value() || (int64_t)*val < 0)
+  // Allow 9223372036854775808 (= 2^63 = |INT64_MIN|) because the printer
+  // emits it as the magnitude in "... - 9223372036854775808" to represent
+  // affine expressions containing INT64_MIN (e.g. "d0 + INT64_MIN" is
+  // printed as "d0 - 9223372036854775808"). The cast to int64_t yields
+  // INT64_MIN, which is the correct internal representation.
+  if (!val.has_value() ||
+      (static_cast<int64_t>(*val) < 0 &&
+       *val != static_cast<uint64_t>(std::numeric_limits<int64_t>::min())))
     return emitError("constant too large for index"), nullptr;
 
   consumeToken(Token::integer);
@@ -475,12 +502,12 @@ ParseResult AffineParser::parseIdentifierDefinition(AffineExpr idExpr) {
 
   auto name = getTokenSpelling();
   for (auto entry : dimsAndSymbols) {
-    if (entry.first == name)
+    if (entry.first.first == name)
       return emitError("redefinition of identifier '" + name + "'");
   }
   consumeToken();
 
-  dimsAndSymbols.push_back({name, idExpr});
+  dimsAndSymbols.push_back({{name, 0}, idExpr});
   return success();
 }
 
@@ -533,6 +560,15 @@ ParseResult AffineParser::parseAffineMapOrIntegerSetInline(AffineMap &map,
   if (parseToken(Token::colon, "expected '->' or ':'"))
     return failure();
   return parseIntegerSetConstraints(numDims, numSymbols, set);
+}
+
+/// Parse an affine expresion definition inline, with given symbols.
+ParseResult AffineParser::parseAffineExprInline(
+    ArrayRef<std::pair<StringRef, AffineExpr>> symbolSet, AffineExpr &expr) {
+  for (const auto &[name, expr] : symbolSet)
+    dimsAndSymbols.push_back({{name, 0}, expr});
+  expr = parseAffineExpr();
+  return success(expr != nullptr);
 }
 
 /// Parse an AffineMap where the dim and symbol identifiers are SSA ids.
@@ -705,6 +741,10 @@ ParseResult Parser::parseAffineMapReference(AffineMap &map) {
     return emitError(curLoc, "expected AffineMap, but got IntegerSet");
   return success();
 }
+ParseResult Parser::parseAffineExprReference(
+    ArrayRef<std::pair<StringRef, AffineExpr>> symbolSet, AffineExpr &expr) {
+  return AffineParser(state).parseAffineExprInline(symbolSet, expr);
+}
 ParseResult Parser::parseIntegerSetReference(IntegerSet &set) {
   SMLoc curLoc = getToken().getLoc();
   AffineMap map;
@@ -717,20 +757,24 @@ ParseResult Parser::parseIntegerSetReference(IntegerSet &set) {
 
 /// Parse an AffineMap of SSA ids. The callback 'parseElement' is used to
 /// parse SSA value uses encountered while parsing affine expressions.
-ParseResult
-Parser::parseAffineMapOfSSAIds(AffineMap &map,
-                               function_ref<ParseResult(bool)> parseElement,
-                               OpAsmParser::Delimiter delimiter) {
-  return AffineParser(state, /*allowParsingSSAIds=*/true, parseElement)
+ParseResult Parser::parseAffineMapOfSSAIds(
+    AffineMap &map,
+    function_ref<FailureOr<OpAsmParser::UnresolvedOperand>()> parseElement,
+    function_ref<void(bool, OpAsmParser::UnresolvedOperand)> addOperand,
+    OpAsmParser::Delimiter delimiter) {
+  return AffineParser(state, /*allowParsingSSAIds=*/true, parseElement,
+                      addOperand)
       .parseAffineMapOfSSAIds(map, delimiter);
 }
 
-/// Parse an AffineExpr of SSA ids. The callback `parseElement` is used to parse
-/// SSA value uses encountered while parsing.
-ParseResult
-Parser::parseAffineExprOfSSAIds(AffineExpr &expr,
-                                function_ref<ParseResult(bool)> parseElement) {
-  return AffineParser(state, /*allowParsingSSAIds=*/true, parseElement)
+/// Parse an AffineExpr of SSA ids. The callback `parseElement` is used to
+/// parse SSA value uses encountered while parsing.
+ParseResult Parser::parseAffineExprOfSSAIds(
+    AffineExpr &expr,
+    function_ref<FailureOr<OpAsmParser::UnresolvedOperand>()> parseElement,
+    function_ref<void(bool, OpAsmParser::UnresolvedOperand)> addOperand) {
+  return AffineParser(state, /*allowParsingSSAIds=*/true, parseElement,
+                      addOperand)
       .parseAffineExprOfSSAIds(expr);
 }
 

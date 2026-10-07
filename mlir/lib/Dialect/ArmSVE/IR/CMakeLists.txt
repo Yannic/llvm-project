@@ -6,9 +6,11 @@ add_mlir_dialect_library(MLIRArmSVEDialect
 
   DEPENDS
   MLIRArmSVEIncGen
+  MLIRArmSVEConversionsIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRLLVMDialect
+  MLIRVectorDialect
   MLIRSideEffectInterfaces
   )

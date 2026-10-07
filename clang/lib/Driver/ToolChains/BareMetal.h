@@ -9,6 +9,7 @@
 #ifndef LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_BAREMETAL_H
 #define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_BAREMETAL_H
 
+#include "ToolChains/Gnu.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/ToolChain.h"
 
@@ -19,7 +20,7 @@ namespace driver {
 
 namespace toolchains {
 
-class LLVM_LIBRARY_VISIBILITY BareMetal : public ToolChain {
+class LLVM_LIBRARY_VISIBILITY BareMetal : public Generic_ELF {
 public:
   BareMetal(const Driver &D, const llvm::Triple &Triple,
             const llvm::opt::ArgList &Args);
@@ -32,11 +33,15 @@ public:
 
 protected:
   Tool *buildLinker() const override;
+  Tool *buildStaticLibTool() const override;
 
 public:
-  bool useIntegratedAs() const override { return true; }
+  bool initGCCInstallation(const llvm::Triple &Triple,
+                           const llvm::opt::ArgList &Args);
+  bool hasValidGCCInstallation() const { return IsGCCInstallationValid; }
   bool isBareMetal() const override { return true; }
   bool isCrossCompiling() const override { return true; }
+  bool HasNativeLLVMSupport() const override { return true; }
   bool isPICDefault() const override { return false; }
   bool isPIEDefault(const llvm::opt::ArgList &Args) const override {
     return false;
@@ -46,30 +51,40 @@ public:
 
   StringRef getOSLibName() const override { return "baremetal"; }
 
-  RuntimeLibType GetDefaultRuntimeLibType() const override {
-    return ToolChain::RLT_CompilerRT;
-  }
-  CXXStdlibType GetDefaultCXXStdlibType() const override {
-    return ToolChain::CST_Libcxx;
+  UnwindTableLevel
+  getDefaultUnwindTableLevel(const llvm::opt::ArgList &Args) const override {
+    return UnwindTableLevel::None;
   }
 
-  const char *getDefaultLinker() const override { return "ld.lld"; }
+  CXXStdlibType GetDefaultCXXStdlibType() const override;
+
+  RuntimeLibType GetDefaultRuntimeLibType() const override;
+
+  UnwindLibType GetUnwindLibType(const llvm::opt::ArgList &Args) const override;
 
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                             llvm::opt::ArgStringList &CC1Args) const override;
   void
   addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                        llvm::opt::ArgStringList &CC1Args,
+                        llvm::opt::ArgStringList &CC1Args, BoundArch BA,
                         Action::OffloadKind DeviceOffloadKind) const override;
   void AddClangCXXStdlibIncludeArgs(
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
-  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
-                           llvm::opt::ArgStringList &CmdArgs) const override;
-  void AddLinkRuntimeLib(const llvm::opt::ArgList &Args,
-                         llvm::opt::ArgStringList &CmdArgs) const;
+  void
+  addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
+                           llvm::opt::ArgStringList &CC1Args) const override;
   std::string computeSysRoot() const override;
+  std::string getCompilerRTPath() const override;
+  SanitizerMask
+  getSupportedSanitizers(BoundArch BA,
+                         Action::OffloadKind DeviceOffloadKind) const override;
+
+private:
+  std::string SysRoot;
+
+  bool IsGCCInstallationValid;
 };
 
 } // namespace toolchains
@@ -77,9 +92,23 @@ public:
 namespace tools {
 namespace baremetal {
 
-class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
+class LLVM_LIBRARY_VISIBILITY StaticLibTool : public Tool {
 public:
-  Linker(const ToolChain &TC) : Tool("baremetal::Linker", "ld.lld", TC) {}
+  StaticLibTool(const ToolChain &TC)
+      : Tool("baremetal::StaticLibTool", "llvm-ar", TC) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
+class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
+public:
+  Linker(const ToolChain &TC) : Tool("baremetal::Linker", "linker", TC) {}
   bool isLinkJob() const override { return true; }
   bool hasIntegratedCPP() const override { return false; }
   void ConstructJob(Compilation &C, const JobAction &JA,

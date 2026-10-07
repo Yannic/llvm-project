@@ -13,7 +13,6 @@
 #include "clang/AST/APValue.h"
 #include "Linkage.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/CharUnits.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
@@ -90,7 +89,7 @@ QualType APValue::LValueBase::getType() const {
   // For a materialized temporary, the type of the temporary we materialized
   // may not be the type of the expression.
   if (const MaterializeTemporaryExpr *MTE =
-          clang::dyn_cast<MaterializeTemporaryExpr>(Base)) {
+          llvm::dyn_cast<MaterializeTemporaryExpr>(Base)) {
     SmallVector<const Expr *, 2> CommaLHSs;
     SmallVector<SubobjectAdjustment, 2> Adjustments;
     const Expr *Temp = MTE->getSubExpr();
@@ -182,20 +181,6 @@ bool APValue::LValueBase::isNull() const {
 
 APValue::LValueBase::operator bool () const {
   return static_cast<bool>(Ptr);
-}
-
-clang::APValue::LValueBase
-llvm::DenseMapInfo<clang::APValue::LValueBase>::getEmptyKey() {
-  clang::APValue::LValueBase B;
-  B.Ptr = DenseMapInfo<const ValueDecl*>::getEmptyKey();
-  return B;
-}
-
-clang::APValue::LValueBase
-llvm::DenseMapInfo<clang::APValue::LValueBase>::getTombstoneKey() {
-  clang::APValue::LValueBase B;
-  B.Ptr = DenseMapInfo<const ValueDecl*>::getTombstoneKey();
-  return B;
 }
 
 namespace clang {
@@ -296,9 +281,12 @@ APValue::Arr::Arr(unsigned NumElts, unsigned Size) :
   NumElts(NumElts), ArrSize(Size) {}
 APValue::Arr::~Arr() { delete [] Elts; }
 
-APValue::StructData::StructData(unsigned NumBases, unsigned NumFields) :
-  Elts(new APValue[NumBases+NumFields]),
-  NumBases(NumBases), NumFields(NumFields) {}
+APValue::StructData::StructData(unsigned NumBases, unsigned NumFields,
+                                unsigned NumVirtualBases)
+    : Elts(new APValue[NumBases + NumFields + NumVirtualBases]),
+      NumBases(NumBases), NumFields(NumFields),
+      NumVirtualBases(NumVirtualBases) {}
+
 APValue::StructData::~StructData() {
   delete [] Elts;
 }
@@ -308,19 +296,18 @@ APValue::UnionData::~UnionData () {
   delete Value;
 }
 
-APValue::APValue(const APValue &RHS) : Kind(None) {
+APValue::APValue(const APValue &RHS)
+    : Kind(None), AllowConstexprUnknown(RHS.AllowConstexprUnknown) {
   switch (RHS.getKind()) {
   case None:
   case Indeterminate:
     Kind = RHS.getKind();
     break;
   case Int:
-    MakeInt();
-    setInt(RHS.getInt());
+    MakeInt(RHS.getInt());
     break;
   case Float:
-    MakeFloat();
-    setFloat(RHS.getFloat());
+    MakeFloat(RHS.getFloat());
     break;
   case FixedPoint: {
     APFixedPoint FXCopy = RHS.getFixedPoint();
@@ -331,6 +318,11 @@ APValue::APValue(const APValue &RHS) : Kind(None) {
     MakeVector();
     setVector(((const Vec *)(const char *)&RHS.Data)->Elts,
               RHS.getVectorLength());
+    break;
+  case Matrix:
+    MakeMatrix();
+    setMatrix(((const Mat *)(const char *)&RHS.Data)->Elts,
+              RHS.getMatrixNumRows(), RHS.getMatrixNumColumns());
     break;
   case ComplexInt:
     MakeComplexInt();
@@ -357,11 +349,14 @@ APValue::APValue(const APValue &RHS) : Kind(None) {
       getArrayFiller() = RHS.getArrayFiller();
     break;
   case Struct:
-    MakeStruct(RHS.getStructNumBases(), RHS.getStructNumFields());
+    MakeStruct(RHS.getStructNumBases(), RHS.getStructNumFields(),
+               RHS.getStructNumVirtualBases());
     for (unsigned I = 0, N = RHS.getStructNumBases(); I != N; ++I)
       getStructBase(I) = RHS.getStructBase(I);
     for (unsigned I = 0, N = RHS.getStructNumFields(); I != N; ++I)
       getStructField(I) = RHS.getStructField(I);
+    for (unsigned I = 0, N = RHS.getStructNumVirtualBases(); I != N; ++I)
+      getStructVirtualBase(I) = RHS.getStructVirtualBase(I);
     break;
   case Union:
     MakeUnion();
@@ -376,25 +371,35 @@ APValue::APValue(const APValue &RHS) : Kind(None) {
     MakeAddrLabelDiff();
     setAddrLabelDiff(RHS.getAddrLabelDiffLHS(), RHS.getAddrLabelDiffRHS());
     break;
+  case Reflection:
+    MakeReflection(RHS.getReflectionOperandKind(),
+                   RHS.getReflectionOpaqueOperand());
+    break;
   }
 }
 
-APValue::APValue(APValue &&RHS) : Kind(RHS.Kind), Data(RHS.Data) {
+APValue::APValue(APValue &&RHS)
+    : Kind(RHS.Kind), AllowConstexprUnknown(RHS.AllowConstexprUnknown),
+      Data(RHS.Data) {
   RHS.Kind = None;
 }
 
 APValue &APValue::operator=(const APValue &RHS) {
   if (this != &RHS)
     *this = APValue(RHS);
+
   return *this;
 }
 
 APValue &APValue::operator=(APValue &&RHS) {
-  if (Kind != None && Kind != Indeterminate)
-    DestroyDataAndMakeUninit();
-  Kind = RHS.Kind;
-  Data = RHS.Data;
-  RHS.Kind = None;
+  if (this != &RHS) {
+    if (Kind != None && Kind != Indeterminate)
+      DestroyDataAndMakeUninit();
+    Kind = RHS.Kind;
+    Data = RHS.Data;
+    AllowConstexprUnknown = RHS.AllowConstexprUnknown;
+    RHS.Kind = None;
+  }
   return *this;
 }
 
@@ -407,6 +412,8 @@ void APValue::DestroyDataAndMakeUninit() {
     ((APFixedPoint *)(char *)&Data)->~APFixedPoint();
   else if (Kind == Vector)
     ((Vec *)(char *)&Data)->~Vec();
+  else if (Kind == Matrix)
+    ((Mat *)(char *)&Data)->~Mat();
   else if (Kind == ComplexInt)
     ((ComplexAPSInt *)(char *)&Data)->~ComplexAPSInt();
   else if (Kind == ComplexFloat)
@@ -423,7 +430,10 @@ void APValue::DestroyDataAndMakeUninit() {
     ((MemberPointerData *)(char *)&Data)->~MemberPointerData();
   else if (Kind == AddrLabelDiff)
     ((AddrLabelDiffData *)(char *)&Data)->~AddrLabelDiffData();
+  else if (Kind == Reflection)
+    ((ReflectionData *)(char *)&Data)->~ReflectionData();
   Kind = None;
+  AllowConstexprUnknown = false;
 }
 
 bool APValue::needsCleanup() const {
@@ -431,11 +441,13 @@ bool APValue::needsCleanup() const {
   case None:
   case Indeterminate:
   case AddrLabelDiff:
+  case Reflection:
     return false;
   case Struct:
   case Union:
   case Array:
   case Vector:
+  case Matrix:
     return true;
   case Int:
     return getInt().needsCleanup();
@@ -466,12 +478,47 @@ bool APValue::needsCleanup() const {
 void APValue::swap(APValue &RHS) {
   std::swap(Kind, RHS.Kind);
   std::swap(Data, RHS.Data);
+  // We can't use std::swap w/ bit-fields
+  bool tmp = AllowConstexprUnknown;
+  AllowConstexprUnknown = RHS.AllowConstexprUnknown;
+  RHS.AllowConstexprUnknown = tmp;
 }
 
 /// Profile the value of an APInt, excluding its bit-width.
 static void profileIntValue(llvm::FoldingSetNodeID &ID, const llvm::APInt &V) {
   for (unsigned I = 0, N = V.getBitWidth(); I < N; I += 32)
     ID.AddInteger((uint32_t)V.extractBitsAsZExtValue(std::min(32u, N - I), I));
+}
+
+/// Unwrap reflected type for profiling
+static void profileTypeReflection(llvm::FoldingSetNodeID &ID, QualType QT) {
+  // TODO(Reflection)
+
+  if (isTypeAliasAsReflectionName(QT)) {
+    if (const auto *TDT = QT->getAs<TypedefType>()) {
+      ID.AddBoolean(true);
+      ID.AddPointer(TDT->getDecl()->getCanonicalDecl());
+      return;
+    }
+  }
+
+  ID.AddBoolean(false);
+  QT.getCanonicalType().Profile(ID);
+}
+
+static void profileReflection(llvm::FoldingSetNodeID &ID, APValue V) {
+  ID.AddInteger(static_cast<int>(V.getReflectionOperandKind()));
+  switch (V.getReflectionOperandKind()) {
+  case ReflectionKind::Null:
+    return;
+  case ReflectionKind::Type: {
+    const TypeSourceInfo *Info =
+        static_cast<const TypeSourceInfo *>(V.getReflectionOpaqueOperand());
+    profileTypeReflection(ID, Info->getType());
+    return;
+  }
+  }
+  assert(false && "unknown or unimplemented reflection entities");
 }
 
 void APValue::Profile(llvm::FoldingSetNodeID &ID) const {
@@ -497,6 +544,8 @@ void APValue::Profile(llvm::FoldingSetNodeID &ID) const {
       getStructBase(I).Profile(ID);
     for (unsigned I = 0, N = getStructNumFields(); I != N; ++I)
       getStructField(I).Profile(ID);
+    for (unsigned I = 0, N = getStructNumVirtualBases(); I != N; ++I)
+      getStructVirtualBase(I).Profile(ID);
     return;
 
   case Union:
@@ -568,6 +617,12 @@ void APValue::Profile(llvm::FoldingSetNodeID &ID) const {
       getVectorElt(I).Profile(ID);
     return;
 
+  case Matrix:
+    for (unsigned R = 0, N = getMatrixNumRows(); R != N; ++R)
+      for (unsigned C = 0, M = getMatrixNumColumns(); C != M; ++C)
+        getMatrixElt(R, C).Profile(ID);
+    return;
+
   case Int:
     profileIntValue(ID, getInt());
     return;
@@ -611,6 +666,9 @@ void APValue::Profile(llvm::FoldingSetNodeID &ID) const {
     ID.AddInteger(isMemberPointerToDerivedMember());
     for (const CXXRecordDecl *D : getMemberPointerPath())
       ID.AddPointer(D);
+    return;
+  case Reflection:
+    profileReflection(ID, *this);
     return;
   }
 
@@ -702,6 +760,9 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
     return;
   }
 
+  if (const auto *AT = Ty->getAs<AtomicType>())
+    Ty = AT->getValueType();
+
   switch (getKind()) {
   case APValue::None:
     Out << "<out of lifetime>";
@@ -728,6 +789,24 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
     for (unsigned i = 1; i != getVectorLength(); ++i) {
       Out << ", ";
       getVectorElt(i).printPretty(Out, Policy, ElemTy, Ctx);
+    }
+    Out << '}';
+    return;
+  }
+  case APValue::Matrix: {
+    const auto *MT = Ty->castAs<ConstantMatrixType>();
+    QualType ElemTy = MT->getElementType();
+    Out << '{';
+    for (unsigned R = 0; R < getMatrixNumRows(); ++R) {
+      if (R != 0)
+        Out << ", ";
+      Out << '{';
+      for (unsigned C = 0; C < getMatrixNumColumns(); ++C) {
+        if (C != 0)
+          Out << ", ";
+        getMatrixElt(R, C).printPretty(Out, Policy, ElemTy, Ctx);
+      }
+      Out << '}';
     }
     Out << '}';
     return;
@@ -769,7 +848,7 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
       if (!O.isZero()) {
         if (IsReference)
           Out << "*(";
-        if (S.isZero() || O % S) {
+        if (S.isZero() || !O.isMultipleOf(S)) {
           Out << "(char*)";
           S = CharUnits::One();
         }
@@ -806,7 +885,7 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
     else if (isLValueOnePastTheEnd())
       Out << "*(&";
 
-    QualType ElemTy = Base.getType();
+    QualType ElemTy = Base.getType().getNonReferenceType();
     if (const ValueDecl *VD = Base.dyn_cast<const ValueDecl*>()) {
       Out << *VD;
     } else if (TypeInfoLValue TI = Base.dyn_cast<TypeInfoLValue>()) {
@@ -839,6 +918,10 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
           Out << *VD;
           ElemTy = VD->getType();
         }
+      } else if (ElemTy->isAnyComplexType()) {
+        // The lvalue refers to a complex type
+        Out << (Path[I].getAsArrayIndex() == 0 ? ".real" : ".imag");
+        ElemTy = ElemTy->castAs<ComplexType>()->getElementType();
       } else {
         // The lvalue must refer to an array.
         Out << '[' << Path[I].getAsArrayIndex() << ']';
@@ -883,26 +966,32 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
   }
   case APValue::Struct: {
     Out << '{';
-    const RecordDecl *RD = Ty->castAs<RecordType>()->getDecl();
-    bool First = true;
+    llvm::ListSeparator Comma;
+    const auto *RD = Ty->castAsRecordDecl();
     if (unsigned N = getStructNumBases()) {
       const CXXRecordDecl *CD = cast<CXXRecordDecl>(RD);
       CXXRecordDecl::base_class_const_iterator BI = CD->bases_begin();
       for (unsigned I = 0; I != N; ++I, ++BI) {
         assert(BI != CD->bases_end());
-        if (!First)
-          Out << ", ";
+        Out << Comma;
         getStructBase(I).printPretty(Out, Policy, BI->getType(), Ctx);
-        First = false;
       }
     }
     for (const auto *FI : RD->fields()) {
-      if (!First)
-        Out << ", ";
-      if (FI->isUnnamedBitfield()) continue;
-      getStructField(FI->getFieldIndex()).
-        printPretty(Out, Policy, FI->getType(), Ctx);
-      First = false;
+      Out << Comma;
+      if (FI->isUnnamedBitField())
+        continue;
+      getStructField(FI->getFieldIndex())
+          .printPretty(Out, Policy, FI->getType(), Ctx);
+    }
+    if (unsigned N = getStructNumVirtualBases()) {
+      const CXXRecordDecl *CD = cast<CXXRecordDecl>(RD);
+      CXXRecordDecl::base_class_const_iterator BI = CD->vbases_begin();
+      for (unsigned I = 0; I != N; ++I, ++BI) {
+        assert(BI != CD->vbases_end());
+        Out << Comma;
+        getStructVirtualBase(I).printPretty(Out, Policy, BI->getType(), Ctx);
+      }
     }
     Out << '}';
     return;
@@ -929,6 +1018,19 @@ void APValue::printPretty(raw_ostream &Out, const PrintingPolicy &Policy,
     Out << " - ";
     Out << "&&" << getAddrLabelDiffRHS()->getLabel()->getName();
     return;
+  case APValue::Reflection:
+    switch (getReflectionOperandKind()) {
+    case ReflectionKind::Null:
+      Out << "std::meta::info{}";
+      break;
+    case ReflectionKind::Type: {
+      const auto *TInfo =
+          static_cast<const TypeSourceInfo *>(getReflectionOpaqueOperand());
+      Out << "^^" << TInfo->getType().stream(Policy);
+      break;
+    }
+    }
+    return;
   }
   llvm_unreachable("Unknown APValue kind!");
 }
@@ -937,7 +1039,6 @@ std::string APValue::getAsString(const ASTContext &Ctx, QualType Ty) const {
   std::string Result;
   llvm::raw_string_ostream Out(Result);
   printPretty(Out, Ctx, Ty);
-  Out.flush();
   return Result;
 }
 
@@ -984,7 +1085,7 @@ bool APValue::hasLValuePath() const {
 ArrayRef<APValue::LValuePathEntry> APValue::getLValuePath() const {
   assert(isLValue() && hasLValuePath() && "Invalid accessor");
   const LV &LVal = *((const LV *)(const char *)&Data);
-  return llvm::ArrayRef(LVal.getPath(), LVal.PathLength);
+  return {LVal.getPath(), LVal.PathLength};
 }
 
 unsigned APValue::getLValueCallIndex() const {
@@ -1002,7 +1103,7 @@ bool APValue::isNullPointer() const {
   return ((const LV *)(const char *)&Data)->IsNullPtr;
 }
 
-void APValue::setLValue(LValueBase B, const CharUnits &O, NoLValuePath,
+void APValue::setLValue(LValueBase B, CharUnits O, NoLValuePath,
                         bool IsNullPtr) {
   assert(isLValue() && "Invalid accessor");
   LV &LVal = *((LV *)(char *)&Data);
@@ -1014,7 +1115,7 @@ void APValue::setLValue(LValueBase B, const CharUnits &O, NoLValuePath,
 }
 
 MutableArrayRef<APValue::LValuePathEntry>
-APValue::setLValueUninit(LValueBase B, const CharUnits &O, unsigned Size,
+APValue::setLValueUninit(LValueBase B, CharUnits O, unsigned Size,
                          bool IsOnePastTheEnd, bool IsNullPtr) {
   assert(isLValue() && "Invalid accessor");
   LV &LVal = *((LV *)(char *)&Data);
@@ -1026,7 +1127,7 @@ APValue::setLValueUninit(LValueBase B, const CharUnits &O, unsigned Size,
   return {LVal.getPath(), Size};
 }
 
-void APValue::setLValue(LValueBase B, const CharUnits &O,
+void APValue::setLValue(LValueBase B, CharUnits O,
                         ArrayRef<LValuePathEntry> Path, bool IsOnePastTheEnd,
                         bool IsNullPtr) {
   MutableArrayRef<APValue::LValuePathEntry> InternalPath =
@@ -1062,7 +1163,7 @@ ArrayRef<const CXXRecordDecl*> APValue::getMemberPointerPath() const {
   assert(isMemberPointer() && "Invalid accessor");
   const MemberPointerData &MPD =
       *((const MemberPointerData *)(const char *)&Data);
-  return llvm::ArrayRef(MPD.getPath(), MPD.PathLength);
+  return {MPD.getPath(), MPD.PathLength};
 }
 
 void APValue::MakeLValue() {
@@ -1077,10 +1178,6 @@ void APValue::MakeArray(unsigned InitElts, unsigned Size) {
   new ((void *)(char *)&Data) Arr(InitElts, Size);
   Kind = Array;
 }
-
-MutableArrayRef<APValue::LValuePathEntry>
-setLValueUninit(APValue::LValueBase B, const CharUnits &O, unsigned Size,
-                bool OnePastTheEnd, bool IsNullPtr);
 
 MutableArrayRef<const CXXRecordDecl *>
 APValue::setMemberPointerUninit(const ValueDecl *Member, bool IsDerivedMember,
@@ -1109,7 +1206,7 @@ LinkageInfo LinkageComputer::getLVForValue(const APValue &V,
 
   auto MergeLV = [&](LinkageInfo MergeLV) {
     LV.merge(MergeLV);
-    return LV.getLinkage() == InternalLinkage;
+    return LV.getLinkage() == Linkage::Internal;
   };
   auto Merge = [&](const APValue &V) {
     return MergeLV(getLVForValue(V, computation));
@@ -1124,6 +1221,8 @@ LinkageInfo LinkageComputer::getLVForValue(const APValue &V,
   case APValue::ComplexInt:
   case APValue::ComplexFloat:
   case APValue::Vector:
+  case APValue::Reflection:
+  case APValue::Matrix:
     break;
 
   case APValue::AddrLabelDiff:
@@ -1137,6 +1236,9 @@ LinkageInfo LinkageComputer::getLVForValue(const APValue &V,
         break;
     for (unsigned I = 0, N = V.getStructNumFields(); I != N; ++I)
       if (Merge(V.getStructField(I)))
+        break;
+    for (unsigned I = 0, N = V.getStructNumVirtualBases(); I != N; ++I)
+      if (Merge(V.getStructVirtualBase(I)))
         break;
     break;
   }

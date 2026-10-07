@@ -11,13 +11,13 @@ $getAt = comdat any
 
 define dso_local noundef <4 x float> @ConvertVectors_ByRef(ptr noundef nonnull align 16 dereferenceable(16) %0) #0 {
 ; SSE-LABEL: @ConvertVectors_ByRef(
-; SSE-NEXT:    [[TMP2:%.*]] = load <4 x float>, ptr [[TMP0:%.*]], align 16
-; SSE-NEXT:    [[TMP3:%.*]] = shufflevector <4 x float> [[TMP2]], <4 x float> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 2>
+; SSE-NEXT:    [[TMP2:%.*]] = load <3 x float>, ptr [[TMP0:%.*]], align 16
+; SSE-NEXT:    [[TMP3:%.*]] = shufflevector <3 x float> [[TMP2]], <3 x float> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 2>
 ; SSE-NEXT:    ret <4 x float> [[TMP3]]
 ;
 ; AVX-LABEL: @ConvertVectors_ByRef(
-; AVX-NEXT:    [[TMP2:%.*]] = load <4 x float>, ptr [[TMP0:%.*]], align 16
-; AVX-NEXT:    [[TMP3:%.*]] = shufflevector <4 x float> [[TMP2]], <4 x float> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 2>
+; AVX-NEXT:    [[TMP2:%.*]] = load <3 x float>, ptr [[TMP0:%.*]], align 16
+; AVX-NEXT:    [[TMP3:%.*]] = shufflevector <3 x float> [[TMP2]], <3 x float> poison, <4 x i32> <i32 0, i32 1, i32 2, i32 2>
 ; AVX-NEXT:    ret <4 x float> [[TMP3]]
 ;
   %2 = alloca ptr, align 8
@@ -48,7 +48,7 @@ define noundef <4 x float> @ConvertVectors_ByVal(ptr noundef nonnull align 16 de
 ; SSE-LABEL: @ConvertVectors_ByVal(
 ; SSE-NEXT:  entry:
 ; SSE-NEXT:    [[TMP0:%.*]] = load <4 x float>, ptr [[V:%.*]], align 16
-; SSE-NEXT:    [[TMP1:%.*]] = getelementptr i8, ptr [[V]], i64 8
+; SSE-NEXT:    [[TMP1:%.*]] = getelementptr inbounds nuw i8, ptr [[V]], i64 8
 ; SSE-NEXT:    [[V_VAL421:%.*]] = load i64, ptr [[TMP1]], align 8
 ; SSE-NEXT:    [[TMP2:%.*]] = trunc i64 [[V_VAL421]] to i32
 ; SSE-NEXT:    [[TMP3:%.*]] = bitcast i32 [[TMP2]] to float
@@ -59,7 +59,7 @@ define noundef <4 x float> @ConvertVectors_ByVal(ptr noundef nonnull align 16 de
 ; AVX-LABEL: @ConvertVectors_ByVal(
 ; AVX-NEXT:  entry:
 ; AVX-NEXT:    [[TMP0:%.*]] = load <4 x float>, ptr [[V:%.*]], align 16
-; AVX-NEXT:    [[TMP1:%.*]] = getelementptr i8, ptr [[V]], i64 8
+; AVX-NEXT:    [[TMP1:%.*]] = getelementptr inbounds nuw i8, ptr [[V]], i64 8
 ; AVX-NEXT:    [[V_VAL421:%.*]] = load i64, ptr [[TMP1]], align 8
 ; AVX-NEXT:    [[TMP2:%.*]] = trunc i64 [[V_VAL421]] to i32
 ; AVX-NEXT:    [[TMP3:%.*]] = bitcast i32 [[TMP2]] to float
@@ -75,7 +75,7 @@ entry:
   %ref.tmp7 = alloca %union.ElementWiseAccess, align 16
   %ref.tmp12 = alloca %union.ElementWiseAccess, align 16
   store ptr %V, ptr %V.addr, align 8
-  call void @llvm.lifetime.start.p0(i64 16, ptr %ref.tmp) #4
+  call void @llvm.lifetime.start.p0(ptr %ref.tmp) #4
   %0 = load ptr, ptr %V.addr, align 8
   %call = call { double, double } @castToElementWiseAccess_ByVal(ptr noundef nonnull align 16 dereferenceable(16) %0)
   %coerce.dive = getelementptr inbounds %union.ElementWiseAccess, ptr %ref.tmp, i32 0, i32 0
@@ -87,7 +87,7 @@ entry:
   store double %4, ptr %3, align 8
   %call1 = call noundef float @ElementWiseAccess5getAt(ptr noundef nonnull align 16 dereferenceable(16) %ref.tmp, i32 noundef 0)
   %vecinit = insertelement <4 x float> undef, float %call1, i32 0
-  call void @llvm.lifetime.start.p0(i64 16, ptr %ref.tmp2) #4
+  call void @llvm.lifetime.start.p0(ptr %ref.tmp2) #4
   %5 = load ptr, ptr %V.addr, align 8
   %call3 = call { double, double } @castToElementWiseAccess_ByVal(ptr noundef nonnull align 16 dereferenceable(16) %5)
   %coerce.dive4 = getelementptr inbounds %union.ElementWiseAccess, ptr %ref.tmp2, i32 0, i32 0
@@ -99,7 +99,7 @@ entry:
   store double %9, ptr %8, align 8
   %call5 = call noundef float @ElementWiseAccess5getAt(ptr noundef nonnull align 16 dereferenceable(16) %ref.tmp2, i32 noundef 1)
   %vecinit6 = insertelement <4 x float> %vecinit, float %call5, i32 1
-  call void @llvm.lifetime.start.p0(i64 16, ptr %ref.tmp7) #4
+  call void @llvm.lifetime.start.p0(ptr %ref.tmp7) #4
   %10 = load ptr, ptr %V.addr, align 8
   %call8 = call { double, double } @castToElementWiseAccess_ByVal(ptr noundef nonnull align 16 dereferenceable(16) %10)
   %coerce.dive9 = getelementptr inbounds %union.ElementWiseAccess, ptr %ref.tmp7, i32 0, i32 0
@@ -111,7 +111,7 @@ entry:
   store double %14, ptr %13, align 8
   %call10 = call noundef float @ElementWiseAccess5getAt(ptr noundef nonnull align 16 dereferenceable(16) %ref.tmp7, i32 noundef 2)
   %vecinit11 = insertelement <4 x float> %vecinit6, float %call10, i32 2
-  call void @llvm.lifetime.start.p0(i64 16, ptr %ref.tmp12) #4
+  call void @llvm.lifetime.start.p0(ptr %ref.tmp12) #4
   %15 = load ptr, ptr %V.addr, align 8
   %call13 = call { double, double } @castToElementWiseAccess_ByVal(ptr noundef nonnull align 16 dereferenceable(16) %15)
   %coerce.dive14 = getelementptr inbounds %union.ElementWiseAccess, ptr %ref.tmp12, i32 0, i32 0
@@ -125,10 +125,10 @@ entry:
   %vecinit16 = insertelement <4 x float> %vecinit11, float %call15, i32 3
   store <4 x float> %vecinit16, ptr %.compoundliteral, align 16
   %20 = load <4 x float>, ptr %.compoundliteral, align 16
-  call void @llvm.lifetime.end.p0(i64 16, ptr %ref.tmp12) #4
-  call void @llvm.lifetime.end.p0(i64 16, ptr %ref.tmp7) #4
-  call void @llvm.lifetime.end.p0(i64 16, ptr %ref.tmp2) #4
-  call void @llvm.lifetime.end.p0(i64 16, ptr %ref.tmp) #4
+  call void @llvm.lifetime.end.p0(ptr %ref.tmp12) #4
+  call void @llvm.lifetime.end.p0(ptr %ref.tmp7) #4
+  call void @llvm.lifetime.end.p0(ptr %ref.tmp2) #4
+  call void @llvm.lifetime.end.p0(ptr %ref.tmp) #4
   ret <4 x float> %20
 }
 
@@ -144,8 +144,8 @@ entry:
   ret { double, double } %1
 }
 
-declare void @llvm.lifetime.start.p0(i64 immarg, ptr nocapture) #2
-declare void @llvm.lifetime.end.p0(i64 immarg, ptr nocapture) #2
+declare void @llvm.lifetime.start.p0(ptr nocapture) #2
+declare void @llvm.lifetime.end.p0(ptr nocapture) #2
 declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, ptr noalias nocapture readonly, i64, i1 immarg) #3
 
 define internal noundef nonnull align 16 dereferenceable(16) ptr @castToElementWiseAccess_ByRef(ptr noundef nonnull align 16 dereferenceable(16) %0) #1 {
@@ -180,4 +180,36 @@ entry:
   %arrayidx = getelementptr inbounds [4 x float], ptr %this1, i64 0, i64 %idxprom
   %1 = load float, ptr %arrayidx, align 4
   ret float %1
+}
+
+; Vector combine + SLP should form a narrow load and a vector cast
+
+define void @PR51397(ptr noundef %dst, ptr noundef %srcp) {
+; SSE-LABEL: @PR51397(
+; SSE-NEXT:    [[TMP1:%.*]] = load <4 x i32>, ptr [[SRCP:%.*]], align 16
+; SSE-NEXT:    [[TMP2:%.*]] = sitofp <4 x i32> [[TMP1]] to <4 x float>
+; SSE-NEXT:    store <4 x float> [[TMP2]], ptr [[DST:%.*]], align 16
+; SSE-NEXT:    ret void
+;
+; AVX-LABEL: @PR51397(
+; AVX-NEXT:    [[TMP1:%.*]] = load <4 x i32>, ptr [[SRCP:%.*]], align 16
+; AVX-NEXT:    [[TMP2:%.*]] = sitofp <4 x i32> [[TMP1]] to <4 x float>
+; AVX-NEXT:    store <4 x float> [[TMP2]], ptr [[DST:%.*]], align 16
+; AVX-NEXT:    ret void
+;
+  %src = load <8 x i32>, ptr %srcp, align 16
+  %vecext = extractelement <8 x i32> %src, i32 0
+  %conv = sitofp i32 %vecext to float
+  %vecinit = insertelement <4 x float> undef, float %conv, i32 0
+  %vecext1 = extractelement <8 x i32> %src, i32 1
+  %conv2 = sitofp i32 %vecext1 to float
+  %vecinit3 = insertelement <4 x float> %vecinit, float %conv2, i32 1
+  %vecext4 = extractelement <8 x i32> %src, i32 2
+  %conv5 = sitofp i32 %vecext4 to float
+  %vecinit6 = insertelement <4 x float> %vecinit3, float %conv5, i32 2
+  %vecext7 = extractelement <8 x i32> %src, i32 3
+  %conv8 = sitofp i32 %vecext7 to float
+  %vecinit9 = insertelement <4 x float> %vecinit6, float %conv8, i32 3
+  store <4 x float> %vecinit9, ptr %dst, align 16
+  ret void
 }

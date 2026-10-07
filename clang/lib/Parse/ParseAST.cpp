@@ -15,12 +15,11 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ExternalASTSource.h"
 #include "clang/AST/Stmt.h"
-#include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/Parser.h"
 #include "clang/Sema/CodeCompleteConsumer.h"
+#include "clang/Sema/EnterExpressionEvaluationContext.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaConsumer.h"
-#include "clang/Sema/TemplateInstCallback.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/TimeProfiler.h"
 #include <cstdio>
@@ -108,7 +107,7 @@ void clang::ParseAST(Preprocessor &PP, ASTConsumer *Consumer,
   // Recover resources if we crash before exiting this method.
   llvm::CrashRecoveryContextCleanupRegistrar<Sema> CleanupSema(S.get());
 
-  ParseAST(*S.get(), PrintStats, SkipFunctionBodies);
+  ParseAST(*S, PrintStats, SkipFunctionBodies);
 }
 
 void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
@@ -122,15 +121,11 @@ void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
   bool OldCollectStats = PrintStats;
   std::swap(OldCollectStats, S.CollectStats);
 
-  // Initialize the template instantiation observer chain.
-  // FIXME: See note on "finalize" below.
-  initialize(S.TemplateInstCallbacks, S);
-
   ASTConsumer *Consumer = &S.getASTConsumer();
 
   std::unique_ptr<Parser> ParseOP(
       new Parser(S.getPreprocessor(), S, SkipFunctionBodies));
-  Parser &P = *ParseOP.get();
+  Parser &P = *ParseOP;
 
   llvm::CrashRecoveryContextCleanupRegistrar<const void, ResetStackCleanup>
       CleanupPrettyStack(llvm::SavePrettyStackState());
@@ -151,7 +146,15 @@ void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
   bool HaveLexer = S.getPreprocessor().getCurrentLexer();
 
   if (HaveLexer) {
-    llvm::TimeTraceScope TimeScope("Frontend");
+    llvm::TimeTraceScope TimeScope("Frontend", [&]() {
+      llvm::TimeTraceMetadata M;
+      if (llvm::isTimeTraceVerbose()) {
+        const SourceManager &SM = S.getSourceManager();
+        if (const auto *FE = SM.getFileEntryForID(SM.getMainFileID()))
+          M.File = FE->tryGetRealPathName();
+      }
+      return M;
+    });
     P.Initialize();
     Parser::DeclGroupPtrTy ADecl;
     Sema::ModuleImportState ImportState;
@@ -172,35 +175,7 @@ void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
   for (Decl *D : S.WeakTopLevelDecls())
     Consumer->HandleTopLevelDecl(DeclGroupRef(D));
 
-  // For C++20 modules, the codegen for module initializers needs to be altered
-  // and to be able to use a name based on the module name.
-
-  // At this point, we should know if we are building a non-header C++20 module.
-  if (S.getLangOpts().CPlusPlusModules) {
-    // If we are building the module from source, then the top level module
-    // will be here.
-    Module *CodegenModule = S.getCurrentModule();
-    bool Interface = true;
-    if (CodegenModule)
-      // We only use module initializers for importable module (including
-      // partition implementation units).
-      Interface = S.currentModuleIsInterface();
-    else if (S.getLangOpts().isCompilingModuleInterface())
-      // If we are building the module from a PCM file, then the module can be
-      // found here.
-      CodegenModule = S.getPreprocessor().getCurrentModule();
-
-    if (Interface && CodegenModule)
-      S.getASTContext().setModuleForCodeGen(CodegenModule);
-  }
   Consumer->HandleTranslationUnit(S.getASTContext());
-
-  // Finalize the template instantiation observer chain.
-  // FIXME: This (and init.) should be done in the Sema class, but because
-  // Sema does not have a reliable "Finalize" function (it has a
-  // destructor, but it is not guaranteed to be called ("-disable-free")).
-  // So, do the initialization above and do the finalization here:
-  finalize(S.TemplateInstCallbacks, S);
 
   std::swap(OldCollectStats, S.CollectStats);
   if (PrintStats) {

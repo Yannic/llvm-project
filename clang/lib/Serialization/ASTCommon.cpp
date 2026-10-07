@@ -186,6 +186,9 @@ serialization::TypeIdxFromBuiltin(const BuiltinType *BT) {
   case BuiltinType::Overload:
     ID = PREDEF_TYPE_OVERLOAD_ID;
     break;
+  case BuiltinType::UnresolvedTemplate:
+    ID = PREDEF_TYPE_UNRESOLVED_TEMPLATE;
+    break;
   case BuiltinType::BoundMember:
     ID = PREDEF_TYPE_BOUND_MEMBER;
     break;
@@ -239,7 +242,7 @@ serialization::TypeIdxFromBuiltin(const BuiltinType *BT) {
   case BuiltinType::Id: \
     ID = PREDEF_TYPE_##Id##_ID; \
     break;
-#include "clang/Basic/AArch64SVEACLETypes.def"
+#include "clang/Basic/AArch64ACLETypes.def"
 #define PPC_VECTOR_TYPE(Name, Id, Size) \
   case BuiltinType::Id: \
     ID = PREDEF_TYPE_##Id##_ID; \
@@ -250,14 +253,39 @@ serialization::TypeIdxFromBuiltin(const BuiltinType *BT) {
     ID = PREDEF_TYPE_##Id##_ID;                                                \
     break;
 #include "clang/Basic/RISCVVTypes.def"
+#define WASM_TYPE(Name, Id, SingletonId)                                       \
+  case BuiltinType::Id:                                                        \
+    ID = PREDEF_TYPE_##Id##_ID;                                                \
+    break;
+#include "clang/Basic/WebAssemblyReferenceTypes.def"
+#define AMDGPU_TYPE(Name, Id, SingletonId, Width, Align)                       \
+  case BuiltinType::Id:                                                        \
+    ID = PREDEF_TYPE_##Id##_ID;                                                \
+    break;
+#include "clang/Basic/AMDGPUTypes.def"
+#define HLSL_INTANGIBLE_TYPE(Name, Id, SingletonId)                            \
+  case BuiltinType::Id:                                                        \
+    ID = PREDEF_TYPE_##Id##_ID;                                                \
+    break;
+#include "clang/Basic/HLSLIntangibleTypes.def"
+#define HLSL_PACKED_TYPE(Name, Id, SingletonId)                                \
+  case BuiltinType::Id:                                                        \
+    ID = PREDEF_TYPE_##Id##_ID;                                                \
+    break;
+#include "clang/Basic/HLSLPackedTypes.def"
+#define SPIRV_TYPE(Name, Id, SingletonId)                                      \
+  case BuiltinType::Id:                                                        \
+    ID = PREDEF_TYPE_##Id##_ID;                                                \
+    break;
+#include "clang/Basic/SPIRVTypes.def"
   case BuiltinType::BuiltinFn:
     ID = PREDEF_TYPE_BUILTIN_FN;
     break;
   case BuiltinType::IncompleteMatrixIdx:
     ID = PREDEF_TYPE_INCOMPLETE_MATRIX_IDX;
     break;
-  case BuiltinType::OMPArraySection:
-    ID = PREDEF_TYPE_OMP_ARRAY_SECTION;
+  case BuiltinType::ArraySection:
+    ID = PREDEF_TYPE_ARRAY_SECTION;
     break;
   case BuiltinType::OMPArrayShaping:
     ID = PREDEF_TYPE_OMP_ARRAY_SHAPING;
@@ -268,9 +296,12 @@ serialization::TypeIdxFromBuiltin(const BuiltinType *BT) {
   case BuiltinType::BFloat16:
     ID = PREDEF_TYPE_BFLOAT16_ID;
     break;
+  case BuiltinType::MetaInfo:
+    ID = PREDEF_TYPE_META_INFO_ID;
+    break;
   }
 
-  return TypeIdx(ID);
+  return TypeIdx(0, ID);
 }
 
 unsigned serialization::ComputeHash(Selector Sel) {
@@ -279,7 +310,7 @@ unsigned serialization::ComputeHash(Selector Sel) {
     ++N;
   unsigned R = 5381;
   for (unsigned I = 0; I != N; ++I)
-    if (IdentifierInfo *II = Sel.getIdentifierInfoForSlot(I))
+    if (const IdentifierInfo *II = Sel.getIdentifierInfoForSlot(I))
       R = llvm::djbHash(II->getName(), R);
   return R;
 }
@@ -317,6 +348,7 @@ serialization::getDefinitiveDeclContext(const DeclContext *DC) {
   case Decl::CXXConversion:
   case Decl::ObjCMethod:
   case Decl::Block:
+  case Decl::OutlinedFunction:
   case Decl::Captured:
     // Objective C categories, category implementations, and class
     // implementations can only be defined in one place.
@@ -333,7 +365,7 @@ serialization::getDefinitiveDeclContext(const DeclContext *DC) {
 
   // FIXME: These are defined in one place, but properties in class extensions
   // end up being back-patched into the main interface. See
-  // Sema::HandlePropertyInClassExtension for the offending code.
+  // SemaObjC::HandlePropertyInClassExtension for the offending code.
   case Decl::ObjCInterface:
     return nullptr;
 
@@ -381,6 +413,7 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
     return true;
 
   // Never redeclarable.
+  case Decl::ExplicitInstantiation:
   case Decl::UsingDirective:
   case Decl::Label:
   case Decl::UnresolvedUsingTypename:
@@ -418,10 +451,11 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::FriendTemplate:
   case Decl::StaticAssert:
   case Decl::Block:
+  case Decl::OutlinedFunction:
   case Decl::Captured:
-  case Decl::ClassScopeFunctionSpecialization:
   case Decl::Import:
   case Decl::OMPThreadPrivate:
+  case Decl::OMPGroupPrivate:
   case Decl::OMPAllocate:
   case Decl::OMPRequires:
   case Decl::OMPCapturedExpr:
@@ -436,6 +470,10 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::RequiresExprBody:
   case Decl::UnresolvedUsingIfExists:
   case Decl::HLSLBuffer:
+  case Decl::HLSLRootSignature:
+  case Decl::OpenACCDeclare:
+  case Decl::OpenACCRoutine:
+  case Decl::CXXExpansionStmt:
     return false;
 
   // These indirectly derive from Redeclarable<T> but are not actually
@@ -469,18 +507,21 @@ bool serialization::needsAnonymousDeclarationNumber(const NamedDecl *D) {
 
   // At block scope, we number everything that we need to deduplicate, since we
   // can't just use name matching to keep things lined up.
-  // FIXME: This is only necessary for an inline function or a template or
-  // similar.
+  // FIXME: This is only necessary for an inline function or
+  // a template specialization or similar.
   if (D->getLexicalDeclContext()->isFunctionOrMethod()) {
+    // An uninstantiated template pattern is never emitted; only its
+    // instantiations are numbered, so its decls need no cross-module number.
+    if (D->getLexicalDeclContext()->isDependentContext())
+      return false;
     if (auto *VD = dyn_cast<VarDecl>(D))
       return VD->isStaticLocal();
     // FIXME: What about CapturedDecls (and declarations nested within them)?
-    return isa<TagDecl, BlockDecl>(D);
+    return isa<TagDecl>(D);
   }
 
   // Otherwise, we only care about anonymous class members / block-scope decls.
-  // FIXME: We need to handle lambdas and blocks within inline / templated
-  // variables too.
+  // FIXME: We need to handle blocks within inline / templated variables too.
   if (D->getDeclName())
     return false;
   if (!isa<RecordDecl, ObjCInterfaceDecl>(D->getLexicalDeclContext()))

@@ -42,8 +42,8 @@ CodeGenVTables::EmitVTTDefinition(llvm::GlobalVariable *VTT,
                                   llvm::GlobalVariable::LinkageTypes Linkage,
                                   const CXXRecordDecl *RD) {
   VTTBuilder Builder(CGM.getContext(), RD, /*GenerateDefinition=*/true);
-  llvm::ArrayType *ArrayType =
-      llvm::ArrayType::get(CGM.Int8PtrTy, Builder.getVTTComponents().size());
+  llvm::ArrayType *ArrayType = llvm::ArrayType::get(
+      CGM.GlobalsInt8PtrTy, Builder.getVTTComponents().size());
 
   SmallVector<llvm::GlobalVariable *, 8> VTables;
   SmallVector<VTableAddressPointsMapTy, 8> VTableAddressPoints;
@@ -55,36 +55,56 @@ CodeGenVTables::EmitVTTDefinition(llvm::GlobalVariable *VTT,
   }
 
   SmallVector<llvm::Constant *, 8> VTTComponents;
-  for (const VTTComponent *i = Builder.getVTTComponents().begin(),
-                          *e = Builder.getVTTComponents().end(); i != e; ++i) {
-    const VTTVTable &VTTVT = Builder.getVTTVTables()[i->VTableIndex];
-    llvm::GlobalVariable *VTable = VTables[i->VTableIndex];
+  for (const auto &[Idx, C] : llvm::enumerate(Builder.getVTTComponents())) {
+    const VTTVTable &VTTVT = Builder.getVTTVTables()[C.VTableIndex];
+    llvm::GlobalVariable *VTable = VTables[C.VTableIndex];
     VTableLayout::AddressPointLocation AddressPoint;
     if (VTTVT.getBase() == RD) {
       // Just get the address point for the regular vtable.
       AddressPoint =
           getItaniumVTableContext().getVTableLayout(RD).getAddressPoint(
-              i->VTableBase);
+              C.VTableBase);
     } else {
-      AddressPoint = VTableAddressPoints[i->VTableIndex].lookup(i->VTableBase);
+      AddressPoint = VTableAddressPoints[C.VTableIndex].lookup(C.VTableBase);
       assert(AddressPoint.AddressPointIndex != 0 &&
              "Did not find ctor vtable address point!");
     }
 
-     llvm::Value *Idxs[] = {
-       llvm::ConstantInt::get(CGM.Int32Ty, 0),
-       llvm::ConstantInt::get(CGM.Int32Ty, AddressPoint.VTableIndex),
-       llvm::ConstantInt::get(CGM.Int32Ty, AddressPoint.AddressPointIndex),
-     };
+    llvm::Constant *Idxs[] = {
+        llvm::ConstantInt::get(CGM.Int32Ty, 0),
+        llvm::ConstantInt::get(CGM.Int32Ty, AddressPoint.VTableIndex),
+        llvm::ConstantInt::get(CGM.Int32Ty, AddressPoint.AddressPointIndex),
+    };
 
-     llvm::Constant *Init = llvm::ConstantExpr::getGetElementPtr(
-         VTable->getValueType(), VTable, Idxs, /*InBounds=*/true,
-         /*InRangeIndex=*/1);
+    // Add inrange attribute to indicate that only the VTableIndex can be
+    // accessed.
+    unsigned ComponentSize =
+        CGM.getDataLayout().getTypeAllocSize(getVTableComponentType());
+    unsigned VTableSize = CGM.getDataLayout().getTypeAllocSize(
+        cast<llvm::StructType>(VTable->getValueType())
+            ->getElementType(AddressPoint.VTableIndex));
+    unsigned Offset = ComponentSize * AddressPoint.AddressPointIndex;
+    llvm::ConstantRange InRange(
+        llvm::APInt(32, (int)-Offset, true),
+        llvm::APInt(32, (int)(VTableSize - Offset), true));
+    llvm::Constant *Init = llvm::ConstantExpr::getGetElementPtr(
+        CGM.getDataLayout(), VTable->getValueType(), VTable, Idxs,
+        llvm::GEPNoWrapFlags::inBounds(), InRange);
 
-     Init = llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(Init,
-                                                                 CGM.Int8PtrTy);
-
-     VTTComponents.push_back(Init);
+    if (auto PAuthQual =
+            CGM.getVTablePointerAuthentication(VTTVT.getBase(),
+                                               /*IsVTTEntry=*/true)) {
+      llvm::Constant *Address = nullptr;
+      if (PAuthQual->isAddressDiscriminated())
+        Address = llvm::ConstantExpr::getGetElementPtr(
+            CGM.getDataLayout(), VTT->getType(), VTT,
+            llvm::ConstantInt::get(CGM.Int32Ty, Idx));
+      auto *Discriminator = llvm::ConstantInt::get(
+          CGM.IntPtrTy, PAuthQual->getExtraDiscriminator());
+      Init = CGM.getConstantSignedPointer(Init, PAuthQual->getKey(), Address,
+                                          Discriminator);
+    }
+    VTTComponents.push_back(Init);
   }
 
   llvm::Constant *Init = llvm::ConstantArray::get(ArrayType, VTTComponents);
@@ -96,6 +116,11 @@ CodeGenVTables::EmitVTTDefinition(llvm::GlobalVariable *VTT,
 
   if (CGM.supportsCOMDAT() && VTT->isWeakForLinker())
     VTT->setComdat(CGM.getModule().getOrInsertComdat(VTT->getName()));
+
+  // Set the visibility. This will already have been set on the VTT declaration.
+  // Set it again, now that we have a definition, as the implicit visibility can
+  // apply differently to definitions.
+  CGM.setGVProperties(VTT, RD);
 }
 
 llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
@@ -112,9 +137,9 @@ llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
 
   VTTBuilder Builder(CGM.getContext(), RD, /*GenerateDefinition=*/false);
 
-  llvm::ArrayType *ArrayType =
-    llvm::ArrayType::get(CGM.Int8PtrTy, Builder.getVTTComponents().size());
-  llvm::Align Align = CGM.getDataLayout().getABITypeAlign(CGM.Int8PtrTy);
+  llvm::ArrayType *ArrayType = llvm::ArrayType::get(
+      CGM.GlobalsInt8PtrTy, Builder.getVTTComponents().size());
+  llvm::Align Align = CGM.getDataLayout().getABITypeAlign(CGM.GlobalsInt8PtrTy);
 
   llvm::GlobalVariable *GV = CGM.CreateOrReplaceCXXRuntimeVariable(
       Name, ArrayType, llvm::GlobalValue::ExternalLinkage, Align);
@@ -127,23 +152,24 @@ uint64_t CodeGenVTables::getSubVTTIndex(const CXXRecordDecl *RD,
                                         BaseSubobject Base) {
   BaseSubobjectPairTy ClassSubobjectPair(RD, Base);
 
-  SubVTTIndiciesMapTy::iterator I = SubVTTIndicies.find(ClassSubobjectPair);
-  if (I != SubVTTIndicies.end())
+  SubVTTIndicesMapTy::iterator I = SubVTTIndices.find(ClassSubobjectPair);
+  if (I != SubVTTIndices.end())
     return I->second;
 
   VTTBuilder Builder(CGM.getContext(), RD, /*GenerateDefinition=*/false);
 
-  for (llvm::DenseMap<BaseSubobject, uint64_t>::const_iterator I =
-       Builder.getSubVTTIndicies().begin(),
-       E = Builder.getSubVTTIndicies().end(); I != E; ++I) {
+  for (llvm::DenseMap<BaseSubobject, uint64_t>::const_iterator
+           I = Builder.getSubVTTIndices().begin(),
+           E = Builder.getSubVTTIndices().end();
+       I != E; ++I) {
     // Insert all indices.
     BaseSubobjectPairTy ClassSubobjectPair(RD, I->first);
 
-    SubVTTIndicies.insert(std::make_pair(ClassSubobjectPair, I->second));
+    SubVTTIndices.insert(std::make_pair(ClassSubobjectPair, I->second));
   }
 
-  I = SubVTTIndicies.find(ClassSubobjectPair);
-  assert(I != SubVTTIndicies.end() && "Did not find index!");
+  I = SubVTTIndices.find(ClassSubobjectPair);
+  assert(I != SubVTTIndices.end() && "Did not find index!");
 
   return I->second;
 }

@@ -17,22 +17,19 @@
 #include "MipsSubtarget.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include "llvm/Support/CodeGen.h"
-#include "llvm/Target/TargetMachine.h"
 #include <memory>
 #include <optional>
 
 namespace llvm {
 
-class MipsTargetMachine : public LLVMTargetMachine {
+class MipsTargetMachine : public CodeGenTargetMachineImpl {
   bool isLittle;
-  std::unique_ptr<TargetLoweringObjectFile> TLOF;
-  // Selected ABI
-  MipsABIInfo ABI;
-  const MipsSubtarget *Subtarget;
+  bool IsJIT;
+  // Used to initialize module-wide object-file policy.
   MipsSubtarget DefaultSubtarget;
-  MipsSubtarget NoMips16Subtarget;
-  MipsSubtarget Mips16Subtarget;
+  std::unique_ptr<TargetLoweringObjectFile> TLOF;
 
   mutable StringMap<std::unique_ptr<MipsSubtarget>> SubtargetMap;
 
@@ -40,22 +37,13 @@ public:
   MipsTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                     StringRef FS, const TargetOptions &Options,
                     std::optional<Reloc::Model> RM,
-                    std::optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
+                    std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
                     bool JIT, bool isLittle);
   ~MipsTargetMachine() override;
 
   TargetTransformInfo getTargetTransformInfo(const Function &F) const override;
 
-  const MipsSubtarget *getSubtargetImpl() const {
-    if (Subtarget)
-      return Subtarget;
-    return &DefaultSubtarget;
-  }
-
   const MipsSubtarget *getSubtargetImpl(const Function &F) const override;
-
-  /// Reset the subtarget for the Mips target.
-  void resetSubtarget(MachineFunction *MF);
 
   // Pass Pipeline Configuration
   TargetPassConfig *createPassConfig(PassManagerBase &PM) override;
@@ -69,7 +57,8 @@ public:
                             const TargetSubtargetInfo *STI) const override;
 
   /// Returns true if a cast between SrcAS and DestAS is a noop.
-  bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
+  bool isNoopAddrSpaceCast(const DataLayout &, unsigned SrcAS,
+                           unsigned DestAS) const override {
     // Mips doesn't have any special address spaces so we just reserve
     // the first 256 for software use (e.g. OpenCL) and treat casts
     // between them as noops.
@@ -77,7 +66,7 @@ public:
   }
 
   bool isLittleEndian() const { return isLittle; }
-  const MipsABIInfo &getABI() const { return ABI; }
+  bool isJIT() const { return IsJIT; }
 };
 
 /// Mips32/64 big endian target machine.
@@ -89,7 +78,7 @@ public:
   MipsebTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                       StringRef FS, const TargetOptions &Options,
                       std::optional<Reloc::Model> RM,
-                      std::optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
+                      std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
                       bool JIT);
 };
 
@@ -102,7 +91,7 @@ public:
   MipselTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                       StringRef FS, const TargetOptions &Options,
                       std::optional<Reloc::Model> RM,
-                      std::optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
+                      std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
                       bool JIT);
 };
 

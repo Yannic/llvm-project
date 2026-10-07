@@ -60,7 +60,7 @@ public:
 
   bool EvaluateInstruction(uint32_t evaluate_options) override;
 
-  bool TestEmulation(lldb_private::Stream *out_stream,
+  bool TestEmulation(lldb_private::Stream &out_stream,
                      lldb_private::ArchSpec &arch,
                      lldb_private::OptionValueDictionary *test_data) override {
     return false;
@@ -178,7 +178,7 @@ protected:
 
   template <AddrMode a_mode> bool EmulateLDRSTRImm(const uint32_t opcode);
 
-  bool EmulateB(const uint32_t opcode);
+  bool EmulateBOrBl(const uint32_t opcode);
 
   bool EmulateBcond(const uint32_t opcode);
 

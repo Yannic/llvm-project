@@ -15,15 +15,30 @@ set(HWASAN_RTL_SOURCES
   hwasan_memintrinsics.cpp
   hwasan_poisoning.cpp
   hwasan_report.cpp
-  hwasan_setjmp_aarch64.S
-  hwasan_setjmp_riscv64.S
-  hwasan_setjmp_x86_64.S
-  hwasan_tag_mismatch_aarch64.S
-  hwasan_tag_mismatch_riscv64.S
   hwasan_thread.cpp
   hwasan_thread_list.cpp
   hwasan_type_test.cpp
   )
+
+foreach(arch ${HWASAN_SUPPORTED_ARCH})
+  if(${arch} MATCHES "aarch64")
+    list(APPEND HWASAN_RTL_SOURCES
+      hwasan_setjmp_aarch64.S
+      hwasan_tag_mismatch_aarch64.S
+      )
+  endif()
+  if(${arch} MATCHES "riscv64")
+    list(APPEND HWASAN_RTL_SOURCES
+      hwasan_setjmp_riscv64.S
+      hwasan_tag_mismatch_riscv64.S
+      )
+  endif()
+  if(${arch} MATCHES "x86_64")
+    list(APPEND HWASAN_RTL_SOURCES
+      hwasan_setjmp_x86_64.S
+      )
+  endif()
+endforeach()
 
 set(HWASAN_RTL_CXX_SOURCES
   hwasan_new_delete.cpp
@@ -164,6 +179,7 @@ function(add_hwasan_runtimes arch use_aliases)
                 RTSanitizerCommonLibc
                 RTSanitizerCommonCoverage
                 RTSanitizerCommonSymbolizer
+                RTSanitizerCommonSymbolizerInternal
                 RTLSanCommon
                 RTUbsan
     CFLAGS ${hwasan_rtl_flags}
@@ -172,7 +188,6 @@ function(add_hwasan_runtimes arch use_aliases)
     STATIC
     ARCHS ${arch}
     OBJECT_LIBS RTHwasan_cxx
-                RTUbsan_cxx
     CFLAGS ${hwasan_rtl_flags}
     PARENT_TARGET hwasan)
 
@@ -201,6 +216,7 @@ function(add_hwasan_runtimes arch use_aliases)
             RTSanitizerCommonLibc
             RTSanitizerCommonCoverage
             RTSanitizerCommonSymbolizer
+            RTSanitizerCommonSymbolizerInternal
             RTLSanCommon
             RTUbsan
             RTUbsan_cxx
@@ -220,12 +236,12 @@ function(add_hwasan_runtimes arch use_aliases)
   if(SANITIZER_USE_SYMBOLS)
     add_sanitizer_rt_symbols(${hwasan_runtime}
       ARCHS ${arch}
+      PARENT_TARGET hwasan
       EXTRA hwasan.syms.extra)
     add_sanitizer_rt_symbols(${hwasan_runtime}_cxx
       ARCHS ${arch}
+      PARENT_TARGET hwasan
       EXTRA hwasan.syms.extra)
-    add_dependencies(hwasan ${hwasan_runtime}-${arch}-symbols
-                          ${hwasan_runtime}_cxx-${arch}-symbols)
   endif()
 endfunction()
 
@@ -243,7 +259,7 @@ add_compiler_rt_runtime(clang_rt.hwasan-preinit
   CFLAGS ${HWASAN_RTL_CFLAGS}
   PARENT_TARGET hwasan)
 
-add_compiler_rt_resource_file(hwasan_ignorelist hwasan_ignorelist.txt hwasan)
+add_sanitizer_ignorelists_dependency(hwasan)
 
 add_subdirectory("scripts")
 

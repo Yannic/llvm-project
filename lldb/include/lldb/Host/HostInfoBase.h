@@ -10,12 +10,14 @@
 #define LLDB_HOST_HOSTINFOBASE_H
 
 #include "lldb/Utility/ArchSpec.h"
+#include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/UUID.h"
 #include "lldb/Utility/UserIDResolver.h"
 #include "lldb/Utility/XcodeSDK.h"
 #include "lldb/lldb-enumerations.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Errc.h"
 
 #include <cstdint>
 
@@ -27,9 +29,61 @@ namespace lldb_private {
 class FileSpec;
 
 struct SharedCacheImageInfo {
-  UUID uuid;
-  lldb::DataBufferSP data_sp;
+  SharedCacheImageInfo()
+      : m_filename(), m_uuid(), m_extractor_sp(),
+        m_create_data_extractor(nullptr), m_image_baton(nullptr) {}
+  SharedCacheImageInfo(std::string filename, UUID uuid,
+                       lldb::DataExtractorSP extractor_sp)
+      : m_filename(std::move(filename)), m_uuid(uuid),
+        m_extractor_sp(extractor_sp), m_create_data_extractor(nullptr),
+        m_image_baton(nullptr) {}
+  SharedCacheImageInfo(
+      std::string filename, UUID uuid,
+      lldb::DataExtractorSP (*create_data_extractor)(void *image),
+      void *image_baton)
+      : m_filename(std::move(filename)), m_uuid(uuid), m_extractor_sp(),
+        m_create_data_extractor(create_data_extractor),
+        m_image_baton(image_baton) {}
+
+  lldb::DataExtractorSP GetExtractor() {
+    if (!m_extractor_sp && m_image_baton)
+      m_extractor_sp = m_create_data_extractor(m_image_baton);
+    return m_extractor_sp;
+  }
+  llvm::StringRef GetFilename() const { return m_filename; }
+  const UUID &GetUUID() const { return m_uuid; }
+  void *GetImageBaton();
+  void SetExtractor(lldb::DataExtractorSP extractor_sp) {
+    m_extractor_sp = extractor_sp;
+  }
+  void SetImageBaton(void *image_baton) { m_image_baton = image_baton; }
+  void SetDataExtractorCreateFunction(
+      lldb::DataExtractorSP (*create_data_extractor)(void *image));
+
+private:
+  std::string m_filename;
+  UUID m_uuid;
+  lldb::DataExtractorSP m_extractor_sp;
+  lldb::DataExtractorSP (*m_create_data_extractor)(void *image);
+  void *m_image_baton;
 };
+
+namespace {
+struct HostInfoError : public llvm::ErrorInfo<HostInfoError> {
+  static char ID;
+  const std::string message_;
+
+  HostInfoError(const std::string message) : message_(std::move(message)) {}
+
+  void log(llvm::raw_ostream &OS) const override { OS << "HostInfoError"; }
+
+  std::error_code convertToErrorCode() const override {
+    return llvm::inconvertibleErrorCode();
+  }
+};
+
+char HostInfoError::ID = 0;
+} // namespace
 
 class HostInfoBase {
 private:
@@ -43,8 +97,10 @@ public:
   /// (optionally) replace it with a file spec pointing to a more canonical
   /// copy.
   using SharedLibraryDirectoryHelper = void(FileSpec &this_file);
+  static void
+  SetSharedLibraryDirectoryHelper(SharedLibraryDirectoryHelper *helper);
 
-  static void Initialize(SharedLibraryDirectoryHelper *helper = nullptr);
+  static void Initialize();
   static void Terminate();
 
   /// Gets the host target triple.
@@ -84,11 +140,19 @@ public:
   /// member of the FileSpec is filled in.
   static FileSpec GetSystemPluginDir();
 
+  /// Returns the directory containing the users home (e.g. `~/`). Only the
+  /// directory member of the FileSpec is filled in.
+  static FileSpec GetUserHomeDir();
+
+  /// Returns the directory containing the users lldb home (e.g. `~/.lldb/`).
+  /// Only the directory member of the FileSpec is filled in.
+  static FileSpec GetUserLLDBDir();
+
   /// Returns the directory containing the user plugins. Only the directory
   /// member of the FileSpec is filled in.
   static FileSpec GetUserPluginDir();
 
-  /// Returns the proces temporary directory. This directory will be cleaned up
+  /// Returns the process temporary directory. This directory will be cleaned up
   /// when this process exits. Only the directory member of the FileSpec is
   /// filled in.
   static FileSpec GetProcessTempDir();
@@ -108,32 +172,112 @@ public:
 
   static FileSpec GetXcodeContentsDirectory() { return {}; }
   static FileSpec GetXcodeDeveloperDirectory() { return {}; }
-  
-  /// Return the directory containing a specific Xcode SDK.
-  static llvm::Expected<llvm::StringRef> GetXcodeSDKPath(XcodeSDK sdk) {
-    return "";
+  static FileSpec GetCurrentXcodeToolchainDirectory() { return {}; }
+  static FileSpec GetCurrentCommandLineToolsDirectory() { return {}; }
+
+  struct SDKOptions {
+    std::optional<XcodeSDK> XcodeSDKSelection;
+  };
+
+  /// Return the directory containing something like a SDK (reused for Swift).
+  static llvm::Expected<llvm::StringRef> GetSDKRoot(SDKOptions options) {
+    return llvm::make_error<HostInfoError>("cannot determine SDK root");
   }
 
-  /// Return information about module \p image_name if it is loaded in
+  /// Return the path to a specific tool in the specified Xcode SDK.
+  static llvm::Expected<llvm::StringRef> FindSDKTool(XcodeSDK sdk,
+                                                     llvm::StringRef tool) {
+    return llvm::errorCodeToError(llvm::errc::no_such_file_or_directory);
+  }
+
+  /// Return information about module \p filepath if it is loaded in
   /// the current process's address space.
+  ///
+  /// \param[in] sc_mode
+  ///     Flag to control if this method can try to read a shared
+  ///     cache binary blob directly, needed to keep user settings out of
+  ///     Host.
   static SharedCacheImageInfo
-  GetSharedCacheImageInfo(llvm::StringRef image_name) {
+  GetSharedCacheImageInfo(llvm::StringRef filepath,
+                          lldb::SymbolSharedCacheUse sc_mode) {
     return {};
   }
 
+  /// Return information about module \p uuid if it is loaded in
+  /// the current process's address space.
+  ///
+  /// \param[in] sc_mode
+  ///     Flag to control if this method can try to read a shared
+  ///     cache binary blob directly, needed to keep user settings out of
+  ///     Host.
+  static SharedCacheImageInfo
+  GetSharedCacheImageInfo(const UUID &uuid,
+                          lldb::SymbolSharedCacheUse sc_mode) {
+    return {};
+  }
+
+  /// Return information about module \p filepath, if it is loaded in
+  /// the current process's address space using shared cache \p sc_uuid.
+  /// The shared cache must have been previously indexed.
+  ///
+  /// \param[in] sc_mode
+  ///     Flag to control if this method can try to read a shared
+  ///     cache binary blob directly, needed to keep user settings out of
+  ///     Host.
+  static SharedCacheImageInfo
+  GetSharedCacheImageInfo(llvm::StringRef filepath, const UUID &sc_uuid,
+                          lldb::SymbolSharedCacheUse sc_mode) {
+    return {};
+  }
+
+  /// Return information about module \p uuid, if it is loaded in
+  /// the current process's address space using shared cache \p sc_uuid.
+  /// The shared cache must have been previously indexed.
+  ///
+  /// \param[in] sc_mode
+  ///     Flag to control if this method can try to read a shared
+  ///     cache binary blob directly, needed to keep user settings out of
+  ///     Host.
+  static SharedCacheImageInfo
+  GetSharedCacheImageInfo(const UUID &uuid, const UUID &sc_uuid,
+                          lldb::SymbolSharedCacheUse sc_mode) {
+    return {};
+  }
+
+  /// Scan the files in a shared cache, if the filepath and uuid match
+  /// on the debug host.
+  /// Returns false if the shared cache filepath did not exist, or uuid
+  /// did not match.
+  static bool SharedCacheIndexFiles(FileSpec &filepath, UUID &uuid,
+                                    lldb::SymbolSharedCacheUse sc_mode) {
+    return false;
+  }
+
+  /// Returns the distribution id of the host
+  ///
+  /// This will be something like "ubuntu", "fedora", etc. on Linux.
+  ///
+  /// \return Returns either std::nullopt or a reference to a const std::string
+  /// containing the distribution id
+  static llvm::StringRef GetDistributionId() { return llvm::StringRef(); }
+
 protected:
-  static bool ComputeSharedLibraryDirectory(FileSpec &file_spec);
+  static bool
+  ComputeSharedLibraryDirectory(FileSpec &file_spec,
+                                SharedLibraryDirectoryHelper *helper);
   static bool ComputeSupportExeDirectory(FileSpec &file_spec);
   static bool ComputeProcessTempFileDirectory(FileSpec &file_spec);
   static bool ComputeGlobalTempFileDirectory(FileSpec &file_spec);
   static bool ComputeTempFileBaseDirectory(FileSpec &file_spec);
   static bool ComputeHeaderDirectory(FileSpec &file_spec);
   static bool ComputeSystemPluginsDirectory(FileSpec &file_spec);
+  static bool ComputeUserHomeDirectory(FileSpec &file_spec);
+  static bool ComputeUserLLDBHomeDirectory(FileSpec &file_spec);
   static bool ComputeUserPluginsDirectory(FileSpec &file_spec);
 
   static void ComputeHostArchitectureSupport(ArchSpec &arch_32,
                                              ArchSpec &arch_64);
 };
-}
+} // namespace lldb_private
 
 #endif

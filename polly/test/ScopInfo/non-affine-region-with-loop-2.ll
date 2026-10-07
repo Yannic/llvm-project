@@ -1,4 +1,4 @@
-; RUN: opt %loadPolly -polly-stmt-granularity=bb -polly-allow-nonaffine-loops -polly-print-scops -polly-codegen -disable-output < %s | FileCheck %s
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-stmt-granularity=bb -plugin-arg=Polly,-polly-allow-nonaffine-loops '-passes=polly-custom<detect>' -plugin-arg=Polly,-polly-print-detect -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s
 ;
 ; CHECK:    Stmt_loop3
 ; CHECK:            Domain :=

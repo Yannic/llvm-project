@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-// UNSUPPORTED: c++03, c++11, c++14, c++17
+// REQUIRES: std-at-least-c++20
 
 // iterator, reverse_iterator
 
@@ -15,12 +15,12 @@
 #include <iterator>
 #include "test_macros.h"
 
-using iterator = std::span<int>::iterator;
+using iterator         = std::span<int>::iterator;
 using reverse_iterator = std::span<int>::reverse_iterator;
-using value_type = int;
+using value_type       = int;
 
 static_assert(std::contiguous_iterator<iterator>);
-LIBCPP_STATIC_ASSERT(std::__is_cpp17_random_access_iterator<iterator>::value);
+LIBCPP_STATIC_ASSERT(std::__has_random_access_iterator_category<iterator>::value);
 static_assert(std::indirectly_writable<iterator, value_type>);
 static_assert(std::sentinel_for<iterator, iterator>);
 static_assert(!std::sentinel_for<iterator, reverse_iterator>);

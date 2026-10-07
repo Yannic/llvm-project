@@ -16,14 +16,25 @@
 #include "interception/interception.h"
 #include "sanitizer_common/sanitizer_allocator_dlsym.h"
 #include "sanitizer_common/sanitizer_allocator_interface.h"
-#include "sanitizer_common/sanitizer_tls_get_addr.h"
-
-#if !SANITIZER_FUCHSIA
+#include "sanitizer_common/sanitizer_mallinfo.h"
+#include "sanitizer_common/sanitizer_platform_interceptors.h"
 
 using namespace __hwasan;
 
 struct DlsymAlloc : public DlSymAllocator<DlsymAlloc> {
   static bool UseImpl() { return !hwasan_inited; }
+  static void OnAllocate(const void *ptr, uptr size) {
+#  if CAN_SANITIZE_LEAKS
+    // Suppress leaks from dlerror(). Previously dlsym hack on global array was
+    // used by leak sanitizer as a root region.
+    __lsan_register_root_region(ptr, size);
+#  endif
+  }
+  static void OnFree(const void *ptr, uptr size) {
+#  if CAN_SANITIZE_LEAKS
+    __lsan_unregister_root_region(ptr, size);
+#  endif
+  }
 };
 
 extern "C" {
@@ -51,10 +62,7 @@ void *__sanitizer_aligned_alloc(uptr alignment, uptr size) {
 SANITIZER_INTERFACE_ATTRIBUTE
 void *__sanitizer___libc_memalign(uptr alignment, uptr size) {
   GET_MALLOC_STACK_TRACE;
-  void *ptr = hwasan_memalign(alignment, size, &stack);
-  if (ptr)
-    DTLS_on_libc_memalign(ptr, size);
-  return ptr;
+  return hwasan_memalign(alignment, size, &stack);
 }
 
 SANITIZER_INTERFACE_ATTRIBUTE
@@ -88,6 +96,30 @@ void __sanitizer_cfree(void *ptr) {
   GET_MALLOC_STACK_TRACE;
   hwasan_free(ptr, &stack);
 }
+
+#if SANITIZER_INTERCEPT_FREE_SIZED
+SANITIZER_INTERFACE_ATTRIBUTE
+void __sanitizer_free_sized(void* ptr, uptr size) {
+  if (!ptr)
+    return;
+  if (DlsymAlloc::PointerIsMine(ptr))
+    return DlsymAlloc::Free(ptr);
+  GET_MALLOC_STACK_TRACE;
+  hwasan_free(ptr, &stack);
+}
+#endif
+
+#if SANITIZER_INTERCEPT_FREE_ALIGNED_SIZED
+SANITIZER_INTERFACE_ATTRIBUTE
+void __sanitizer_free_aligned_sized(void* ptr, uptr alignment, uptr size) {
+  if (!ptr)
+    return;
+  if (DlsymAlloc::PointerIsMine(ptr))
+    return DlsymAlloc::Free(ptr);
+  GET_MALLOC_STACK_TRACE;
+  hwasan_free(ptr, &stack);
+}
+#endif
 
 SANITIZER_INTERFACE_ATTRIBUTE
 uptr __sanitizer_malloc_usable_size(const void *ptr) {
@@ -143,12 +175,19 @@ void *__sanitizer_malloc(uptr size) {
 
 }  // extern "C"
 
-#if HWASAN_WITH_INTERCEPTORS
+#if HWASAN_WITH_INTERCEPTORS || SANITIZER_FUCHSIA
+#if SANITIZER_FUCHSIA
+// Fuchsia does not use WRAP/wrappers used for the interceptor infrastructure.
+#  define INTERCEPTOR_ALIAS(RET, FN, ARGS...)                                 \
+    extern "C" SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE RET FN( \
+        ARGS) ALIAS(__sanitizer_##FN)
+#else
 #  define INTERCEPTOR_ALIAS(RET, FN, ARGS...)                                 \
     extern "C" SANITIZER_INTERFACE_ATTRIBUTE RET WRAP(FN)(ARGS)               \
-        ALIAS("__sanitizer_" #FN);                                            \
+        ALIAS(__sanitizer_##FN);                                              \
     extern "C" SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE RET FN( \
-        ARGS) ALIAS("__sanitizer_" #FN)
+        ARGS) ALIAS(__sanitizer_##FN)
+#endif
 
 INTERCEPTOR_ALIAS(int, posix_memalign, void **memptr, SIZE_T alignment,
                   SIZE_T size);
@@ -156,6 +195,13 @@ INTERCEPTOR_ALIAS(void *, aligned_alloc, SIZE_T alignment, SIZE_T size);
 INTERCEPTOR_ALIAS(void *, __libc_memalign, SIZE_T alignment, SIZE_T size);
 INTERCEPTOR_ALIAS(void *, valloc, SIZE_T size);
 INTERCEPTOR_ALIAS(void, free, void *ptr);
+#  if SANITIZER_INTERCEPT_FREE_SIZED
+INTERCEPTOR_ALIAS(void, free_sized, void* ptr, SIZE_T size);
+#  endif
+#  if SANITIZER_INTERCEPT_FREE_ALIGNED_SIZED
+INTERCEPTOR_ALIAS(void, free_aligned_sized, void* ptr, SIZE_T alignment,
+                  SIZE_T size);
+#  endif
 INTERCEPTOR_ALIAS(uptr, malloc_usable_size, const void *ptr);
 INTERCEPTOR_ALIAS(void *, calloc, SIZE_T nmemb, SIZE_T size);
 INTERCEPTOR_ALIAS(void *, realloc, void *ptr, SIZE_T size);
@@ -166,10 +212,8 @@ INTERCEPTOR_ALIAS(void *, malloc, SIZE_T size);
 INTERCEPTOR_ALIAS(void *, memalign, SIZE_T alignment, SIZE_T size);
 INTERCEPTOR_ALIAS(void *, pvalloc, SIZE_T size);
 INTERCEPTOR_ALIAS(void, cfree, void *ptr);
-INTERCEPTOR_ALIAS(__sanitizer_struct_mallinfo, mallinfo);
+INTERCEPTOR_ALIAS(__sanitizer_struct_mallinfo, mallinfo,);
 INTERCEPTOR_ALIAS(int, mallopt, int cmd, int value);
 INTERCEPTOR_ALIAS(void, malloc_stats, void);
 #  endif
 #endif  // #if HWASAN_WITH_INTERCEPTORS
-
-#endif  // SANITIZER_FUCHSIA

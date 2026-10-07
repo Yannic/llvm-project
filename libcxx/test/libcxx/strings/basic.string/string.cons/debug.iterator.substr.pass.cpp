@@ -12,7 +12,7 @@
 // basic_string(basic_string&&, size_type, size_type, Allocator) inserts the container into the debug database
 
 // REQUIRES: has-unix-headers
-// UNSUPPORTED: !libcpp-has-debug-mode, c++03
+// UNSUPPORTED: !libcpp-has-legacy-debug-mode, c++03
 
 #include <cassert>
 #include <string>
@@ -46,4 +46,6 @@ int main(int, char**) {
     assert(i[0] == 'l');
     TEST_LIBCPP_ASSERT_FAILURE(i[5], "Attempted to subscript an iterator outside its valid range");
   }
+
+  return 0;
 }

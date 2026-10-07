@@ -9,6 +9,7 @@
 #include "lldb/Utility/ProcessInfo.h"
 
 #include "lldb/Utility/ArchSpec.h"
+#include "lldb/Utility/ScriptedMetadata.h"
 #include "lldb/Utility/Stream.h"
 #include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/UserIDResolver.h"
@@ -21,12 +22,14 @@ using namespace lldb;
 using namespace lldb_private;
 
 ProcessInfo::ProcessInfo()
-    : m_executable(), m_arguments(), m_environment(), m_arch() {}
+    : m_executable(), m_arguments(), m_environment(), m_arch(), m_listener_sp(),
+      m_hijack_listener_sp(), m_shadow_listener_sp() {}
 
 ProcessInfo::ProcessInfo(const char *name, const ArchSpec &arch,
                          lldb::pid_t pid)
     : m_executable(name), m_arguments(), m_environment(), m_arch(arch),
-      m_pid(pid) {}
+      m_pid(pid), m_listener_sp(), m_hijack_listener_sp(),
+      m_shadow_listener_sp() {}
 
 void ProcessInfo::Clear() {
   m_executable.Clear();
@@ -36,14 +39,11 @@ void ProcessInfo::Clear() {
   m_gid = UINT32_MAX;
   m_arch.Clear();
   m_pid = LLDB_INVALID_PROCESS_ID;
+  m_scripted_metadata_sp.reset();
 }
 
-const char *ProcessInfo::GetName() const {
-  return m_executable.GetFilename().GetCString();
-}
-
-llvm::StringRef ProcessInfo::GetNameAsStringRef() const {
-  return m_executable.GetFilename().GetStringRef();
+llvm::StringRef ProcessInfo::GetName() const {
+  return m_executable.GetFilename();
 }
 
 void ProcessInfo::Dump(Stream &s, Platform *platform) const {
@@ -109,15 +109,19 @@ void ProcessInfo::SetArguments(const Args &args, bool first_arg_is_executable) {
   }
 }
 
+bool ProcessInfo::IsScriptedProcess() const {
+  return m_scripted_metadata_sp && *m_scripted_metadata_sp;
+}
+
 void ProcessInstanceInfo::Dump(Stream &s, UserIDResolver &resolver) const {
   if (m_pid != LLDB_INVALID_PROCESS_ID)
     s.Printf("    pid = %" PRIu64 "\n", m_pid);
 
-  if (m_parent_pid != LLDB_INVALID_PROCESS_ID)
-    s.Printf(" parent = %" PRIu64 "\n", m_parent_pid);
+  if (ParentProcessIDIsValid())
+    s.Printf(" parent = %" PRIu64 "\n", GetParentProcessID());
 
   if (m_executable) {
-    s.Printf("   name = %s\n", m_executable.GetFilename().GetCString());
+    s.Format("   name = {0}\n", m_executable.GetFilename());
     s.PutCString("   file = ");
     m_executable.Dump(s.AsRawOstream());
     s.EOL();
@@ -136,7 +140,7 @@ void ProcessInstanceInfo::Dump(Stream &s, UserIDResolver &resolver) const {
   s.Format("{0}", m_environment);
 
   if (m_arch.IsValid()) {
-    s.Printf("   arch = ");
+    s.PutCString("   arch = ");
     m_arch.DumpTriple(s.AsRawOstream());
     s.EOL();
   }
@@ -185,7 +189,8 @@ void ProcessInstanceInfo::DumpTableHeader(Stream &s, bool show_args,
 void ProcessInstanceInfo::DumpAsTableRow(Stream &s, UserIDResolver &resolver,
                                          bool show_args, bool verbose) const {
   if (m_pid != LLDB_INVALID_PROCESS_ID) {
-    s.Printf("%-6" PRIu64 " %-6" PRIu64 " ", m_pid, m_parent_pid);
+    s.Printf("%-6" PRIu64 " %-6" PRIu64 " ", m_pid,
+             (ParentProcessIDIsValid()) ? GetParentProcessID() : 0);
 
     StreamString arch_strm;
     if (m_arch.IsValid())
@@ -247,11 +252,11 @@ bool ProcessInstanceInfoMatch::ArchitectureMatches(
          m_match_info.GetArchitecture().IsCompatibleMatch(arch_spec);
 }
 
-bool ProcessInstanceInfoMatch::NameMatches(const char *process_name) const {
+bool ProcessInstanceInfoMatch::NameMatches(llvm::StringRef process_name) const {
   if (m_name_match_type == NameMatch::Ignore)
     return true;
-  const char *match_name = m_match_info.GetName();
-  if (!match_name)
+  llvm::StringRef match_name = m_match_info.GetName();
+  if (match_name.empty())
     return true;
 
   return lldb_private::NameMatches(process_name, m_name_match_type, match_name);

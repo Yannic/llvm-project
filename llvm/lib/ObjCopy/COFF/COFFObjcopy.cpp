@@ -13,6 +13,7 @@
 #include "llvm/ObjCopy/COFF/COFFConfig.h"
 #include "llvm/ObjCopy/CommonConfig.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Object/Binary.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/CRC.h"
@@ -28,7 +29,20 @@ using namespace object;
 using namespace COFF;
 
 static bool isDebugSection(const Section &Sec) {
-  return Sec.Name.startswith(".debug");
+  return Sec.Name.starts_with(".debug");
+}
+
+// The COMDAT selection is stored in the section definition symbol's aux
+// record, so it must be kept even if no relocation references it.
+static bool isComdatSectionDefinition(const Object &Obj, const Symbol &Sym) {
+  if (Sym.Sym.StorageClass == IMAGE_SYM_CLASS_STATIC && Sym.Sym.Value == 0 &&
+      Sym.Sym.NumberOfAuxSymbols != 0 && Sym.TargetSectionId > 0) {
+    // Looks like a section definition symbol, check if it is a COMDAT.
+    const Section *Sec = Obj.findSection(Sym.TargetSectionId);
+    return Sec && Sec->Name == Sym.Name &&
+           (Sec->Header.Characteristics & IMAGE_SCN_LNK_COMDAT);
+  }
+  return false;
 }
 
 static uint64_t getNextRVA(const Object &Obj) {
@@ -130,8 +144,37 @@ static uint32_t flagsToCharacteristics(SectionFlag AllFlags, uint32_t OldChar) {
   return NewCharacteristics;
 }
 
+static Error dumpSection(Object &O, StringRef SectionName, StringRef FileName) {
+  for (const coff::Section &Section : O.getSections()) {
+    if (Section.Name != SectionName)
+      continue;
+
+    ArrayRef<uint8_t> Contents = Section.getContents();
+
+    std::unique_ptr<FileOutputBuffer> Buffer;
+    if (auto B = FileOutputBuffer::create(FileName, Contents.size()))
+      Buffer = std::move(*B);
+    else
+      return B.takeError();
+
+    llvm::copy(Contents, Buffer->getBufferStart());
+    if (Error E = Buffer->commit())
+      return E;
+
+    return Error::success();
+  }
+  return createStringError(object_error::parse_failed, "section '%s' not found",
+                           SectionName.str().c_str());
+}
+
 static Error handleArgs(const CommonConfig &Config,
                         const COFFConfig &COFFConfig, Object &Obj) {
+  for (StringRef Op : Config.DumpSection) {
+    auto [Section, File] = Op.split('=');
+    if (Error E = dumpSection(Obj, Section, File))
+      return E;
+  }
+
   // Perform the actual section removals.
   Obj.removeSections([&Config](const Section &Sec) {
     // Contrary to --only-keep-debug, --only-section fully removes sections that
@@ -153,10 +196,18 @@ static Error handleArgs(const CommonConfig &Config,
   });
 
   if (Config.OnlyKeepDebug) {
+    const data_directory *DebugDir =
+        Obj.DataDirectories.size() > DEBUG_DIRECTORY
+            ? &Obj.DataDirectories[DEBUG_DIRECTORY]
+            : nullptr;
     // For --only-keep-debug, we keep all other sections, but remove their
     // content. The VirtualSize field in the section header is kept intact.
-    Obj.truncateSections([](const Section &Sec) {
+    Obj.truncateSections([DebugDir](const Section &Sec) {
       return !isDebugSection(Sec) && Sec.Name != ".buildid" &&
+             !(DebugDir && DebugDir->Size > 0 &&
+               DebugDir->RelativeVirtualAddress >= Sec.Header.VirtualAddress &&
+               DebugDir->RelativeVirtualAddress <
+                   Sec.Header.VirtualAddress + Sec.Header.SizeOfRawData) &&
              ((Sec.Header.Characteristics &
                (IMAGE_SCN_CNT_CODE | IMAGE_SCN_CNT_INITIALIZED_DATA)) != 0);
     });
@@ -188,12 +239,15 @@ static Error handleArgs(const CommonConfig &Config,
     if (Config.SymbolsToRemove.matches(Sym.Name)) {
       // Explicitly removing a referenced symbol is an error.
       if (Sym.Referenced)
-        return createStringError(
-            llvm::errc::invalid_argument,
-            "'" + Config.OutputFilename + "': not stripping symbol '" +
-                Sym.Name.str() + "' because it is named in a relocation");
+        return createStringError(llvm::errc::invalid_argument,
+                                 "'" + Config.OutputFilename +
+                                     "': not stripping symbol '" + Sym.Name +
+                                     "' because it is named in a relocation");
       return true;
     }
+
+    if (isComdatSectionDefinition(Obj, Sym))
+      return false;
 
     if (!Sym.Referenced) {
       // With --strip-unneeded, GNU objcopy removes all unreferenced local

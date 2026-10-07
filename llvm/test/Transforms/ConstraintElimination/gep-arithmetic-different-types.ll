@@ -11,7 +11,6 @@ define i1 @gep_constant_positive_index(ptr %A, ptr %upper) {
 ; CHECK-NEXT:    [[ADD_I16_4:%.*]] = getelementptr inbounds i16, ptr [[A]], i64 4
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I16_4]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I16_2:%.*]] = getelementptr inbounds i16, ptr [[A]], i64 2
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I16_2]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;
@@ -35,7 +34,6 @@ define i1 @gep_constant_positive_index_chained(ptr %A, ptr %upper) {
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[C_0]])
 ; CHECK-NEXT:    [[ADD_I8_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i64 1
 ; CHECK-NEXT:    [[ADD_I16_1:%.*]] = getelementptr inbounds i16, ptr [[ADD_I8_1]], i64 1
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I16_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I16_2:%.*]] = getelementptr inbounds i16, ptr [[ADD_I8_1]], i64 2
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I16_2]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 true, [[C_1]]
@@ -65,7 +63,6 @@ define i1 @gep_var_positive_index(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-NEXT:    [[ADD_I32_IDX:%.*]] = getelementptr inbounds i32, ptr [[A]], i8 [[IDX]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX:%.*]] = getelementptr inbounds i8, ptr [[A]], i8 [[IDX]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;
@@ -87,15 +84,14 @@ define i1 @gep_add_nsw_positive_index(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-LABEL: @gep_add_nsw_positive_index(
 ; CHECK-NEXT:    [[IDX_POS:%.*]] = icmp sge i8 [[IDX:%.*]], 0
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[IDX_POS]])
-; CHECK-NEXT:    [[IDX_3:%.*]] = add nsw i8 [[IDX]], 3
+; CHECK-NEXT:    [[IDX_3:%.*]] = add nuw nsw i8 [[IDX]], 3
 ; CHECK-NEXT:    [[ADD_I8_IDX_3:%.*]] = getelementptr inbounds i8, ptr [[A:%.*]], i8 [[IDX_3]]
 ; CHECK-NEXT:    [[C_0:%.*]] = icmp ult ptr [[ADD_I8_IDX_3]], [[UPPER:%.*]]
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[C_0]])
-; CHECK-NEXT:    [[IDX_1:%.*]] = add nsw i8 [[IDX]], 1
+; CHECK-NEXT:    [[IDX_1:%.*]] = add nuw nsw i8 [[IDX]], 1
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i8 [[IDX_1]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i8 [[IDX_1]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    [[ADD_I16_IDX_1:%.*]] = getelementptr inbounds i16, ptr [[A]], i8 [[IDX_1]]
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp ult ptr [[ADD_I16_IDX_1]], [[UPPER]]
@@ -127,16 +123,15 @@ define i1 @gep_shl_nsw_positive_index(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-LABEL: @gep_shl_nsw_positive_index(
 ; CHECK-NEXT:    [[IDX_POS:%.*]] = icmp sge i8 [[IDX:%.*]], 0
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[IDX_POS]])
-; CHECK-NEXT:    [[IDX_2:%.*]] = shl nsw i8 [[IDX]], 2
+; CHECK-NEXT:    [[IDX_2:%.*]] = shl nuw nsw i8 [[IDX]], 2
 ; CHECK-NEXT:    [[ADD_I8_IDX_2:%.*]] = getelementptr inbounds i8, ptr [[A:%.*]], i8 [[IDX_2]]
 ; CHECK-NEXT:    [[C_0:%.*]] = icmp ult ptr [[ADD_I8_IDX_2]], [[UPPER:%.*]]
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[C_0]])
-; CHECK-NEXT:    [[IDX_1:%.*]] = shl nsw i8 [[IDX]], 1
+; CHECK-NEXT:    [[IDX_1:%.*]] = shl nuw nsw i8 [[IDX]], 1
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i8 [[IDX_1]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i8 [[IDX_1]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[UPPER]]
-; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], [[T_1]]
+; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;
   %idx.pos = icmp sge i8 %idx, 0
@@ -167,7 +162,6 @@ define i1 @gep_zext_add_nuw_nsw_index(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i16 [[IDX_1_EXT]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i16 [[IDX_1_EXT]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    [[ADD_I16_IDX_1:%.*]] = getelementptr inbounds i16, ptr [[A]], i16 [[IDX_1_EXT]]
 ; CHECK-NEXT:    [[C_2:%.*]] = icmp ult ptr [[ADD_I16_IDX_1]], [[UPPER]]
@@ -207,7 +201,6 @@ define i1 @gep_zext_add_nuw_index(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i16 [[IDX_1_EXT]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i16 [[IDX_1_EXT]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;
@@ -269,7 +262,6 @@ define i1 @gep_zext_index(ptr %A, ptr %upper, i8 %idx.1, i8 %idx.2) {
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i16 [[IDX_1_EXT]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[ADD_I8_IDX_2]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i16 [[IDX_1_EXT]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[ADD_I8_IDX_2]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;
@@ -334,7 +326,6 @@ define i1 @gep_zext_shl_nuw_index(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i16 [[IDX_1_EXT]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i16 [[IDX_1_EXT]]
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;
@@ -362,18 +353,16 @@ define i1 @gep_add_nsw_positive_index_struct(ptr %A, ptr %upper, i8 %idx) {
 ; CHECK-LABEL: @gep_add_nsw_positive_index_struct(
 ; CHECK-NEXT:    [[IDX_POS:%.*]] = icmp sge i8 [[IDX:%.*]], 0
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[IDX_POS]])
-; CHECK-NEXT:    [[IDX_3:%.*]] = add nsw i8 [[IDX]], 2
+; CHECK-NEXT:    [[IDX_3:%.*]] = add nuw nsw i8 [[IDX]], 2
 ; CHECK-NEXT:    [[ADD_I8_IDX_3:%.*]] = getelementptr inbounds [[STRUCT_T:%.*]], ptr [[A:%.*]], i8 [[IDX_3]]
 ; CHECK-NEXT:    [[C_0:%.*]] = icmp ult ptr [[ADD_I8_IDX_3]], [[UPPER:%.*]]
 ; CHECK-NEXT:    call void @llvm.assume(i1 [[C_0]])
-; CHECK-NEXT:    [[IDX_1:%.*]] = add nsw i8 [[IDX]], 1
+; CHECK-NEXT:    [[IDX_1:%.*]] = add nuw nsw i8 [[IDX]], 1
 ; CHECK-NEXT:    [[ADD_I32_IDX_1:%.*]] = getelementptr inbounds i32, ptr [[A]], i8 [[IDX_1]]
 ; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I32_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I8_IDX_1:%.*]] = getelementptr inbounds i8, ptr [[A]], i8 [[IDX_1]]
-; CHECK-NEXT:    [[T_2:%.*]] = icmp ult ptr [[ADD_I8_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[T_1]], true
 ; CHECK-NEXT:    [[ADD_I16_IDX_1:%.*]] = getelementptr inbounds i16, ptr [[A]], i8 [[IDX_1]]
-; CHECK-NEXT:    [[T_3:%.*]] = icmp ult ptr [[ADD_I16_IDX_1]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_2:%.*]] = xor i1 [[RES_1]], true
 ; CHECK-NEXT:    [[ADD_I64_IDX_1:%.*]] = getelementptr inbounds i64, ptr [[A]], i8 [[IDX_1]]
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I64_IDX_1]], [[UPPER]]
@@ -413,7 +402,6 @@ define i1 @gep_constant_positive_index_fixed_vector_ty(ptr %A, ptr %upper) {
 ; CHECK-NEXT:    [[ADD_I16_4:%.*]] = getelementptr inbounds <4 x i16>, ptr [[A]], i64 4
 ; CHECK-NEXT:    [[C_1:%.*]] = icmp ult ptr [[ADD_I16_4]], [[UPPER]]
 ; CHECK-NEXT:    [[ADD_I16_2:%.*]] = getelementptr inbounds <4 x i16>, ptr [[A]], i64 2
-; CHECK-NEXT:    [[T_1:%.*]] = icmp ult ptr [[ADD_I16_2]], [[UPPER]]
 ; CHECK-NEXT:    [[RES_1:%.*]] = xor i1 [[C_1]], true
 ; CHECK-NEXT:    ret i1 [[RES_1]]
 ;

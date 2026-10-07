@@ -36,7 +36,7 @@ struct TestDiagnosticFilterPass
     // Build a diagnostic handler that has filtering capabilities.
     auto filterFn = [&](Location loc) {
       // Ignore non-file locations.
-      FileLineColLoc fileLoc = loc.dyn_cast<FileLineColLoc>();
+      FileLineColLoc fileLoc = dyn_cast<FileLineColLoc>(loc);
       if (!fileLoc)
         return true;
 
@@ -51,7 +51,8 @@ struct TestDiagnosticFilterPass
 
     // Emit a diagnostic for every operation with a valid loc.
     getOperation()->walk([&](Operation *op) {
-      if (LocationAttr locAttr = op->getAttrOfType<LocationAttr>("test.loc"))
+      if (LocationAttr locAttr =
+              op->getDiscardableAttrOfType<LocationAttr>("test.loc"))
         emitError(locAttr, "test diagnostic");
     });
   }

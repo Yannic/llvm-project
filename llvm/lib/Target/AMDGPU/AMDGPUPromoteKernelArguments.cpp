@@ -16,7 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
-#include "Utils/AMDGPUMemoryUtils.h"
+#include "AMDGPUMemoryUtils.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/MemorySSA.h"
@@ -110,13 +110,19 @@ bool AMDGPUPromoteKernelArguments::promotePointer(Value *Ptr) {
   if (PT->getAddressSpace() != AMDGPUAS::FLAT_ADDRESS)
     return Changed;
 
+  // The promotion is valid because in the HSA offload model the host populates
+  // kernarg slots at dispatch time and can only supply global-aperture
+  // addresses. Any flat pointer reachable from a kernel argument can therefore
+  // be assumed to be in the global aperture. This also mirrors the assumption
+  // in getAssumedAddrSpace (AMDGPUTargetMachine.cpp) which independently
+  // promotes flat kernel arguments to global via InferAddressSpaces.
   IRBuilder<> B(LI ? &*std::next(cast<Instruction>(Ptr)->getIterator())
                    : ArgCastInsertPt);
 
   // Cast pointer to global address space and back to flat and let
   // Infer Address Spaces pass to do all necessary rewriting.
   PointerType *NewPT =
-      PointerType::getWithSamePointeeType(PT, AMDGPUAS::GLOBAL_ADDRESS);
+      PointerType::get(PT->getContext(), AMDGPUAS::GLOBAL_ADDRESS);
   Value *Cast =
       B.CreateAddrSpaceCast(Ptr, NewPT, Twine(Ptr->getName(), ".global"));
   Value *CastBack =

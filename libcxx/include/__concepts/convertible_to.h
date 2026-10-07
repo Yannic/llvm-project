@@ -17,21 +17,17 @@
 #  pragma GCC system_header
 #endif
 
-_LIBCPP_BEGIN_NAMESPACE_STD
+#if _LIBCPP_STD_VER >= 20
 
-#if _LIBCPP_STD_VER > 17
+_LIBCPP_BEGIN_NAMESPACE_STD
 
 // [concept.convertible]
 
-template<class _From, class _To>
-concept convertible_to =
-  is_convertible_v<_From, _To> &&
-  requires {
-    static_cast<_To>(std::declval<_From>());
-  };
-
-#endif // _LIBCPP_STD_VER > 17
+template <class _From, class _To>
+concept convertible_to = is_convertible_v<_From, _To> && requires { static_cast<_To>(std::declval<_From>()); };
 
 _LIBCPP_END_NAMESPACE_STD
+
+#endif // _LIBCPP_STD_VER >= 20
 
 #endif // _LIBCPP___CONCEPTS_CONVERTIBLE_TO_H

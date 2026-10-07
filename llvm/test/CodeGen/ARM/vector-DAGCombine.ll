@@ -50,9 +50,9 @@ define void @test_pr22678() {
 define <4 x i32> @test_vmovrrd_combine() nounwind {
 ; CHECK-LABEL: test_vmovrrd_combine:
 ; CHECK:       @ %bb.0: @ %entry
+; CHECK-NEXT:    @ implicit-def: $q8
 ; CHECK-NEXT:    mov r0, #0
 ; CHECK-NEXT:    cmp r0, #0
-; CHECK-NEXT:    @ implicit-def: $q8
 ; CHECK-NEXT:    bne .LBB3_2
 ; CHECK-NEXT:  @ %bb.1: @ %bb1.preheader
 ; CHECK-NEXT:    vmov.i32 q8, #0x0
@@ -134,9 +134,8 @@ define void @i64_buildvector(ptr %ptr, ptr %vp) nounwind {
 define void @i64_insertelement(ptr %ptr, ptr %vp) nounwind {
 ; CHECK-LABEL: i64_insertelement:
 ; CHECK:       @ %bb.0:
-; CHECK-NEXT:    vld1.64 {d16, d17}, [r1]
-; CHECK-NEXT:    vldr d16, [r0]
-; CHECK-NEXT:    vst1.64 {d16, d17}, [r1]
+; CHECK-NEXT:    ldm r0, {r0, r3}
+; CHECK-NEXT:    stm r1, {r0, r3}
 ; CHECK-NEXT:    bx lr
   %t0 = load i64, ptr %ptr, align 4
   %vec = load <2 x i64>, ptr %vp
@@ -167,16 +166,15 @@ define void @andVec(ptr %A) nounwind {
 ; CHECK-NEXT:    vmov.i16 d17, #0x7
 ; CHECK-NEXT:    str r1, [sp, #4]
 ; CHECK-NEXT:    add r1, sp, #4
+; CHECK-NEXT:    mov r2, sp
 ; CHECK-NEXT:    vld1.32 {d16[0]}, [r1:32]
-; CHECK-NEXT:    mov r1, sp
 ; CHECK-NEXT:    vmovl.u8 q9, d16
 ; CHECK-NEXT:    vand d16, d18, d17
-; CHECK-NEXT:    vorr d17, d16, d16
-; CHECK-NEXT:    vuzp.8 d17, d18
-; CHECK-NEXT:    vst1.32 {d17[0]}, [r1:32]
-; CHECK-NEXT:    vld1.32 {d17[0]}, [r1:32]
 ; CHECK-NEXT:    vmov.u16 r1, d16[2]
-; CHECK-NEXT:    vmovl.u16 q8, d17
+; CHECK-NEXT:    vuzp.8 d16, d17
+; CHECK-NEXT:    vst1.32 {d16[0]}, [r2:32]
+; CHECK-NEXT:    vld1.32 {d16[0]}, [r2:32]
+; CHECK-NEXT:    vmovl.u16 q8, d16
 ; CHECK-NEXT:    vmov.32 r2, d16[0]
 ; CHECK-NEXT:    strb r1, [r0, #2]
 ; CHECK-NEXT:    strh r2, [r0]
@@ -196,18 +194,17 @@ define void @orVec(ptr %A) nounwind {
 ; CHECK-NEXT:    .pad #8
 ; CHECK-NEXT:    sub sp, sp, #8
 ; CHECK-NEXT:    ldr r1, [r0]
+; CHECK-NEXT:    mov r2, sp
 ; CHECK-NEXT:    str r1, [sp, #4]
 ; CHECK-NEXT:    add r1, sp, #4
 ; CHECK-NEXT:    vld1.32 {d16[0]}, [r1:32]
-; CHECK-NEXT:    mov r1, sp
 ; CHECK-NEXT:    vmovl.u8 q8, d16
 ; CHECK-NEXT:    vorr.i16 d16, #0x7
-; CHECK-NEXT:    vorr d18, d16, d16
-; CHECK-NEXT:    vuzp.8 d18, d19
-; CHECK-NEXT:    vst1.32 {d18[0]}, [r1:32]
-; CHECK-NEXT:    vld1.32 {d18[0]}, [r1:32]
 ; CHECK-NEXT:    vmov.u16 r1, d16[2]
-; CHECK-NEXT:    vmovl.u16 q8, d18
+; CHECK-NEXT:    vuzp.8 d16, d18
+; CHECK-NEXT:    vst1.32 {d16[0]}, [r2:32]
+; CHECK-NEXT:    vld1.32 {d16[0]}, [r2:32]
+; CHECK-NEXT:    vmovl.u16 q8, d16
 ; CHECK-NEXT:    vmov.32 r2, d16[0]
 ; CHECK-NEXT:    strb r1, [r0, #2]
 ; CHECK-NEXT:    strh r2, [r0]

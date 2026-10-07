@@ -1,24 +1,24 @@
-// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=51 -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --check-prefixes=ALL,NORMAL
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=51 -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=51 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefixes=ALL,NORMAL
-// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fopenmp-version=51 -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
-// RUN: %clang_cc1 -verify -fopenmp -fopenmp-version=51 -fopenmp-enable-irbuilder -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --check-prefixes=ALL,IRBUILDER
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=51 -fopenmp-enable-irbuilder -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=51 -fopenmp-enable-irbuilder -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefixes=ALL,IRBUILDER
+// RUN: %clang_cc1 -verify -fopenmp -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --check-prefixes=ALL,NORMAL
+// RUN: %clang_cc1 -fopenmp -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefixes=ALL,NORMAL
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
+// RUN: %clang_cc1 -verify -fopenmp -fopenmp-enable-irbuilder -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --check-prefixes=ALL,IRBUILDER
+// RUN: %clang_cc1 -fopenmp -fopenmp-enable-irbuilder -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -fopenmp-enable-irbuilder -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefixes=ALL,IRBUILDER
 
-// RUN: %clang_cc1 -verify -fopenmp-simd -fopenmp-version=51 -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck --check-prefix SIMD-ONLY0 %s
-// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=51 -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=51 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
-// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp-simd -fopenmp-version=51 -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -fopenmp-simd -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -fopenmp-simd -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp-simd -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
 // SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
 
 // ALL:       [[IDENT_T_TY:%.+]] = type { i32, i32, i32, i32, ptr }
-// ALL:       [[UNNAMED_LOCK:@.+]] = common global [8 x i32] zeroinitializer
-// ALL:       [[THE_NAME_LOCK:@.+]] = common global [8 x i32] zeroinitializer
-// ALL:       [[THE_NAME_LOCK1:@.+]] = common global [8 x i32] zeroinitializer
+// ALL:       [[UNNAMED_LOCK:@.+]] = common {{(dso_local )?}}global [8 x i32] zeroinitializer
+// ALL:       [[THE_NAME_LOCK:@.+]] = common {{(dso_local )?}}global [8 x i32] zeroinitializer
+// ALL:       [[THE_NAME_LOCK1:@.+]] = common {{(dso_local )?}}global [8 x i32] zeroinitializer
 
 // ALL:       define {{.*}}void [[FOO:@.+]]()
 
@@ -35,6 +35,8 @@ int main() {
 // ALL-NEXT:  			store i8 2, ptr [[A_ADDR]]
 // IRBUILDER-NEXT:		br label %[[AFTER:[^ ,]+]]
 // IRBUILDER:			[[AFTER]]
+// IRBUILDER-NEXT:		br label %[[OMP_REGION_FINALIZE:[^ ,]+]]
+// IRBUILDER:			[[OMP_REGION_FINALIZE]]
 // ALL-NEXT:  			call {{.*}}void @__kmpc_end_critical(ptr [[DEFAULT_LOC]], i32 [[GTID]], ptr [[UNNAMED_LOCK]])
   [[omp::directive(critical)]]
   a = 2;
@@ -105,12 +107,12 @@ struct S {
 void critical_ref(S &s) {
   // ALL: [[S_ADDR:%.+]] = alloca ptr,
   // ALL: [[S_REF:%.+]] = load ptr, ptr [[S_ADDR]],
-  // ALL: [[S_A_REF:%.+]] = getelementptr inbounds %struct.S, ptr [[S_REF]], i32 0, i32 0
+  // ALL: [[S_A_REF:%.+]] = getelementptr inbounds nuw %struct.S, ptr [[S_REF]], i32 0, i32 0
   ++s.a;
   // ALL: call void @__kmpc_critical(
   [[omp::directive(critical)]]
   // ALL: [[S_REF:%.+]] = load ptr, ptr [[S_ADDR]],
-  // ALL: [[S_A_REF:%.+]] = getelementptr inbounds %struct.S, ptr [[S_REF]], i32 0, i32 0
+  // ALL: [[S_A_REF:%.+]] = getelementptr inbounds nuw %struct.S, ptr [[S_REF]], i32 0, i32 0
   ++s.a;
   // ALL: call void @__kmpc_end_critical(
 }

@@ -3,8 +3,8 @@
 ; RUN: diff %t1 %t2
 ; RUN: FileCheck -input-file=%t1 %s
 
-; CHECK:  OVERVIEW: Resource Converter
-; CHECK-DAG:  USAGE: rc [options] file...
+; CHECK:  OVERVIEW: LLVM Resource Converter
+; CHECK-DAG:  USAGE: llvm-rc [options] file...
 ; CHECK-DAG:  OPTIONS:
 ; CHECK-NEXT:    /?          Display this help and exit.
 ; CHECK-NEXT:    /C <value>  Set the codepage used for input strings.
@@ -17,6 +17,7 @@
 ; CHECK-NEXT:    /L <value>  Set the default language identifier.
 ; CHECK-NEXT:    /no-preprocess Don't try to preprocess the input file.
 ; CHECK-NEXT:    /N          Null-terminate all strings in the string table.
+; CHECK-NEXT:    /showIncludes Print cl.exe-style include information to stderr.
 ; CHECK-NEXT:    /U <value>  Undefine a symbol for the C preprocessor.
 ; CHECK-NEXT:    /V          Be verbose.
 ; CHECK-NEXT:    /X          Ignore 'include' variable.

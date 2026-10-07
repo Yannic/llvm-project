@@ -9,16 +9,16 @@ declare void @llvm.sideeffect()
 define void @test_sideeffect(ptr %p) {
 ; CHECK-LABEL: @test_sideeffect(
 ; CHECK-NEXT:    [[TMP2:%.*]] = load <4 x float>, ptr [[P:%.*]], align 16
-; CHECK-NEXT:    [[L01:%.*]] = extractelement <4 x float> [[TMP2]], i32 0
-; CHECK-NEXT:    [[L12:%.*]] = extractelement <4 x float> [[TMP2]], i32 1
-; CHECK-NEXT:    [[L23:%.*]] = extractelement <4 x float> [[TMP2]], i32 2
-; CHECK-NEXT:    [[L34:%.*]] = extractelement <4 x float> [[TMP2]], i32 3
+; CHECK-NEXT:    [[L01:%.*]] = extractelement <4 x float> [[TMP2]], i64 0
+; CHECK-NEXT:    [[L12:%.*]] = extractelement <4 x float> [[TMP2]], i64 1
+; CHECK-NEXT:    [[L23:%.*]] = extractelement <4 x float> [[TMP2]], i64 2
+; CHECK-NEXT:    [[L34:%.*]] = extractelement <4 x float> [[TMP2]], i64 3
 ; CHECK-NEXT:    call void @llvm.sideeffect()
 ; CHECK-NEXT:    call void @llvm.sideeffect()
-; CHECK-NEXT:    [[TMP3:%.*]] = insertelement <4 x float> poison, float [[L01]], i32 0
-; CHECK-NEXT:    [[TMP4:%.*]] = insertelement <4 x float> [[TMP3]], float [[L12]], i32 1
-; CHECK-NEXT:    [[TMP5:%.*]] = insertelement <4 x float> [[TMP4]], float [[L23]], i32 2
-; CHECK-NEXT:    [[TMP6:%.*]] = insertelement <4 x float> [[TMP5]], float [[L34]], i32 3
+; CHECK-NEXT:    [[TMP5:%.*]] = insertelement <4 x float> poison, float [[L01]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = insertelement <4 x float> [[TMP5]], float [[L12]], i64 1
+; CHECK-NEXT:    [[TMP4:%.*]] = insertelement <4 x float> [[TMP3]], float [[L23]], i64 2
+; CHECK-NEXT:    [[TMP6:%.*]] = insertelement <4 x float> [[TMP4]], float [[L34]], i64 3
 ; CHECK-NEXT:    store <4 x float> [[TMP6]], ptr [[P]], align 16
 ; CHECK-NEXT:    ret void
 ;
@@ -43,16 +43,16 @@ declare void @foo()
 define void @test_inaccessiblememonly_nounwind_willreturn(ptr %p) {
 ; CHECK-LABEL: @test_inaccessiblememonly_nounwind_willreturn(
 ; CHECK-NEXT:    [[TMP2:%.*]] = load <4 x float>, ptr [[P:%.*]], align 16
-; CHECK-NEXT:    [[L01:%.*]] = extractelement <4 x float> [[TMP2]], i32 0
-; CHECK-NEXT:    [[L12:%.*]] = extractelement <4 x float> [[TMP2]], i32 1
-; CHECK-NEXT:    [[L23:%.*]] = extractelement <4 x float> [[TMP2]], i32 2
-; CHECK-NEXT:    [[L34:%.*]] = extractelement <4 x float> [[TMP2]], i32 3
+; CHECK-NEXT:    [[L01:%.*]] = extractelement <4 x float> [[TMP2]], i64 0
+; CHECK-NEXT:    [[L12:%.*]] = extractelement <4 x float> [[TMP2]], i64 1
+; CHECK-NEXT:    [[L23:%.*]] = extractelement <4 x float> [[TMP2]], i64 2
+; CHECK-NEXT:    [[L34:%.*]] = extractelement <4 x float> [[TMP2]], i64 3
 ; CHECK-NEXT:    call void @foo() #[[ATTR1:[0-9]+]]
 ; CHECK-NEXT:    call void @foo() #[[ATTR1]]
-; CHECK-NEXT:    [[TMP3:%.*]] = insertelement <4 x float> poison, float [[L01]], i32 0
-; CHECK-NEXT:    [[TMP4:%.*]] = insertelement <4 x float> [[TMP3]], float [[L12]], i32 1
-; CHECK-NEXT:    [[TMP5:%.*]] = insertelement <4 x float> [[TMP4]], float [[L23]], i32 2
-; CHECK-NEXT:    [[TMP6:%.*]] = insertelement <4 x float> [[TMP5]], float [[L34]], i32 3
+; CHECK-NEXT:    [[TMP5:%.*]] = insertelement <4 x float> poison, float [[L01]], i64 0
+; CHECK-NEXT:    [[TMP3:%.*]] = insertelement <4 x float> [[TMP5]], float [[L12]], i64 1
+; CHECK-NEXT:    [[TMP4:%.*]] = insertelement <4 x float> [[TMP3]], float [[L23]], i64 2
+; CHECK-NEXT:    [[TMP6:%.*]] = insertelement <4 x float> [[TMP4]], float [[L34]], i64 3
 ; CHECK-NEXT:    store <4 x float> [[TMP6]], ptr [[P]], align 16
 ; CHECK-NEXT:    ret void
 ;
@@ -78,9 +78,9 @@ define void @test_inaccessiblememonly_not_willreturn(ptr %p) {
 ; CHECK-NEXT:    [[P2:%.*]] = getelementptr float, ptr [[P]], i64 2
 ; CHECK-NEXT:    [[P3:%.*]] = getelementptr float, ptr [[P]], i64 3
 ; CHECK-NEXT:    [[L0:%.*]] = load float, ptr [[P]], align 16
+; CHECK-NEXT:    call void @foo() #[[ATTR2:[0-9]+]]
 ; CHECK-NEXT:    [[L1:%.*]] = load float, ptr [[P1]], align 4
 ; CHECK-NEXT:    [[L2:%.*]] = load float, ptr [[P2]], align 4
-; CHECK-NEXT:    call void @foo() #[[ATTR2:[0-9]+]]
 ; CHECK-NEXT:    [[L3:%.*]] = load float, ptr [[P3]], align 4
 ; CHECK-NEXT:    store float [[L0]], ptr [[P]], align 16
 ; CHECK-NEXT:    call void @foo() #[[ATTR2]]
@@ -93,9 +93,9 @@ define void @test_inaccessiblememonly_not_willreturn(ptr %p) {
   %p2 = getelementptr float, ptr %p, i64 2
   %p3 = getelementptr float, ptr %p, i64 3
   %l0 = load float, ptr %p, align 16
+  call void @foo() inaccessiblememonly nounwind
   %l1 = load float, ptr %p1
   %l2 = load float, ptr %p2
-  call void @foo() inaccessiblememonly nounwind
   %l3 = load float, ptr %p3
   store float %l0, ptr %p, align 16
   call void @foo() inaccessiblememonly nounwind
@@ -111,9 +111,9 @@ define void @test_inaccessiblememonly_not_nounwind(ptr %p) {
 ; CHECK-NEXT:    [[P2:%.*]] = getelementptr float, ptr [[P]], i64 2
 ; CHECK-NEXT:    [[P3:%.*]] = getelementptr float, ptr [[P]], i64 3
 ; CHECK-NEXT:    [[L0:%.*]] = load float, ptr [[P]], align 16
+; CHECK-NEXT:    call void @foo() #[[ATTR3:[0-9]+]]
 ; CHECK-NEXT:    [[L1:%.*]] = load float, ptr [[P1]], align 4
 ; CHECK-NEXT:    [[L2:%.*]] = load float, ptr [[P2]], align 4
-; CHECK-NEXT:    call void @foo() #[[ATTR3:[0-9]+]]
 ; CHECK-NEXT:    [[L3:%.*]] = load float, ptr [[P3]], align 4
 ; CHECK-NEXT:    store float [[L0]], ptr [[P]], align 16
 ; CHECK-NEXT:    call void @foo() #[[ATTR3]]
@@ -126,9 +126,9 @@ define void @test_inaccessiblememonly_not_nounwind(ptr %p) {
   %p2 = getelementptr float, ptr %p, i64 2
   %p3 = getelementptr float, ptr %p, i64 3
   %l0 = load float, ptr %p, align 16
+  call void @foo() inaccessiblememonly willreturn
   %l1 = load float, ptr %p1
   %l2 = load float, ptr %p2
-  call void @foo() inaccessiblememonly willreturn
   %l3 = load float, ptr %p3
   store float %l0, ptr %p, align 16
   call void @foo() inaccessiblememonly willreturn

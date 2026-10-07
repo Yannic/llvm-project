@@ -1,19 +1,29 @@
 add_mlir_dialect_library(MLIRTransformDialect
+  TransformAttrs.cpp
   TransformDialect.cpp
-  TransformInterfaces.cpp
   TransformOps.cpp
   TransformTypes.cpp
+  Utils.cpp
 
   DEPENDS
   MLIRTransformDialectIncGen
-  MLIRTransformInterfacesIncGen
+  MLIRTransformTypesIncGen
+  MLIRTransformDialectEnumIncGen
+  MLIRTransformDialectAttributesIncGen
+  MLIRTransformOpsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRCastInterfaces
+  MLIRFunctionInterfaces
   MLIRIR
+  MLIRLLVMCommonConversion
+  MLIRLLVMDialect
+  MLIRLoopLikeInterface
   MLIRParser
-  MLIRPDLDialect
-  MLIRPDLInterpDialect
+  MLIRPass
   MLIRRewrite
   MLIRSideEffectInterfaces
+  MLIRTransforms
+  MLIRTransformDialectInterfaces
   MLIRTransformDialectUtils
   )

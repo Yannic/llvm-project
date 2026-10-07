@@ -65,7 +65,7 @@ VALUE_DIAGOPT(ShowCategories, 2, 0) /// Show categories: 0 -> none, 1 -> Number,
 
 ENUM_DIAGOPT(Format, TextDiagnosticFormat, 2, Clang) /// Format for diagnostics:
 
-DIAGOPT(ShowColors, 1, 0)       /// Show diagnostics with ANSI color sequences.
+ENUM_DIAGOPT(ShowColors, ShowColorsKind, 2, ShowColorsKind::Auto)
 DIAGOPT(UseANSIEscapeCodes, 1, 0)
 ENUM_DIAGOPT(ShowOverloads, OverloadsShown, 1,
              Ovl_All)    /// Overload candidates to show.
@@ -76,6 +76,8 @@ ENUM_DIAGOPT(VerifyIgnoreUnexpected, DiagnosticLevelMask, 4,
              DiagnosticLevelMask::None) /// Ignore unexpected diagnostics of
                                         /// the specified levels when using
                                         /// -verify.
+DIAGOPT(VerifyDirectives, 1, 0) /// Enable checks of 'expected' directives
+                                /// themselves.
 DIAGOPT(ElideType, 1, 0)         /// Elide identical types in template diffing
 DIAGOPT(ShowTemplateTree, 1, 0)  /// Print a template tree when diffing
 
@@ -90,10 +92,14 @@ VALUE_DIAGOPT(ConstexprBacktraceLimit, 32, DefaultConstexprBacktraceLimit)
 VALUE_DIAGOPT(SpellCheckingLimit, 32, DefaultSpellCheckingLimit)
 /// Limit number of lines shown in a snippet.
 VALUE_DIAGOPT(SnippetLineLimit, 32, DefaultSnippetLineLimit)
+/// Show line number column on the left of snippets.
+VALUE_DIAGOPT(ShowLineNumbers, 1, DefaultShowLineNumbers)
 
 VALUE_DIAGOPT(TabStop, 32, DefaultTabStop) /// The distance between tab stops.
 /// Column limit for formatting message diagnostics, or 0 if unused.
 VALUE_DIAGOPT(MessageLength, 32, 0)
+
+DIAGOPT(ShowSafeBufferUsageSuggestions, 1, 0)
 
 #undef DIAGOPT
 #undef ENUM_DIAGOPT

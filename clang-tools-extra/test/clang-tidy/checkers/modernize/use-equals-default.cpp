@@ -42,6 +42,18 @@ union NU {
   NE Field;
 };
 
+// Skip unions with out-of-line constructor/destructor.
+union NUO {
+  NUO();
+  ~NUO();
+  NE Field;
+};
+
+NUO::NUO() {}
+// CHECK-FIXES: NUO::NUO() {}
+NUO::~NUO() {}
+// CHECK-FIXES: NUO::~NUO() {}
+
 // Skip structs/classes containing anonymous unions.
 struct SU {
   SU() {}
@@ -115,7 +127,7 @@ Priv::Priv() {}
 struct SemiColon {
   SemiColon() {};
   // CHECK-MESSAGES: :[[@LINE-1]]:3: warning: use '= default'
-  // CHECK-FIXES: SemiColon() = default;{{$}}
+  // CHECK-FIXES: SemiColon() = default;
 };
 
 struct SemiColonOutOfLine {
@@ -124,16 +136,16 @@ struct SemiColonOutOfLine {
 
 SemiColonOutOfLine::SemiColonOutOfLine() {};
 // CHECK-MESSAGES: :[[@LINE-1]]:21: warning: use '= default'
-// CHECK-FIXES: SemiColonOutOfLine::SemiColonOutOfLine() = default;{{$}}
+// CHECK-FIXES: SemiColonOutOfLine::SemiColonOutOfLine() = default;
 
 // struct.
 struct ST {
   ST() {}
   // CHECK-MESSAGES: :[[@LINE-1]]:3: warning: use '= default'
-  // CHECK-FIXES: ST() = default;{{$}}
+  // CHECK-FIXES: ST() = default;
   ~ST() {}
   // CHECK-MESSAGES: :[[@LINE-1]]:3: warning: use '= default'
-  // CHECK-FIXES: ST() = default;{{$}}
+  // CHECK-FIXES: ~ST() = default;
 };
 
 // Deleted constructor/destructor.
@@ -226,13 +238,13 @@ struct DC : KW {
   DC() : KW() {}
   ~DC() override {}
   // CHECK-MESSAGES: :[[@LINE-1]]:3: warning: use '= default'
-  // CHECK-FIXES: ~DC() override = default;{{$}}
+  // CHECK-FIXES: ~DC() override = default;
 };
 
 struct OverrideWithSemiColon : KW {
   ~OverrideWithSemiColon() override {};
   // CHECK-MESSAGES: :[[@LINE-1]]:3: warning: use '= default'
-  // CHECK-FIXES: ~OverrideWithSemiColon() override = default;{{$}}
+  // CHECK-FIXES: ~OverrideWithSemiColon() override = default;
 };
 
 struct Comments {
@@ -266,3 +278,21 @@ OTC::~OTC() try {} catch(...) {}
   };
 
 STRUCT_WITH_DEFAULT(unsigned char, InMacro)
+
+#define ZERO_VALUE 0
+struct PreprocesorDependentTest
+{
+  void something();
+
+  PreprocesorDependentTest() {
+#if ZERO_VALUE
+    something();
+#endif
+  }
+
+  ~PreprocesorDependentTest() {
+#if ZERO_VALUE
+    something();
+#endif
+  }
+};

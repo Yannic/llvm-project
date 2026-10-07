@@ -12,11 +12,8 @@
 #define FORTRAN_SEMANTICS_CHECK_CALL_H_
 
 #include "flang/Evaluate/call.h"
+#include "flang/Parser/message.h"
 
-namespace Fortran::parser {
-class Messages;
-class ContextualMessages;
-} // namespace Fortran::parser
 namespace Fortran::evaluate::characteristics {
 struct Procedure;
 }
@@ -26,6 +23,17 @@ class FoldingContext;
 
 namespace Fortran::semantics {
 class Scope;
+class SemanticsContext;
+
+// Check keyword constraints on actual arguments for procedures with implicit
+// interfaces.
+void CheckImplicitInterfaceArgKeywords(
+    const evaluate::ActualArgument &, parser::ContextualMessages &);
+
+// Check constraints on actual arguments for procedures with implicit
+// interfaces.
+void CheckImplicitInterfaceArg(evaluate::ActualArgument &,
+    parser::ContextualMessages &, SemanticsContext &);
 
 // Argument treatingExternalAsImplicit should be true when the called procedure
 // does not actually have an explicit interface at the call site, but
@@ -33,20 +41,36 @@ class Scope;
 // defined at the top level in the same source file.  Returns false if
 // messages were created, true if all is well.
 bool CheckArguments(const evaluate::characteristics::Procedure &,
-    evaluate::ActualArguments &, evaluate::FoldingContext &, const Scope &,
-    bool treatingExternalAsImplicit,
+    evaluate::ActualArguments &, SemanticsContext &, const Scope &,
+    bool treatingExternalAsImplicit, bool ignoreImplicitVsExplicit,
     const evaluate::SpecificIntrinsic *intrinsic);
 
-// Checks actual arguments against a procedure with an explicit interface.
-// Reports a buffer of errors when not compatible.
+bool CheckPPCIntrinsic(const Symbol &generic, const Symbol &specific,
+    const evaluate::ActualArguments &actuals,
+    evaluate::FoldingContext &context);
+bool CheckWindowsIntrinsic(
+    const Symbol &intrinsic, evaluate::FoldingContext &context);
+bool CheckArgumentIsConstantExprInRange(
+    const evaluate::ActualArguments &actuals, int index, int lowerBound,
+    int upperBound, parser::ContextualMessages &messages);
+
 parser::Messages CheckExplicitInterface(
     const evaluate::characteristics::Procedure &, evaluate::ActualArguments &,
-    const evaluate::FoldingContext &, const Scope &,
-    const evaluate::SpecificIntrinsic *intrinsic);
+    SemanticsContext &, const Scope *, const evaluate::SpecificIntrinsic *,
+    bool allowActualArgumentConversions, bool extentErrors,
+    bool ignoreImplicitVsExplicit);
 
 // Checks actual arguments for the purpose of resolving a generic interface.
 bool CheckInterfaceForGeneric(const evaluate::characteristics::Procedure &,
-    evaluate::ActualArguments &, const evaluate::FoldingContext &,
+    evaluate::ActualArguments &, SemanticsContext &,
     bool allowActualArgumentConversions = false);
+
+// F2023 C1545: reports the cross-consequent-arg inconsistencies that a
+// conditional argument may not have in a reference to a generic procedure, and
+// returns whether any were reported.  C1545 does not apply to a reference to a
+// specific procedure, though the ordinary argument-association rules may still
+// reject the same combinations there.
+bool CheckConditionalArgsInGenericReference(
+    const evaluate::ActualArguments &, parser::ContextualMessages &);
 } // namespace Fortran::semantics
 #endif

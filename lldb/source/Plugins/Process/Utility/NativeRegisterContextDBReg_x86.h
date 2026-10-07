@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef lldb_NativeRegisterContextDBReg_x86_h
-#define lldb_NativeRegisterContextDBReg_x86_h
+#ifndef LLDB_SOURCE_PLUGINS_PROCESS_UTILITY_NATIVEREGISTERCONTEXTDBREG_X86_H
+#define LLDB_SOURCE_PLUGINS_PROCESS_UTILITY_NATIVEREGISTERCONTEXTDBREG_X86_H
 
 #include "Plugins/Process/Utility/NativeRegisterContextRegisterInfo.h"
 
@@ -16,12 +16,6 @@ namespace lldb_private {
 class NativeRegisterContextDBReg_x86
     : public virtual NativeRegisterContextRegisterInfo {
 public:
-  // NB: This constructor is here only because gcc<=6.5 requires a virtual base
-  // class initializer on abstract class (even though it is never used). It can
-  // be deleted once we move to gcc>=7.0.
-  NativeRegisterContextDBReg_x86(NativeThreadProtocol &thread)
-      : NativeRegisterContextRegisterInfo(thread, nullptr) {}
-
   Status IsWatchpointHit(uint32_t wp_index, bool &is_hit) override;
 
   Status GetWatchpointHitIndex(uint32_t &wp_index,
@@ -46,9 +40,9 @@ public:
 
   uint32_t NumSupportedHardwareWatchpoints() override;
 
-  const RegisterInfo *GetDR(int num) const;
+  virtual const RegisterInfo *GetDR(int num) const;
 };
 
 } // namespace lldb_private
 
-#endif // #ifndef lldb_NativeRegisterContextDBReg_x86_h
+#endif // LLDB_SOURCE_PLUGINS_PROCESS_UTILITY_NATIVEREGISTERCONTEXTDBREG_X86_H

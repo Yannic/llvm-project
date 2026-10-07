@@ -1,10 +1,10 @@
-// RUN: mlir-opt %s --sparsification -cse -sparse-vectorization="vl=16" -scf-for-loop-peeling -canonicalize -cse | \
+// RUN: mlir-opt %s --sparse-reinterpret-map --sparsification -cse -sparse-vectorization="vl=16" -scf-for-loop-peeling -canonicalize -cse | \
 // RUN:   FileCheck %s
 
 #SparseVector = #sparse_tensor.encoding<{
-  dimLevelType = [ "compressed" ],
-  pointerBitWidth = 32,
-  indexBitWidth = 32
+  map = (d0) -> (d0 : compressed),
+  posWidth = 32,
+  crdWidth = 32
 }>
 
 #trait_mul_s = {
@@ -17,21 +17,21 @@
   doc = "x(i) = a(i) * b(i)"
 }
 
-// CHECK-DAG:   #[[$map0:.*]] = affine_map<()[s0, s1] -> (s0 + ((-s0 + s1) floordiv 16) * 16)>
+// CHECK-DAG:   #[[$map0:.*]] = affine_map<()[s0, s1] -> (s0 + ((-s0 + s1) floordiv 16) * 16, s0)>
 // CHECK-DAG:   #[[$map1:.*]] = affine_map<(d0)[s0] -> (-d0 + s0)>
 // CHECK-LABEL: func @mul_s
 // CHECK-DAG:   %[[c0:.*]] = arith.constant 0 : index
 // CHECK-DAG:   %[[c1:.*]] = arith.constant 1 : index
 // CHECK-DAG:   %[[c16:.*]] = arith.constant 16 : index
+// CHECK-DAG:   %[[mask:.*]] = arith.constant dense<true> : vector<16xi1>
 // CHECK:       %[[p:.*]] = memref.load %{{.*}}[%[[c0]]] : memref<?xi32>
 // CHECK:       %[[a:.*]] = arith.extui %[[p]] : i32 to i64
 // CHECK:       %[[q:.*]] = arith.index_cast %[[a]] : i64 to index
 // CHECK:       %[[r:.*]] = memref.load %{{.*}}[%[[c1]]] : memref<?xi32>
 // CHECK:       %[[b:.*]] = arith.extui %[[r]] : i32 to i64
 // CHECK:       %[[s:.*]] = arith.index_cast %[[b]] : i64 to index
-// CHECK:       %[[boundary:.*]] = affine.apply #[[$map0]]()[%[[q]], %[[s]]]
+// CHECK:       %[[boundary:.*]] = affine.max #[[$map0]]()[%[[q]], %[[s]]]
 // CHECK:       scf.for %[[i:.*]] = %[[q]] to %[[boundary]] step %[[c16]] {
-// CHECK:         %[[mask:.*]] = vector.constant_mask [16] : vector<16xi1>
 // CHECK:         %[[li:.*]] = vector.load %{{.*}}[%[[i]]] : memref<?xi32>, vector<16xi32>
 // CHECK:         %[[zi:.*]] = arith.extui %[[li]] : vector<16xi32> to vector<16xi64>
 // CHECK:         %[[la:.*]] = vector.load %{{.*}}[%[[i]]] : memref<?xf32>, vector<16xf32>

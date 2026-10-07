@@ -1,37 +1,12 @@
 import("//third-party/unittest/unittest.gni")
 
-# Keyed off LLVM_ENABLE_PLUGINS in the CMake build, which is usually false
-# on Windows and true elsewhere.
-if (host_os != "win") {
-  foreach(plugin, [ "InlineAdvisorPlugin" ]) {
-    loadable_module(plugin) {
-      # Put plugin next to the unit test executable.
-      output_dir = target_out_dir
-
-      sources = [ "$plugin.cpp" ]
-
-      deps = [
-        # TestPlugin doesn't want to link in any LLVM code, it just needs its
-        # headers.
-        "//llvm/include/llvm/IR:public_tablegen",
-      ]
-
-      if (host_os != "mac" && host_os != "win") {
-        # The GN build currently doesn't globally pass -fPIC, but that's
-        # needed for building .so files on ELF.  Just pass it manually
-        # for loadable_modules for now.
-        cflags = [ "-fPIC" ]
-      }
-    }
-  }
-}
-
 unittest("AnalysisTests") {
   deps = [
     "//llvm/lib/Analysis",
     "//llvm/lib/AsmParser",
     "//llvm/lib/IR",
     "//llvm/lib/Passes",
+    "//llvm/lib/Plugins",
     "//llvm/lib/Support",
     "//llvm/lib/TargetParser",
     "//llvm/lib/Testing/Support",
@@ -49,25 +24,32 @@ unittest("AnalysisTests") {
     "CallGraphTest.cpp",
     "CaptureTrackingTest.cpp",
     "ConstraintSystemTest.cpp",
+    "CtxProfAnalysisTest.cpp",
     "DDGTest.cpp",
-    "DivergenceAnalysisTest.cpp",
+    "DXILResourceTest.cpp",
     "DomTreeUpdaterTest.cpp",
+    "EphemeralValuesCacheTest.cpp",
     "FunctionPropertiesAnalysisTest.cpp",
     "GlobalsModRefTest.cpp",
-    "IRSimilarityIdentifierTest.cpp",
+    "GraphWriterTest.cpp",
+    "IR2VecTest.cpp",
     "IVDescriptorsTest.cpp",
     "InlineCostTest.cpp",
+    "LastRunTrackingAnalysisTest.cpp",
     "LazyCallGraphTest.cpp",
     "LoadsTest.cpp",
     "LoopInfoTest.cpp",
     "LoopNestTest.cpp",
+    "MLGOUtilsTest.cpp",
     "MLModelRunnerTest.cpp",
     "MemoryBuiltinsTest.cpp",
     "MemoryProfileInfoTest.cpp",
     "MemorySSATest.cpp",
     "PhiValuesTest.cpp",
     "PluginInlineAdvisorAnalysisTest.cpp",
+    "PluginInlineOrderAnalysisTest.cpp",
     "ProfileSummaryInfoTest.cpp",
+    "ReplaceWithVecLibTest.cpp",
     "ScalarEvolutionTest.cpp",
     "SparsePropagation.cpp",
     "TBAATest.cpp",
@@ -76,7 +58,6 @@ unittest("AnalysisTests") {
     "UnrollAnalyzerTest.cpp",
     "ValueLatticeTest.cpp",
     "ValueTrackingTest.cpp",
-    "VectorFunctionABITest.cpp",
     "VectorUtilsTest.cpp",
   ]
 
@@ -84,7 +65,10 @@ unittest("AnalysisTests") {
   # Otherwise, reconfiguring with plugins disabled will leave behind a stale
   # executable.
   if (host_os != "win") {
-    deps += [ ":InlineAdvisorPlugin" ]
+    deps += [
+      "InlineAdvisorPlugin",
+      "InlineOrderPlugin",
+    ]
   }
 
   # Support plugins.
@@ -93,4 +77,5 @@ unittest("AnalysisTests") {
     # Corresponds to export_executable_symbols() in cmake.
     ldflags = [ "-rdynamic" ]
   }
+  configs -= [ "//llvm/utils/gn/build:no_exported_symbols" ]
 }

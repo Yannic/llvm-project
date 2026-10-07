@@ -7,18 +7,26 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/stdlib/exit.h"
+#include "src/__support/OSUtil/exit.h"
 #include "src/__support/common.h"
-#include "src/stdlib/_Exit.h"
+#include "src/__support/macros/config.h"
 
-namespace __llvm_libc {
+#ifdef LIBC_COPT_SUPPORT_THREADS
+#include "src/__support/threads/thread.h"
+#endif
 
-namespace internal {
-void call_exit_callbacks();
+namespace LIBC_NAMESPACE_DECL {
+
+extern "C" void __cxa_finalize(void *);
+
+// TODO: use recursive mutex to protect this routine.
+[[noreturn]] LLVM_LIBC_FUNCTION(void, exit, (int status)) {
+#ifdef LIBC_COPT_SUPPORT_THREADS
+  // Call TLS destructors, if supported by the target.
+  internal::call_atexit_callbacks();
+#endif
+  __cxa_finalize(nullptr);
+  internal::exit(status);
 }
 
-LLVM_LIBC_FUNCTION(void, exit, (int status)) {
-  internal::call_exit_callbacks();
-  _Exit(status);
-}
-
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

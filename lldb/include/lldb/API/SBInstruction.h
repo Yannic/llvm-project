@@ -55,11 +55,13 @@ public:
 
   bool CanSetBreakpoint();
 
+#ifndef SWIG
   void Print(FILE *out);
+#endif
 
   void Print(SBFile out);
 
-  void Print(FileSP out);
+  void Print(FileSP BORROWED);
 
   bool GetDescription(lldb::SBStream &description);
 
@@ -70,6 +72,22 @@ public:
                                           // 'armv7-apple-ios'
 
   bool TestEmulation(lldb::SBStream &output_stream, const char *test_file);
+
+  /// Get variable annotations for this instruction as structured data.
+  /// Returns an array of dictionaries, each containing:
+  /// - "variable_name": string name of the variable
+  /// - "location_description": string description of where variable is stored
+  ///   ("RDI", "R15", "undef", etc.)
+  /// - "start_address": unsigned integer address where this annotation becomes
+  ///   valid
+  /// - "end_address": unsigned integer address where this annotation becomes
+  ///   invalid
+  /// - "register_kind": unsigned integer indicating the register numbering
+  /// scheme
+  /// - "decl_file": string path to the file where variable is declared
+  /// - "decl_line": unsigned integer line number where variable is declared
+  /// - "type_name": string type name of the variable
+  lldb::SBStructuredData GetVariableAnnotations();
 
 protected:
   friend class SBInstructionList;

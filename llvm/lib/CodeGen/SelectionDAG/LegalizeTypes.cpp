@@ -88,10 +88,9 @@ void DAGTypeLegalizer::PerformExpensiveChecks() {
         if (I != ReplacedValues.end()) {
           Mapped |= 1;
           // Check that remapped values are only used by nodes marked NewNode.
-          for (SDNode::use_iterator UI = Node.use_begin(), UE = Node.use_end();
-               UI != UE; ++UI)
-            if (UI.getUse().getResNo() == i)
-              assert(UI->getNodeId() == NewNode &&
+          for (SDUse &U : Node.uses())
+            if (U.getResNo() == i)
+              assert(U.getUser()->getNodeId() == NewNode &&
                      "Remapped value has non-trivial use!");
 
           // Check that the final result of applying ReplacedValues is not
@@ -121,10 +120,8 @@ void DAGTypeLegalizer::PerformExpensiveChecks() {
           Mapped |= 64;
         if (WidenedVectors.count(ResId))
           Mapped |= 128;
-        if (PromotedFloats.count(ResId))
-          Mapped |= 256;
         if (SoftPromotedHalfs.count(ResId))
-          Mapped |= 512;
+          Mapped |= 256;
       }
 
       if (Node.getNodeId() != Processed) {
@@ -177,8 +174,6 @@ void DAGTypeLegalizer::PerformExpensiveChecks() {
         if (Mapped & 128)
           dbgs() << " WidenedVectors";
         if (Mapped & 256)
-          dbgs() << " PromotedFloats";
-        if (Mapped & 512)
           dbgs() << " SoftPromoteHalfs";
         dbgs() << "\n";
         llvm_unreachable(nullptr);
@@ -188,9 +183,8 @@ void DAGTypeLegalizer::PerformExpensiveChecks() {
 
 #ifndef NDEBUG
   // Checked that NewNodes are only used by other NewNodes.
-  for (unsigned i = 0, e = NewNodes.size(); i != e; ++i) {
-    SDNode *N = NewNodes[i];
-    for (SDNode *U : N->uses())
+  for (SDNode *N : NewNodes) {
+    for (SDNode *U : N->users())
       assert(U->getNodeId() == NewNode && "NewNode used by non-NewNode!");
   }
 #endif
@@ -235,7 +229,11 @@ bool DAGTypeLegalizer::run() {
     assert(N->getNodeId() == ReadyToProcess &&
            "Node should be ready if on worklist!");
 
-    LLVM_DEBUG(dbgs() << "Legalizing node: "; N->dump(&DAG));
+    // Preserve fast math flags
+    SDNodeFlags FastMathFlags = N->getFlags() & SDNodeFlags::FastMathFlags;
+    SelectionDAG::FlagInserter FlagsInserter(DAG, FastMathFlags);
+
+    LLVM_DEBUG(dbgs() << "\nLegalizing node: "; N->dump(&DAG));
     if (IgnoreNodeResults(N)) {
       LLVM_DEBUG(dbgs() << "Ignoring node results\n");
       goto ScanOperands;
@@ -245,15 +243,14 @@ bool DAGTypeLegalizer::run() {
     // types are illegal.
     for (unsigned i = 0, NumResults = N->getNumValues(); i < NumResults; ++i) {
       EVT ResultVT = N->getValueType(i);
-      LLVM_DEBUG(dbgs() << "Analyzing result type: " << ResultVT.getEVTString()
-                        << "\n");
+      LLVM_DEBUG(dbgs() << "Analyzing result type: " << ResultVT << "\n");
       switch (getTypeAction(ResultVT)) {
       case TargetLowering::TypeLegal:
         LLVM_DEBUG(dbgs() << "Legal result type\n");
         break;
       case TargetLowering::TypeScalarizeScalableVector:
         report_fatal_error(
-            "Scalarization of scalable vectors is not supported.");
+            "scalarization of scalable vectors is not supported");
       // The following calls must take care of *all* of the node's results,
       // not just the illegal result they were passed (this includes results
       // with a legal type).  Results can be remapped using ReplaceValueWith,
@@ -287,10 +284,6 @@ bool DAGTypeLegalizer::run() {
         WidenVectorResult(N, i);
         Changed = true;
         goto NodeDone;
-      case TargetLowering::TypePromoteFloat:
-        PromoteFloatResult(N, i);
-        Changed = true;
-        goto NodeDone;
       case TargetLowering::TypeSoftPromoteHalf:
         SoftPromoteHalfResult(N, i);
         Changed = true;
@@ -318,7 +311,7 @@ ScanOperands:
         continue;
       case TargetLowering::TypeScalarizeScalableVector:
         report_fatal_error(
-            "Scalarization of scalable vectors is not supported.");
+            "scalarization of scalable vectors is not supported");
       // The following calls must either replace all of the node's results
       // using ReplaceValueWith, and return "false"; or update the node's
       // operands in place, and return "true".
@@ -348,10 +341,6 @@ ScanOperands:
         break;
       case TargetLowering::TypeWidenVector:
         NeedsReanalyzing = WidenVectorOperand(N, i);
-        Changed = true;
-        break;
-      case TargetLowering::TypePromoteFloat:
-        NeedsReanalyzing = PromoteFloatOperand(N, i);
         Changed = true;
         break;
       case TargetLowering::TypeSoftPromoteHalf:
@@ -391,8 +380,7 @@ ScanOperands:
     }
 
     if (i == NumOperands) {
-      LLVM_DEBUG(dbgs() << "Legally typed node: "; N->dump(&DAG);
-                 dbgs() << "\n");
+      LLVM_DEBUG(dbgs() << "Legally typed node: "; N->dump(&DAG));
     }
     }
 NodeDone:
@@ -402,7 +390,7 @@ NodeDone:
     assert(N->getNodeId() == ReadyToProcess && "Node ID recalculated?");
     N->setNodeId(Processed);
 
-    for (SDNode *User : N->uses()) {
+    for (SDNode *User : N->users()) {
       int NodeId = User->getNodeId();
 
       // This node has two options: it can either be a new node or its Node ID
@@ -530,7 +518,7 @@ SDNode *DAGTypeLegalizer::AnalyzeNewNode(SDNode *N) {
       NewOps.push_back(Op);
     } else if (Op != OrigOp) {
       // This is the first operand to change - add all operands so far.
-      NewOps.insert(NewOps.end(), N->op_begin(), N->op_begin() + i);
+      llvm::append_range(NewOps, N->ops().take_front(i));
       NewOps.push_back(Op);
     }
   }
@@ -695,6 +683,12 @@ void DAGTypeLegalizer::ReplaceValueWith(SDValue From, SDValue To) {
           auto OldValId = getTableId(OldVal);
           auto NewValId = getTableId(NewVal);
           DAG.ReplaceAllUsesOfValueWith(OldVal, NewVal);
+          // Re-remap ids after RAUW, since the call above may have caused
+          // nodes to be deleted (via CSE), triggering NoteDeletion callbacks
+          // that added new entries to ReplacedValues. Without re-remapping,
+          // we could create a cycle like A -> B -> A.
+          RemapId(OldValId);
+          RemapId(NewValId);
           if (OldValId != NewValId)
             ReplacedValues[OldValId] = NewValId;
         }
@@ -716,7 +710,6 @@ void DAGTypeLegalizer::SetPromotedInteger(SDValue Op, SDValue Result) {
   auto &OpIdEntry = PromotedIntegers[getTableId(Op)];
   assert((OpIdEntry == 0) && "Node is already promoted!");
   OpIdEntry = getTableId(Result);
-  Result->setFlags(Op->getFlags());
 
   DAG.transferDbgValues(Op, Result);
 }
@@ -733,17 +726,6 @@ void DAGTypeLegalizer::SetSoftenedFloat(SDValue Op, SDValue Result) {
 
   auto &OpIdEntry = SoftenedFloats[getTableId(Op)];
   assert((OpIdEntry == 0) && "Node is already converted to integer!");
-  OpIdEntry = getTableId(Result);
-}
-
-void DAGTypeLegalizer::SetPromotedFloat(SDValue Op, SDValue Result) {
-  assert(Result.getValueType() ==
-         TLI.getTypeToTransformTo(*DAG.getContext(), Op.getValueType()) &&
-         "Invalid type for promoted float");
-  AnalyzeNewValue(Result);
-
-  auto &OpIdEntry = PromotedFloats[getTableId(Op)];
-  assert((OpIdEntry == 0) && "Node is already promoted!");
   OpIdEntry = getTableId(Result);
 }
 
@@ -989,10 +971,7 @@ void DAGTypeLegalizer::GetPairElements(SDValue Pair,
                                        SDValue &Lo, SDValue &Hi) {
   SDLoc dl(Pair);
   EVT NVT = TLI.getTypeToTransformTo(*DAG.getContext(), Pair.getValueType());
-  Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, NVT, Pair,
-                   DAG.getIntPtrConstant(0, dl));
-  Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, dl, NVT, Pair,
-                   DAG.getIntPtrConstant(1, dl));
+  std::tie(Lo, Hi) = DAG.SplitScalar(Pair, dl, NVT, NVT);
 }
 
 /// Build an integer with low bits Lo and high bits Hi.
@@ -1005,11 +984,10 @@ SDValue DAGTypeLegalizer::JoinIntegers(SDValue Lo, SDValue Hi) {
   EVT NVT = EVT::getIntegerVT(*DAG.getContext(),
                               LVT.getSizeInBits() + HVT.getSizeInBits());
 
-  EVT ShiftAmtVT = TLI.getShiftAmountTy(NVT, DAG.getDataLayout(), false);
   Lo = DAG.getNode(ISD::ZERO_EXTEND, dlLo, NVT, Lo);
   Hi = DAG.getNode(ISD::ANY_EXTEND, dlHi, NVT, Hi);
   Hi = DAG.getNode(ISD::SHL, dlHi, NVT, Hi,
-                   DAG.getConstant(LVT.getSizeInBits(), dlHi, ShiftAmtVT));
+                   DAG.getShiftAmountConstant(LVT.getSizeInBits(), NVT, dlHi));
   return DAG.getNode(ISD::OR, dlHi, NVT, Lo, Hi);
 }
 
@@ -1030,14 +1008,9 @@ void DAGTypeLegalizer::SplitInteger(SDValue Op,
   assert(LoVT.getSizeInBits() + HiVT.getSizeInBits() ==
          Op.getValueSizeInBits() && "Invalid integer splitting!");
   Lo = DAG.getNode(ISD::TRUNCATE, dl, LoVT, Op);
-  unsigned ReqShiftAmountInBits =
-      Log2_32_Ceil(Op.getValueType().getSizeInBits());
-  MVT ShiftAmountTy =
-      TLI.getScalarShiftAmountTy(DAG.getDataLayout(), Op.getValueType());
-  if (ReqShiftAmountInBits > ShiftAmountTy.getSizeInBits())
-    ShiftAmountTy = MVT::getIntegerVT(NextPowerOf2(ReqShiftAmountInBits));
-  Hi = DAG.getNode(ISD::SRL, dl, Op.getValueType(), Op,
-                   DAG.getConstant(LoVT.getSizeInBits(), dl, ShiftAmountTy));
+  Hi = DAG.getNode(
+      ISD::SRL, dl, Op.getValueType(), Op,
+      DAG.getShiftAmountConstant(LoVT.getSizeInBits(), Op.getValueType(), dl));
   Hi = DAG.getNode(ISD::TRUNCATE, dl, HiVT, Hi);
 }
 

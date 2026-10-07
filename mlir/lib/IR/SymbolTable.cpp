@@ -10,9 +10,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringSwitch.h"
 #include <optional>
 
 using namespace mlir;
@@ -26,10 +24,10 @@ static bool isPotentiallyUnknownSymbolTable(Operation *op) {
 /// Returns the string name of the given symbol, or null if this is not a
 /// symbol.
 static StringAttr getNameIfSymbol(Operation *op) {
-  return op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
-}
-static StringAttr getNameIfSymbol(Operation *op, StringAttr symbolAttrNameId) {
-  return op->getAttrOfType<StringAttr>(symbolAttrNameId);
+  auto symbol = dyn_cast<SymbolOpInterface>(op);
+  if (!symbol)
+    return {};
+  return symbol.getNameAttr();
 }
 
 /// Computes the nested symbol reference attribute for the symbol 'symbolName'
@@ -41,7 +39,6 @@ collectValidReferencesFor(Operation *symbol, StringAttr symbolName,
                           Operation *within,
                           SmallVectorImpl<SymbolRefAttr> &results) {
   assert(within->isAncestor(symbol) && "expected 'within' to be an ancestor");
-  MLIRContext *ctx = symbol->getContext();
 
   auto leafRef = FlatSymbolRefAttr::get(symbolName);
   results.push_back(leafRef);
@@ -53,14 +50,12 @@ collectValidReferencesFor(Operation *symbol, StringAttr symbolName,
 
   // Collect references until 'symbolTableOp' reaches 'within'.
   SmallVector<FlatSymbolRefAttr, 1> nestedRefs(1, leafRef);
-  StringAttr symbolNameId =
-      StringAttr::get(ctx, SymbolTable::getSymbolAttrName());
   do {
     // Each parent of 'symbol' should define a symbol table.
     if (!symbolTableOp->hasTrait<OpTrait::SymbolTable>())
       return failure();
     // Each parent of 'symbol' should also be a symbol.
-    StringAttr symbolTableName = getNameIfSymbol(symbolTableOp, symbolNameId);
+    StringAttr symbolTableName = getNameIfSymbol(symbolTableOp);
     if (!symbolTableName)
       return failure();
     results.push_back(SymbolRefAttr::get(symbolTableName, nestedRefs));
@@ -121,20 +116,21 @@ SymbolTable::SymbolTable(Operation *symbolTableOp)
          "expected operation to have SymbolTable trait");
   assert(symbolTableOp->getNumRegions() == 1 &&
          "expected operation to have a single region");
-  assert(llvm::hasSingleElement(symbolTableOp->getRegion(0)) &&
+  assert(symbolTableOp->getRegion(0).hasOneBlock() &&
          "expected operation to have a single block");
 
-  StringAttr symbolNameId = StringAttr::get(symbolTableOp->getContext(),
-                                            SymbolTable::getSymbolAttrName());
   for (auto &op : symbolTableOp->getRegion(0).front()) {
-    StringAttr name = getNameIfSymbol(&op, symbolNameId);
+    StringAttr name = getNameIfSymbol(&op);
     if (!name)
       continue;
 
-    auto inserted = symbolTable.insert({name, &op});
-    (void)inserted;
-    assert(inserted.second &&
-           "expected region to contain uniquely named symbol operations");
+    // Silently skip duplicate symbol names. Duplicate symbols are an
+    // invalid IR condition diagnosed by the SymbolTable trait's
+    // verifyRegionTrait. The constructor may be called before verification
+    // completes (e.g., when IsolatedFromAbove ops look up symbols in an
+    // ancestor symbol table during verification), so an assert here would
+    // crash instead of producing a proper diagnostic.
+    symbolTable.try_emplace(name, &op);
   }
 }
 
@@ -200,66 +196,119 @@ StringAttr SymbolTable::insert(Operation *symbol, Block::iterator insertPt) {
   // If the symbol was already in the table, also return.
   if (symbolTable.lookup(name) == symbol)
     return name;
-  // If a conflict was detected, then the symbol will not have been added to
-  // the symbol table. Try suffixes until we get to a unique name that works.
-  SmallString<128> nameBuffer(name.getValue());
-  unsigned originalLength = nameBuffer.size();
 
   MLIRContext *context = symbol->getContext();
-
-  // Iteratively try suffixes until we find one that isn't used.
-  do {
-    nameBuffer.resize(originalLength);
-    nameBuffer += '_';
-    nameBuffer += std::to_string(uniquingCounter++);
-  } while (!symbolTable.insert({StringAttr::get(context, nameBuffer), symbol})
-                .second);
+  SmallString<128> nameBuffer = generateSymbolName<128>(
+      name.getValue(),
+      [&](StringRef candidate) {
+        return !symbolTable
+                    .insert({StringAttr::get(context, candidate), symbol})
+                    .second;
+      },
+      uniquingCounter);
   setSymbolName(symbol, nameBuffer);
   return getSymbolName(symbol);
 }
 
+LogicalResult SymbolTable::rename(StringAttr from, StringAttr to) {
+  Operation *op = lookup(from);
+  return rename(op, to);
+}
+
+LogicalResult SymbolTable::rename(Operation *op, StringAttr to) {
+  StringAttr from = getNameIfSymbol(op);
+  (void)from;
+
+  assert(from && "expected valid 'name' attribute");
+  assert(op->getParentOp() == symbolTableOp &&
+         "expected this operation to be inside of the operation with this "
+         "SymbolTable");
+  assert(lookup(from) == op && "current name does not resolve to op");
+  assert(lookup(to) == nullptr && "new name already exists");
+
+  if (failed(SymbolTable::replaceAllSymbolUses(op, to, getOp())))
+    return failure();
+
+  // Remove op with old name, change name, add with new name. The order is
+  // important here due to how `remove` and `insert` rely on the op name.
+  remove(op);
+  setSymbolName(op, to);
+  insert(op);
+
+  assert(lookup(to) == op && "new name does not resolve to renamed op");
+  assert(lookup(from) == nullptr && "old name still exists");
+
+  return success();
+}
+
+LogicalResult SymbolTable::rename(StringAttr from, StringRef to) {
+  auto toAttr = StringAttr::get(getOp()->getContext(), to);
+  return rename(from, toAttr);
+}
+
+LogicalResult SymbolTable::rename(Operation *op, StringRef to) {
+  auto toAttr = StringAttr::get(getOp()->getContext(), to);
+  return rename(op, toAttr);
+}
+
+FailureOr<StringAttr>
+SymbolTable::renameToUnique(StringAttr oldName,
+                            ArrayRef<SymbolTable *> others) {
+
+  // Determine new name that is unique in all symbol tables.
+  StringAttr newName;
+  {
+    MLIRContext *context = oldName.getContext();
+    SmallString<64> prefix = oldName.getValue();
+    int uniqueId = 0;
+    prefix.push_back('_');
+    while (true) {
+      newName = StringAttr::get(context, prefix + Twine(uniqueId++));
+      auto lookupNewName = [&](SymbolTable *st) { return st->lookup(newName); };
+      if (!lookupNewName(this) && llvm::none_of(others, lookupNewName)) {
+        break;
+      }
+    }
+  }
+
+  // Apply renaming.
+  if (failed(rename(oldName, newName)))
+    return failure();
+  return newName;
+}
+
+FailureOr<StringAttr>
+SymbolTable::renameToUnique(Operation *op, ArrayRef<SymbolTable *> others) {
+  StringAttr from = getNameIfSymbol(op);
+  assert(from && "expected valid 'name' attribute");
+  return renameToUnique(from, others);
+}
+
 /// Returns the name of the given symbol operation.
 StringAttr SymbolTable::getSymbolName(Operation *symbol) {
-  StringAttr name = getNameIfSymbol(symbol);
+  auto symbolOp = cast<SymbolOpInterface>(symbol);
+  StringAttr name = symbolOp.getNameAttr();
   assert(name && "expected valid symbol name");
   return name;
 }
 
 /// Sets the name of the given symbol operation.
 void SymbolTable::setSymbolName(Operation *symbol, StringAttr name) {
-  symbol->setAttr(getSymbolAttrName(), name);
+  auto symbolOp = cast<SymbolOpInterface>(symbol);
+  symbolOp.setSymbolName(name);
 }
 
 /// Returns the visibility of the given symbol operation.
 SymbolTable::Visibility SymbolTable::getSymbolVisibility(Operation *symbol) {
-  // If the attribute doesn't exist, assume public.
-  StringAttr vis = symbol->getAttrOfType<StringAttr>(getVisibilityAttrName());
-  if (!vis)
-    return Visibility::Public;
-
-  // Otherwise, switch on the string value.
-  return StringSwitch<Visibility>(vis.getValue())
-      .Case("private", Visibility::Private)
-      .Case("nested", Visibility::Nested)
-      .Case("public", Visibility::Public);
+  auto symbolOp = dyn_cast<SymbolOpInterface>(symbol);
+  assert(symbolOp && "expected valid symbol operation");
+  return symbolOp.getVisibility();
 }
 /// Sets the visibility of the given symbol operation.
 void SymbolTable::setSymbolVisibility(Operation *symbol, Visibility vis) {
-  MLIRContext *ctx = symbol->getContext();
-
-  // If the visibility is public, just drop the attribute as this is the
-  // default.
-  if (vis == Visibility::Public) {
-    symbol->removeAttr(StringAttr::get(ctx, getVisibilityAttrName()));
-    return;
-  }
-
-  // Otherwise, update the attribute.
-  assert((vis == Visibility::Private || vis == Visibility::Nested) &&
-         "unknown symbol visibility kind");
-
-  StringRef visName = vis == Visibility::Private ? "private" : "nested";
-  symbol->setAttr(getVisibilityAttrName(), StringAttr::get(ctx, visName));
+  auto symbolOp = dyn_cast<SymbolOpInterface>(symbol);
+  assert(symbolOp && "expected valid symbol operation");
+  symbolOp.setVisibility(vis);
 }
 
 /// Returns the nearest symbol table from a given operation `from`. Returns
@@ -320,10 +369,8 @@ Operation *SymbolTable::lookupSymbolIn(Operation *symbolTableOp,
     return nullptr;
 
   // Look for a symbol with the given name.
-  StringAttr symbolNameId = StringAttr::get(symbolTableOp->getContext(),
-                                            SymbolTable::getSymbolAttrName());
   for (auto &op : region.front())
-    if (getNameIfSymbol(&op, symbolNameId) == symbol)
+    if (getNameIfSymbol(&op) == symbol)
       return &op;
   return nullptr;
 }
@@ -344,30 +391,26 @@ static LogicalResult lookupSymbolInImpl(
   assert(symbolTableOp->hasTrait<OpTrait::SymbolTable>());
 
   // Lookup the root reference for this symbol.
-  symbolTableOp = lookupSymbolFn(symbolTableOp, symbol.getRootReference());
-  if (!symbolTableOp)
+  auto *symbolOp = lookupSymbolFn(symbolTableOp, symbol.getRootReference());
+  if (!symbolOp)
     return failure();
-  symbols.push_back(symbolTableOp);
+  symbols.push_back(symbolOp);
 
-  // If there are no nested references, just return the root symbol directly.
-  ArrayRef<FlatSymbolRefAttr> nestedRefs = symbol.getNestedReferences();
-  if (nestedRefs.empty())
-    return success();
-
-  // Verify that the root is also a symbol table.
-  if (!symbolTableOp->hasTrait<OpTrait::SymbolTable>())
-    return failure();
-
-  // Otherwise, lookup each of the nested non-leaf references and ensure that
-  // each corresponds to a valid symbol table.
-  for (FlatSymbolRefAttr ref : nestedRefs.drop_back()) {
-    symbolTableOp = lookupSymbolFn(symbolTableOp, ref.getAttr());
-    if (!symbolTableOp || !symbolTableOp->hasTrait<OpTrait::SymbolTable>())
+  // Lookup each of the nested references.
+  for (FlatSymbolRefAttr ref : symbol.getNestedReferences()) {
+    // Check that we have a valid symbol table to lookup ref.
+    if (!symbolOp->hasTrait<OpTrait::SymbolTable>())
       return failure();
-    symbols.push_back(symbolTableOp);
+    symbolOp = lookupSymbolFn(symbolOp, ref.getAttr());
+    if (!symbolOp)
+      return failure();
+    // If the nested symbol is private, lookup failed.
+    auto nestedSymbol = dyn_cast<SymbolOpInterface>(symbolOp);
+    if (nestedSymbol && nestedSymbol.isPrivate())
+      return failure();
+    symbols.push_back(symbolOp);
   }
-  symbols.push_back(lookupSymbolFn(symbolTableOp, symbol.getLeafReference()));
-  return success(symbols.back());
+  return success();
 }
 
 LogicalResult
@@ -414,7 +457,7 @@ LogicalResult detail::verifySymbolTable(Operation *op) {
   if (op->getNumRegions() != 1)
     return op->emitOpError()
            << "Operations with a 'SymbolTable' must have exactly one region";
-  if (!llvm::hasSingleElement(op->getRegion(0)))
+  if (!op->getRegion(0).hasOneBlock())
     return op->emitOpError()
            << "Operations with a 'SymbolTable' must have exactly one block";
 
@@ -423,8 +466,7 @@ LogicalResult detail::verifySymbolTable(Operation *op) {
   for (auto &block : op->getRegion(0)) {
     for (auto &op : block) {
       // Check for a symbol name attribute.
-      auto nameAttr =
-          op.getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName());
+      StringAttr nameAttr = getNameIfSymbol(&op);
       if (!nameAttr)
         continue;
 
@@ -442,7 +484,14 @@ LogicalResult detail::verifySymbolTable(Operation *op) {
   SymbolTableCollection symbolTable;
   auto verifySymbolUserFn = [&](Operation *op) -> std::optional<WalkResult> {
     if (SymbolUserOpInterface user = dyn_cast<SymbolUserOpInterface>(op))
-      return WalkResult(user.verifySymbolUses(symbolTable));
+      if (failed(user.verifySymbolUses(symbolTable)))
+        return WalkResult::interrupt();
+    for (auto &attr : op->getDiscardableAttrDictionary().getValue()) {
+      if (auto user = dyn_cast<SymbolUserAttrInterface>(attr.getValue())) {
+        if (failed(user.verifySymbolUses(op, symbolTable)))
+          return WalkResult::interrupt();
+      }
+    }
     return WalkResult::advance();
   };
 
@@ -453,17 +502,18 @@ LogicalResult detail::verifySymbolTable(Operation *op) {
 
 LogicalResult detail::verifySymbol(Operation *op) {
   // Verify the name attribute.
-  if (!op->getAttrOfType<StringAttr>(mlir::SymbolTable::getSymbolAttrName()))
-    return op->emitOpError() << "requires string attribute '"
-                             << mlir::SymbolTable::getSymbolAttrName() << "'";
+  if (!cast<SymbolOpInterface>(op).getNameAttr())
+    return op->emitOpError("requires a symbol name");
 
   // Verify the visibility attribute.
-  if (Attribute vis = op->getAttr(mlir::SymbolTable::getVisibilityAttrName())) {
-    StringAttr visStrAttr = vis.dyn_cast<StringAttr>();
+  StringRef visAttrName =
+      mlir::SymbolOpInterface::getDefaultVisibilityAttrName();
+  if (Attribute vis = op->getInherentAttr(visAttrName).value_or(Attribute{})) {
+    StringAttr visStrAttr = llvm::dyn_cast<StringAttr>(vis);
     if (!visStrAttr)
-      return op->emitOpError() << "requires visibility attribute '"
-                               << mlir::SymbolTable::getVisibilityAttrName()
-                               << "' to be a string attribute, but got " << vis;
+      return op->emitOpError()
+             << "requires visibility attribute '" << visAttrName
+             << "' to be a string attribute, but got " << vis;
 
     if (!llvm::is_contained(ArrayRef<StringRef>{"public", "private", "nested"},
                             visStrAttr.getValue()))
@@ -485,66 +535,23 @@ LogicalResult detail::verifySymbol(Operation *op) {
 static WalkResult
 walkSymbolRefs(Operation *op,
                function_ref<WalkResult(SymbolTable::SymbolUse)> callback) {
-  // Check to see if the operation has any attributes.
-  DictionaryAttr attrDict = op->getAttrDictionary();
-  if (attrDict.empty())
-    return WalkResult::advance();
+  bool interrupted = false;
+  auto walk = [&](Attribute attr) {
+    if (interrupted)
+      return;
+    interrupted = attr.walk<WalkOrder::PreOrder>([&](SymbolRefAttr symbolRef) {
+                        if (callback({op, symbolRef}).wasInterrupted())
+                          return WalkResult::interrupt();
 
-  // A worklist of a container attribute and the current index into the held
-  // attribute list.
-  struct WorklistItem {
-    SubElementAttrInterface container;
-    SmallVector<Attribute> immediateSubElements;
-
-    explicit WorklistItem(SubElementAttrInterface container) {
-      SmallVector<Attribute> subElements;
-      container.walkImmediateSubElements(
-          [&](Attribute attr) { subElements.push_back(attr); }, [](Type) {});
-      immediateSubElements = std::move(subElements);
-    }
+                        // Don't walk nested references.
+                        return WalkResult::skip();
+                      })
+                      .wasInterrupted();
   };
-
-  SmallVector<WorklistItem, 1> attrWorklist(1, WorklistItem(attrDict));
-  SmallVector<int, 1> curAccessChain(1, /*Value=*/-1);
-
-  // Process the symbol references within the given nested attribute range.
-  auto processAttrs = [&](int &index,
-                          WorklistItem &worklistItem) -> WalkResult {
-    for (Attribute attr :
-         llvm::drop_begin(worklistItem.immediateSubElements, index)) {
-      // Invoke the provided callback if we find a symbol use and check for a
-      // requested interrupt.
-      if (auto symbolRef = attr.dyn_cast<SymbolRefAttr>()) {
-        if (callback({op, symbolRef}).wasInterrupted())
-          return WalkResult::interrupt();
-
-        /// Check for a nested container attribute, these will also need to be
-        /// walked.
-      } else if (auto interface = attr.dyn_cast<SubElementAttrInterface>()) {
-        attrWorklist.emplace_back(interface);
-        curAccessChain.push_back(-1);
-        return WalkResult::advance();
-      }
-      // Make sure to keep the index counter in sync.
-      ++index;
-    }
-
-    // Pop this container attribute from the worklist.
-    attrWorklist.pop_back();
-    curAccessChain.pop_back();
-    return WalkResult::advance();
-  };
-
-  WalkResult result = WalkResult::advance();
-  do {
-    WorklistItem &item = attrWorklist.back();
-    int &index = curAccessChain.back();
-    ++index;
-
-    // Process the given attribute, which is guaranteed to be a container.
-    result = processAttrs(index, item);
-  } while (!attrWorklist.empty() && !result.wasInterrupted());
-  return result;
+  walk(op->getRawDictionaryAttrs());
+  op->getName().walkInherentAttrs(
+      op, [&](StringRef, Attribute &attr) { walk(attr); });
+  return interrupted ? WalkResult::interrupt() : WalkResult::advance();
 }
 
 /// Walk all of the uses, for any symbol, that are nested within the given
@@ -603,9 +610,9 @@ struct SymbolScope {
                 typename llvm::function_traits<CallbackT>::result_t,
                 void>::value> * = nullptr>
   std::optional<WalkResult> walk(CallbackT cback) {
-    if (Region *region = limit.dyn_cast<Region *>())
+    if (Region *region = llvm::dyn_cast_if_present<Region *>(limit))
       return walkSymbolUses(*region, cback);
-    return walkSymbolUses(limit.get<Operation *>(), cback);
+    return walkSymbolUses(cast<Operation *>(limit), cback);
   }
   /// This variant is used when the callback type matches a stripped down type:
   /// void(SymbolTable::SymbolUse use)
@@ -623,9 +630,9 @@ struct SymbolScope {
   /// traversing into any nested symbol tables.
   template <typename CallbackT>
   std::optional<WalkResult> walkSymbolTable(CallbackT &&cback) {
-    if (Region *region = limit.dyn_cast<Region *>())
+    if (Region *region = llvm::dyn_cast_if_present<Region *>(limit))
       return ::walkSymbolTable(*region, cback);
-    return ::walkSymbolTable(limit.get<Operation *>(), cback);
+    return ::walkSymbolTable(cast<Operation *>(limit), cback);
   }
 
   /// The representation of the symbol within this scope.
@@ -707,10 +714,18 @@ static SmallVector<SymbolScope, 2> collectSymbolScopes(Operation *symbol,
     scopes.back().limit = limit;
   return scopes;
 }
-template <typename IRUnit>
 static SmallVector<SymbolScope, 1> collectSymbolScopes(StringAttr symbol,
-                                                       IRUnit *limit) {
+                                                       Region *limit) {
   return {{SymbolRefAttr::get(symbol), limit}};
+}
+
+static SmallVector<SymbolScope, 1> collectSymbolScopes(StringAttr symbol,
+                                                       Operation *limit) {
+  SmallVector<SymbolScope, 1> scopes;
+  auto symbolRef = SymbolRefAttr::get(symbol);
+  for (auto &region : limit->getRegions())
+    scopes.push_back({symbolRef, &region});
+  return scopes;
 }
 
 /// Returns true if the given reference 'SubRef' is a sub reference of the
@@ -721,7 +736,7 @@ static bool isReferencePrefixOf(SymbolRefAttr subRef, SymbolRefAttr ref) {
 
   // If the references are not pointer equal, check to see if `subRef` is a
   // prefix of `ref`.
-  if (ref.isa<FlatSymbolRefAttr>() ||
+  if (llvm::isa<FlatSymbolRefAttr>(ref) ||
       ref.getRootReference() != subRef.getRootReference())
     return false;
 
@@ -733,6 +748,7 @@ static bool isReferencePrefixOf(SymbolRefAttr subRef, SymbolRefAttr ref) {
 
 //===----------------------------------------------------------------------===//
 // SymbolTable::getSymbolUses
+//===----------------------------------------------------------------------===//
 
 /// The implementation of SymbolTable::getSymbolUses below.
 template <typename FromT>
@@ -763,6 +779,7 @@ auto SymbolTable::getSymbolUses(Region *from) -> std::optional<UseRange> {
 
 //===----------------------------------------------------------------------===//
 // SymbolTable::getSymbolUses
+//===----------------------------------------------------------------------===//
 
 /// The implementation of SymbolTable::getSymbolUses below.
 template <typename SymbolT, typename IRUnitT>
@@ -780,9 +797,9 @@ static std::optional<SymbolTable::UseRange> getSymbolUsesImpl(SymbolT symbol,
 }
 
 /// Get all of the uses of the given symbol that are nested within the given
-/// operation 'from', invoking the provided callback for each. This does not
-/// traverse into any nested symbol tables. This function returns std::nullopt
-/// if there are any unknown operations that may potentially be symbol tables.
+/// operation 'from'. This does not traverse into any nested symbol tables.
+/// This function returns std::nullopt if there are any unknown operations that
+/// may potentially be symbol tables.
 auto SymbolTable::getSymbolUses(StringAttr symbol, Operation *from)
     -> std::optional<UseRange> {
   return getSymbolUsesImpl(symbol, from);
@@ -802,6 +819,7 @@ auto SymbolTable::getSymbolUses(Operation *symbol, Region *from)
 
 //===----------------------------------------------------------------------===//
 // SymbolTable::symbolKnownUseEmpty
+//===----------------------------------------------------------------------===//
 
 /// The implementation of SymbolTable::symbolKnownUseEmpty below.
 template <typename SymbolT, typename IRUnitT>
@@ -837,11 +855,12 @@ bool SymbolTable::symbolKnownUseEmpty(Operation *symbol, Region *from) {
 
 //===----------------------------------------------------------------------===//
 // SymbolTable::replaceAllSymbolUses
+//===----------------------------------------------------------------------===//
 
 /// Generates a new symbol reference attribute with a new leaf reference.
 static SymbolRefAttr generateNewRefAttr(SymbolRefAttr oldAttr,
                                         FlatSymbolRefAttr newLeafAttr) {
-  if (oldAttr.isa<FlatSymbolRefAttr>())
+  if (llvm::isa<FlatSymbolRefAttr>(oldAttr))
     return newLeafAttr;
   auto nestedRefs = llvm::to_vector<2>(oldAttr.getNestedReferences());
   nestedRefs.back() = newLeafAttr;
@@ -968,6 +987,62 @@ SymbolTable &SymbolTableCollection::getSymbolTable(Operation *op) {
   return *it.first->second;
 }
 
+void SymbolTableCollection::invalidateSymbolTable(Operation *op) {
+  symbolTables.erase(op);
+}
+
+//===----------------------------------------------------------------------===//
+// LockedSymbolTableCollection
+//===----------------------------------------------------------------------===//
+
+Operation *LockedSymbolTableCollection::lookupSymbolIn(Operation *symbolTableOp,
+                                                       StringAttr symbol) {
+  return getSymbolTable(symbolTableOp).lookup(symbol);
+}
+
+Operation *
+LockedSymbolTableCollection::lookupSymbolIn(Operation *symbolTableOp,
+                                            FlatSymbolRefAttr symbol) {
+  return lookupSymbolIn(symbolTableOp, symbol.getAttr());
+}
+
+Operation *LockedSymbolTableCollection::lookupSymbolIn(Operation *symbolTableOp,
+                                                       SymbolRefAttr name) {
+  SmallVector<Operation *> symbols;
+  if (failed(lookupSymbolIn(symbolTableOp, name, symbols)))
+    return nullptr;
+  return symbols.back();
+}
+
+LogicalResult LockedSymbolTableCollection::lookupSymbolIn(
+    Operation *symbolTableOp, SymbolRefAttr name,
+    SmallVectorImpl<Operation *> &symbols) {
+  auto lookupFn = [this](Operation *symbolTableOp, StringAttr symbol) {
+    return lookupSymbolIn(symbolTableOp, symbol);
+  };
+  return lookupSymbolInImpl(symbolTableOp, name, symbols, lookupFn);
+}
+
+SymbolTable &
+LockedSymbolTableCollection::getSymbolTable(Operation *symbolTableOp) {
+  assert(symbolTableOp->hasTrait<OpTrait::SymbolTable>());
+  // Try to find an existing symbol table.
+  {
+    llvm::sys::SmartScopedReader<true> lock(mutex);
+    auto it = collection.symbolTables.find(symbolTableOp);
+    if (it != collection.symbolTables.end())
+      return *it->second;
+  }
+  // Create a symbol table for the operation. Perform construction outside of
+  // the critical section.
+  auto symbolTable = std::make_unique<SymbolTable>(symbolTableOp);
+  // Insert the constructed symbol table.
+  llvm::sys::SmartScopedWriter<true> lock(mutex);
+  return *collection.symbolTables
+              .insert({symbolTableOp, std::move(symbolTable)})
+              .first->second;
+}
+
 //===----------------------------------------------------------------------===//
 // SymbolUserMap
 //===----------------------------------------------------------------------===//
@@ -975,10 +1050,14 @@ SymbolTable &SymbolTableCollection::getSymbolTable(Operation *op) {
 SymbolUserMap::SymbolUserMap(SymbolTableCollection &symbolTable,
                              Operation *symbolTableOp)
     : symbolTable(symbolTable) {
-  // Walk each of the symbol tables looking for discardable callgraph nodes.
+  // Collect symbol users and visibility within each symbol table.
   SmallVector<Operation *> symbols;
   auto walkFn = [&](Operation *symbolTableOp, bool allUsesVisible) {
     for (Operation &nestedOp : symbolTableOp->getRegion(0).getOps()) {
+      if (auto symbol = dyn_cast<SymbolOpInterface>(nestedOp)) {
+        if (allUsesVisible && !symbol.isPrivate())
+          symbolsWithAllUsesVisible.insert(&nestedOp);
+      }
       auto symbolUses = SymbolTable::getSymbolUses(&nestedOp);
       assert(symbolUses && "expected uses to be valid");
 
@@ -991,10 +1070,16 @@ SymbolUserMap::SymbolUserMap(SymbolTableCollection &symbolTable,
       }
     }
   };
-  // We just set `allSymUsesVisible` to false here because it isn't necessary
-  // for building the user map.
-  SymbolTable::walkSymbolTables(symbolTableOp, /*allSymUsesVisible=*/false,
-                                walkFn);
+  // A root with no containing block has no symbol users in enclosing IR.
+  SymbolTable::walkSymbolTables(
+      symbolTableOp, /*allSymUsesVisible=*/!symbolTableOp->getBlock(), walkFn);
+}
+
+bool SymbolUserMap::areAllUsesVisible(Operation *symbol) const {
+  // Private symbols can only have users within their table.
+  if (cast<SymbolOpInterface>(symbol).isPrivate())
+    return true;
+  return symbolsWithAllUsesVisible.contains(symbol);
 }
 
 void SymbolUserMap::replaceAllUsesWith(Operation *symbol,
@@ -1014,7 +1099,7 @@ void SymbolUserMap::replaceAllUsesWith(Operation *symbol,
   if (newSymbol != symbol) {
     // Transfer over the users to the new symbol.  The reference to the old one
     // is fetched again as the iterator is invalidated during the insertion.
-    auto newIt = symbolToUsers.try_emplace(newSymbol, SetVector<Operation *>{});
+    auto newIt = symbolToUsers.try_emplace(newSymbol);
     auto oldIt = symbolToUsers.find(symbol);
     assert(oldIt != symbolToUsers.end() && "missing old users list");
     if (newIt.second)
@@ -1037,7 +1122,7 @@ ParseResult impl::parseOptionalVisibilityKeyword(OpAsmParser &parser,
 
   StringAttr visibilityAttr = parser.getBuilder().getStringAttr(visibility);
   attrs.push_back(parser.getBuilder().getNamedAttr(
-      SymbolTable::getVisibilityAttrName(), visibilityAttr));
+      SymbolOpInterface::getDefaultVisibilityAttrName(), visibilityAttr));
   return success();
 }
 
@@ -1047,3 +1132,4 @@ ParseResult impl::parseOptionalVisibilityKeyword(OpAsmParser &parser,
 
 /// Include the generated symbol interfaces.
 #include "mlir/IR/SymbolInterfaces.cpp.inc"
+#include "mlir/IR/SymbolInterfacesAttrInterface.cpp.inc"

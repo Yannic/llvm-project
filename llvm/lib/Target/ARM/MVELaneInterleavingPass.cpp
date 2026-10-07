@@ -23,7 +23,7 @@
 //   %sb = sext v8i16 %b to v8i32
 //   %add = add v8i32 %sa, %sb
 //   %r = trunc %add to v8i16
-// And adds shuffles to allow the use of VMOVL/VMOVN instrctions:
+// And adds shuffles to allow the use of VMOVL/VMOVN instructions:
 //   %sha = shuffle v8i16 %a, undef, <0, 2, 4, 6, 1, 3, 5, 7>
 //   %sa = sext v8i16 %sha to v8i32
 //   %shb = shuffle v8i16 %b, undef, <0, 2, 4, 6, 1, 3, 5, 7>
@@ -49,10 +49,7 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/Constant.h"
-#include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -62,21 +59,18 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/IR/IntrinsicsARM.h"
-#include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
-#include <algorithm>
 #include <cassert>
 
 using namespace llvm;
 
 #define DEBUG_TYPE "mve-laneinterleave"
 
-cl::opt<bool> EnableInterleave(
+static cl::opt<bool> EnableInterleave(
     "enable-mve-interleave", cl::Hidden, cl::init(true),
     cl::desc("Enable interleave MVE vector operation lowering"));
 
@@ -154,7 +148,6 @@ static bool isProfitableToInterleave(SmallSetVector<Instruction *, 4> &Exts,
 static bool tryInterleave(Instruction *Start,
                           SmallPtrSetImpl<Instruction *> &Visited) {
   LLVM_DEBUG(dbgs() << "tryInterleave from " << *Start << "\n");
-  auto *VT = cast<FixedVectorType>(Start->getType());
 
   if (!isa<Instruction>(Start->getOperand(0)))
     return false;
@@ -165,6 +158,7 @@ static bool tryInterleave(Instruction *Start,
   Worklist.push_back(cast<Instruction>(Start->getOperand(0)));
 
   SmallSetVector<Instruction *, 4> Truncs;
+  SmallSetVector<Instruction *, 4> Reducts;
   SmallSetVector<Instruction *, 4> Exts;
   SmallSetVector<Use *, 4> OtherLeafs;
   SmallSetVector<Instruction *, 4> Ops;
@@ -182,7 +176,7 @@ static bool tryInterleave(Instruction *Start,
       Visited.insert(I);
       break;
 
-    // Extend leafs
+    // Extend leaves
     case Instruction::SExt:
     case Instruction::ZExt:
     case Instruction::FPExt:
@@ -197,6 +191,13 @@ static bool tryInterleave(Instruction *Start,
       IntrinsicInst *II = dyn_cast<IntrinsicInst>(I);
       if (!II)
         return false;
+
+      if (II->getIntrinsicID() == Intrinsic::vector_reduce_add) {
+        if (!Reducts.insert(I))
+          continue;
+        Visited.insert(I);
+        break;
+      }
 
       switch (II->getIntrinsicID()) {
       case Intrinsic::abs:
@@ -267,21 +268,32 @@ static bool tryInterleave(Instruction *Start,
     return false;
 
   LLVM_DEBUG({
-    dbgs() << "Found group:\n  Exts:";
+    dbgs() << "Found group:\n  Exts:\n";
     for (auto *I : Exts)
       dbgs() << "  " << *I << "\n";
-    dbgs() << "  Ops:";
+    dbgs() << "  Ops:\n";
     for (auto *I : Ops)
       dbgs() << "  " << *I << "\n";
-    dbgs() << "  OtherLeafs:";
+    dbgs() << "  OtherLeafs:\n";
     for (auto *I : OtherLeafs)
       dbgs() << "  " << *I->get() << " of " << *I->getUser() << "\n";
-    dbgs() << "Truncs:";
+    dbgs() << "  Truncs:\n";
     for (auto *I : Truncs)
+      dbgs() << "  " << *I << "\n";
+    dbgs() << "  Reducts:\n";
+    for (auto *I : Reducts)
       dbgs() << "  " << *I << "\n";
   });
 
-  assert(!Truncs.empty() && "Expected some truncs");
+  assert((!Truncs.empty() || !Reducts.empty()) &&
+         "Expected some truncs or reductions");
+  if (Truncs.empty() && Exts.empty())
+    return false;
+
+  auto *VT = !Truncs.empty()
+                 ? cast<FixedVectorType>(Truncs[0]->getType())
+                 : cast<FixedVectorType>(Exts[0]->getOperand(0)->getType());
+  LLVM_DEBUG(dbgs() << "Using VT:" << *VT << "\n");
 
   // Check types
   unsigned NumElts = VT->getNumElements();
@@ -311,6 +323,14 @@ static bool tryInterleave(Instruction *Start,
   // Check that it looks beneficial
   if (!isProfitableToInterleave(Exts, Truncs))
     return false;
+  if (!Reducts.empty() && (Ops.empty() || all_of(Ops, [](Instruction *I) {
+                             return I->getOpcode() == Instruction::Mul ||
+                                    I->getOpcode() == Instruction::Select ||
+                                    I->getOpcode() == Instruction::ICmp;
+                           }))) {
+    LLVM_DEBUG(dbgs() << "Reduction does not look profitable\n");
+    return false;
+  }
 
   // Create new shuffles around the extends / truncs / other leaves.
   IRBuilder<> Builder(Start);
@@ -356,7 +376,7 @@ static bool tryInterleave(Instruction *Start,
   for (Instruction *I : Truncs) {
     LLVM_DEBUG(dbgs() << "Replacing trunc " << *I << "\n");
 
-    Builder.SetInsertPoint(I->getParent(), ++I->getIterator());
+    Builder.SetInsertPoint(++I->getIterator());
     Value *Shuf = Builder.CreateShuffleVector(I, TruncMask);
     I->replaceAllUsesWith(Shuf);
     cast<Instruction>(Shuf)->setOperand(0, I);
@@ -365,6 +385,14 @@ static bool tryInterleave(Instruction *Start,
   }
 
   return true;
+}
+
+// Add reductions are fairly common and associative, meaning we can start the
+// interleaving from them and don't need to emit a shuffle.
+static bool isAddReduction(Instruction &I) {
+  if (auto *II = dyn_cast<IntrinsicInst>(&I))
+    return II->getIntrinsicID() == Intrinsic::vector_reduce_add;
+  return false;
 }
 
 bool MVELaneInterleaving::runOnFunction(Function &F) {
@@ -380,8 +408,10 @@ bool MVELaneInterleaving::runOnFunction(Function &F) {
 
   SmallPtrSet<Instruction *, 16> Visited;
   for (Instruction &I : reverse(instructions(F))) {
-    if (I.getType()->isVectorTy() &&
-        (isa<TruncInst>(I) || isa<FPTruncInst>(I)) && !Visited.count(&I))
+    if (((I.getType()->isVectorTy() &&
+          (isa<TruncInst>(I) || isa<FPTruncInst>(I))) ||
+         isAddReduction(I)) &&
+        !Visited.count(&I))
       Changed |= tryInterleave(&I, Visited);
   }
 

@@ -10,14 +10,17 @@ spirv.func @array(!spirv.array<16 x f32>, !spirv.array< 32 x vector<4xf32> >) "N
 // CHECK-LABEL: @array_with_natural_stride(!llvm.array<16 x f32>)
 spirv.func @array_with_natural_stride(!spirv.array<16 x f32, stride=4>) "None"
 
+// CHECK-LABEL: @array_of_strided_array(!llvm.array<3 x array<4 x f32>>)
+spirv.func @array_of_strided_array(!spirv.array<3 x !spirv.array<4 x f32, stride=4>, stride=16>) "None"
+
 //===----------------------------------------------------------------------===//
 // Pointer type
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: @pointer_scalar(!llvm.ptr<i1>, !llvm.ptr<f32>)
+// CHECK-LABEL: @pointer_scalar(!llvm.ptr, !llvm.ptr)
 spirv.func @pointer_scalar(!spirv.ptr<i1, Uniform>, !spirv.ptr<f32, Private>) "None"
 
-// CHECK-LABEL: @pointer_vector(!llvm.ptr<vector<4xi32>>)
+// CHECK-LABEL: @pointer_vector(!llvm.ptr)
 spirv.func @pointer_vector(!spirv.ptr<vector<4xi32>, Function>) "None"
 
 //===----------------------------------------------------------------------===//

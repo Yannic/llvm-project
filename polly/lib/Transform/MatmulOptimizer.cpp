@@ -11,7 +11,6 @@
 #include "polly/Options.h"
 #include "polly/ScheduleTreeTransform.h"
 #include "polly/ScopInfo.h"
-#include "polly/ScopPass.h"
 #include "polly/Simplify.h"
 #include "polly/Support/GICHelper.h"
 #include "polly/Support/ISLTools.h"
@@ -42,6 +41,7 @@
 #include <string>
 #include <vector>
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-opt-isl"
 
 using namespace llvm;
@@ -128,23 +128,31 @@ static cl::opt<int> PollyPatternMatchingNcQuotient(
              "macro-kernel, by Nr, the parameter of the micro-kernel"),
     cl::Hidden, cl::init(256), cl::cat(PollyCategory));
 
+static cl::opt<int> MaxStackArraySize(
+    "polly-pattern-matching-max-stack-array-size",
+    cl::desc("The maximal size in bytes of a packed array of the matrix "
+             "multiplication optimization that is allocated on the stack; "
+             "larger ones are allocated on the heap (-1: all on the stack, "
+             "0: all on the heap)"),
+    cl::Hidden, cl::init(1024 * 1024), cl::cat(PollyCategory));
+
 static cl::opt<bool>
     PMBasedTCOpts("polly-tc-opt",
                   cl::desc("Perform optimizations of tensor contractions based "
                            "on pattern matching"),
-                  cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+                  cl::init(false), cl::cat(PollyCategory));
 
 static cl::opt<bool>
     PMBasedMMMOpts("polly-matmul-opt",
                    cl::desc("Perform optimizations of matrix multiplications "
                             "based on pattern matching"),
-                   cl::init(true), cl::ZeroOrMore, cl::cat(PollyCategory));
+                   cl::init(true), cl::cat(PollyCategory));
 
 static cl::opt<int> OptComputeOut(
     "polly-tc-dependences-computeout",
     cl::desc("Bound the dependence analysis by a maximal amount of "
              "computational steps (0 means no bound)"),
-    cl::Hidden, cl::init(500000), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::Hidden, cl::init(500000), cl::cat(PollyCategory));
 
 namespace {
 /// Parameters of the micro kernel.
@@ -565,7 +573,7 @@ createMicroKernel(isl::schedule_node Node,
 ///
 /// We create the BLIS macro-kernel by applying a combination of tiling
 /// of dimensions of the band node and interchanging of two innermost
-/// modified dimensions. The values of of MacroKernelParams's fields are used
+/// modified dimensions. The values of MacroKernelParams's fields are used
 /// as tile sizes.
 ///
 /// @param Node The schedule node to be modified.
@@ -597,7 +605,7 @@ createMacroKernel(isl::schedule_node Node,
 /// @param MMI Parameters of the matrix multiplication operands.
 /// @return The size of the widest type of the matrix multiplication operands
 ///         in bytes, including alignment padding.
-static uint64_t getMatMulAlignTypeSize(MatMulInfoTy MMI) {
+static uint64_t getMatMulAlignTypeSize(const MatMulInfoTy &MMI) {
   auto *S = MMI.A->getStatement()->getParent();
   auto &DL = S->getFunction().getParent()->getDataLayout();
   auto ElementSizeA = DL.getTypeAllocSize(MMI.A->getElementType());
@@ -612,7 +620,7 @@ static uint64_t getMatMulAlignTypeSize(MatMulInfoTy MMI) {
 /// @param MMI Parameters of the matrix multiplication operands.
 /// @return The size of the widest type of the matrix multiplication operands
 ///         in bits.
-static uint64_t getMatMulTypeSize(MatMulInfoTy MMI) {
+static uint64_t getMatMulTypeSize(const MatMulInfoTy &MMI) {
   auto *S = MMI.A->getStatement()->getParent();
   auto &DL = S->getFunction().getParent()->getDataLayout();
   auto ElementSizeA = DL.getTypeSizeInBits(MMI.A->getElementType());
@@ -634,7 +642,7 @@ static uint64_t getMatMulTypeSize(MatMulInfoTy MMI) {
 /// @return The structure of type MicroKernelParamsTy.
 /// @see MicroKernelParamsTy
 static MicroKernelParamsTy getMicroKernelParams(const TargetTransformInfo *TTI,
-                                                MatMulInfoTy MMI) {
+                                                const MatMulInfoTy &MMI) {
   assert(TTI && "The target transform info should be provided.");
 
   // Nvec - Number of double-precision floating-point numbers that can be hold
@@ -711,7 +719,7 @@ static void getTargetCacheParameters(const llvm::TargetTransformInfo *TTI) {
 static MacroKernelParamsTy
 getMacroKernelParams(const llvm::TargetTransformInfo *TTI,
                      const MicroKernelParamsTy &MicroKernelParams,
-                     MatMulInfoTy MMI) {
+                     const MatMulInfoTy &MMI) {
   getTargetCacheParameters(TTI);
   // According to www.cs.utexas.edu/users/flame/pubs/TOMS-BLIS-Analytical.pdf,
   // it requires information about the first two levels of a cache to determine
@@ -795,6 +803,19 @@ static isl::schedule_node createExtensionNode(isl::schedule_node Node,
   return Node.graft_before(NewNode);
 }
 
+/// Allocate the packed array @p SAI, whose dimensions have the sizes
+/// @p DimSizes, on the heap if it is larger than
+/// -polly-pattern-matching-max-stack-array-size and that is not negative, and
+/// on the stack otherwise.
+static void setPackedArrayAllocation(ScopArrayInfo *SAI,
+                                     ArrayRef<unsigned> DimSizes) {
+  uint64_t Size = SAI->getElemSizeInBytes();
+  for (unsigned DimSize : DimSizes)
+    Size *= DimSize;
+  SAI->setIsOnHeap(MaxStackArraySize >= 0 &&
+                   Size > uint64_t(MaxStackArraySize));
+}
+
 static isl::schedule_node optimizePackedB(isl::schedule_node Node,
                                           ScopStmt *Stmt, isl::map MapOldIndVar,
                                           MicroKernelParamsTy MicroParams,
@@ -810,6 +831,8 @@ static isl::schedule_node optimizePackedB(isl::schedule_node Node,
   ScopArrayInfo *PackedB =
       S->createScopArrayInfo(MMI.B->getElementType(), "Packed_B",
                              {FirstDimSize, SecondDimSize, ThirdDimSize});
+  setPackedArrayAllocation(PackedB,
+                           {FirstDimSize, SecondDimSize, ThirdDimSize});
 
   // Compute the access relation for copying from B to PackedB.
   isl::map AccRelB = MMI.B->getLatestAccessRelation();
@@ -849,6 +872,8 @@ static isl::schedule_node optimizePackedA(isl::schedule_node Node, ScopStmt *,
   ScopArrayInfo *PackedA = Stmt->getParent()->createScopArrayInfo(
       MMI.A->getElementType(), "Packed_A",
       {FirstDimSize, SecondDimSize, ThirdDimSize});
+  setPackedArrayAllocation(PackedA,
+                           {FirstDimSize, SecondDimSize, ThirdDimSize});
 
   // Compute the access relation for copying from A to PackedA.
   isl::map AccRelA = MMI.A->getLatestAccessRelation();
@@ -1758,7 +1783,7 @@ static bool isTCPattern(isl::schedule_node Node, const Dependences *D,
   //
   // For example, this covers the matrix multiplication pattern after a full
   // run of -polly-optree and -polly-delicm, where the write access is not
-  // through the original memory access, but trough a PHI node that was
+  // through the original memory access, but through a PHI node that was
   // delicmed. Subsequently, such band nodes will be replaced by a single band
   // node.
   //
@@ -1825,10 +1850,10 @@ polly::tryOptimizeMatMulPattern(isl::schedule_node Node,
                                 const Dependences *D) {
   TCInfoTy TCI;
   if (PMBasedTCOpts && isTCPattern(Node, D, TCI))
-    LLVM_DEBUG(dbgs() << "The tensor contraction pattern was detected\n");
+    POLLY_DEBUG(dbgs() << "The tensor contraction pattern was detected\n");
   MatMulInfoTy MMI;
   if (PMBasedMMMOpts && isMatrMultPattern(Node, D, MMI)) {
-    LLVM_DEBUG(dbgs() << "The matrix multiplication pattern was detected\n");
+    POLLY_DEBUG(dbgs() << "The matrix multiplication pattern was detected\n");
     return optimizeMatMulPattern(Node, TTI, MMI);
   }
   return {};

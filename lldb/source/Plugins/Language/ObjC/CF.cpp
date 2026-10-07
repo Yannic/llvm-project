@@ -8,9 +8,6 @@
 
 #include "CF.h"
 
-#include "Plugins/TypeSystem/Clang/TypeSystemClang.h"
-#include "lldb/Core/ValueObject.h"
-#include "lldb/Core/ValueObjectConstResult.h"
 #include "lldb/DataFormatters/FormattersHelpers.h"
 #include "lldb/Target/Language.h"
 #include "lldb/Target/StackFrame.h"
@@ -19,6 +16,10 @@
 #include "lldb/Utility/Endian.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/Stream.h"
+#include "lldb/ValueObject/ValueObject.h"
+#include "lldb/ValueObject/ValueObjectConstResult.h"
+
+#include "llvm/Support/Error.h"
 
 #include "Plugins/LanguageRuntime/ObjC/ObjCLanguageRuntime.h"
 
@@ -44,7 +45,7 @@ bool lldb_private::formatters::CFAbsoluteTimeSummaryProvider(
 
 bool lldb_private::formatters::CFBagSummaryProvider(
     ValueObject &valobj, Stream &stream, const TypeSummaryOptions &options) {
-  static ConstString g_TypeHint("CFBag");
+  static constexpr llvm::StringLiteral g_TypeHint("CFBag");
 
   ProcessSP process_sp = valobj.GetProcessSP();
   if (!process_sp)
@@ -72,10 +73,11 @@ bool lldb_private::formatters::CFBagSummaryProvider(
 
   bool is_type_ok = false; // check to see if this is a CFBag we know about
   if (descriptor->IsCFType()) {
-    ConstString type_name(valobj.GetTypeName());
+    llvm::StringRef type_name(valobj.GetTypeName().GetStringRef());
 
-    static ConstString g_CFBag("__CFBag");
-    static ConstString g_conststruct__CFBag("const struct __CFBag");
+    static constexpr llvm::StringLiteral g_CFBag("__CFBag");
+    static constexpr llvm::StringLiteral g_conststruct__CFBag(
+        "const struct __CFBag");
 
     if (type_name == g_CFBag || type_name == g_conststruct__CFBag) {
       if (valobj.IsPointerType())
@@ -92,17 +94,13 @@ bool lldb_private::formatters::CFBagSummaryProvider(
   } else
     return false;
 
-  std::string prefix, suffix;
-  if (Language *language = Language::FindPlugin(options.GetLanguage())) {
-    if (!language->GetFormatterPrefixSuffix(valobj, g_TypeHint, prefix,
-                                            suffix)) {
-      prefix.clear();
-      suffix.clear();
-    }
-  }
+  llvm::StringRef prefix, suffix;
+  if (Language *language = Language::FindPlugin(options.GetLanguage()))
+    std::tie(prefix, suffix) = language->GetFormatterPrefixSuffix(g_TypeHint);
 
-  stream.Printf("%s\"%u value%s\"%s", prefix.c_str(), count,
-                (count == 1 ? "" : "s"), suffix.c_str());
+  stream << prefix;
+  stream.Printf("\"%u value%s\"", count, (count == 1 ? "" : "s"));
+  stream << suffix;
   return true;
 }
 
@@ -134,9 +132,17 @@ bool lldb_private::formatters::CFBitVectorSummaryProvider(
 
   bool is_type_ok = false; // check to see if this is a CFBag we know about
   if (descriptor->IsCFType()) {
-    ConstString type_name(valobj.GetTypeName());
-    if (type_name == "__CFMutableBitVector" || type_name == "__CFBitVector" ||
-        type_name == "CFMutableBitVectorRef" || type_name == "CFBitVectorRef") {
+    llvm::StringRef type_name(valobj.GetTypeName().GetStringRef());
+
+    static constexpr llvm::StringLiteral g_CFMutableBitVector(
+        "__CFMutableBitVector");
+    static constexpr llvm::StringLiteral g_CFBitVector("__CFBitVector");
+    static constexpr llvm::StringLiteral g_CFMutableBitVectorRef(
+        "CFMutableBitVectorRef");
+    static constexpr llvm::StringLiteral g_CFBitVectorRef("CFBitVectorRef");
+
+    if (type_name == g_CFMutableBitVector || type_name == g_CFBitVector ||
+        type_name == g_CFMutableBitVectorRef || type_name == g_CFBitVectorRef) {
       if (valobj.IsPointerType())
         is_type_ok = true;
     }
@@ -151,16 +157,18 @@ bool lldb_private::formatters::CFBitVectorSummaryProvider(
   if (error.Fail())
     return false;
   uint64_t num_bytes = count / 8 + ((count & 7) ? 1 : 0);
-  addr_t data_ptr = process_sp->ReadPointerFromMemory(
-      valobj_addr + 2 * ptr_size + 2 * ptr_size, error);
-  if (error.Fail())
+  llvm::Expected<addr_t> data_ptr = process_sp->ReadPointerFromMemory(
+      valobj_addr + 2 * ptr_size + 2 * ptr_size);
+  if (!data_ptr) {
+    llvm::consumeError(data_ptr.takeError());
     return false;
+  }
   // make sure we do not try to read huge amounts of data
   if (num_bytes > 1024)
     num_bytes = 1024;
   WritableDataBufferSP buffer_sp(new DataBufferHeap(num_bytes, 0));
-  num_bytes =
-      process_sp->ReadMemory(data_ptr, buffer_sp->GetBytes(), num_bytes, error);
+  num_bytes = process_sp->ReadMemory(*data_ptr, buffer_sp->GetBytes(),
+                                     num_bytes, error);
   if (error.Fail() || num_bytes == 0)
     return false;
   uint8_t *bytes = buffer_sp->GetBytes();
@@ -226,7 +234,7 @@ bool lldb_private::formatters::CFBitVectorSummaryProvider(
 
 bool lldb_private::formatters::CFBinaryHeapSummaryProvider(
     ValueObject &valobj, Stream &stream, const TypeSummaryOptions &options) {
-  static ConstString g_TypeHint("CFBinaryHeap");
+  static constexpr llvm::StringLiteral g_TypeHint("CFBinaryHeap");
 
   ProcessSP process_sp = valobj.GetProcessSP();
   if (!process_sp)
@@ -255,12 +263,12 @@ bool lldb_private::formatters::CFBinaryHeapSummaryProvider(
   bool is_type_ok =
       false; // check to see if this is a CFBinaryHeap we know about
   if (descriptor->IsCFType()) {
-    ConstString type_name(valobj.GetTypeName());
+    llvm::StringRef type_name(valobj.GetTypeName().GetStringRef());
 
-    static ConstString g_CFBinaryHeap("__CFBinaryHeap");
-    static ConstString g_conststruct__CFBinaryHeap(
+    static constexpr llvm::StringRef g_CFBinaryHeap("__CFBinaryHeap");
+    static constexpr llvm::StringRef g_conststruct__CFBinaryHeap(
         "const struct __CFBinaryHeap");
-    static ConstString g_CFBinaryHeapRef("CFBinaryHeapRef");
+    static constexpr llvm::StringRef g_CFBinaryHeapRef("CFBinaryHeapRef");
 
     if (type_name == g_CFBinaryHeap ||
         type_name == g_conststruct__CFBinaryHeap ||
@@ -279,16 +287,12 @@ bool lldb_private::formatters::CFBinaryHeapSummaryProvider(
   } else
     return false;
 
-  std::string prefix, suffix;
-  if (Language *language = Language::FindPlugin(options.GetLanguage())) {
-    if (!language->GetFormatterPrefixSuffix(valobj, g_TypeHint, prefix,
-                                            suffix)) {
-      prefix.clear();
-      suffix.clear();
-    }
-  }
+  llvm::StringRef prefix, suffix;
+  if (Language *language = Language::FindPlugin(options.GetLanguage()))
+    std::tie(prefix, suffix) = language->GetFormatterPrefixSuffix(g_TypeHint);
 
-  stream.Printf("%s\"%u item%s\"%s", prefix.c_str(), count,
-                (count == 1 ? "" : "s"), suffix.c_str());
+  stream << prefix;
+  stream.Printf("\"%u item%s\"", count, (count == 1 ? "" : "s"));
+  stream << suffix;
   return true;
 }

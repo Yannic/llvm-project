@@ -14,11 +14,11 @@
 #include "bolt/Profile/DataReader.h"
 #include "bolt/Core/BinaryFunction.h"
 #include "bolt/Passes/MCF.h"
+#include "bolt/Utils/NameResolver.h"
 #include "bolt/Utils/Utils.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Errc.h"
-#include <map>
 
 #undef  DEBUG_TYPE
 #define DEBUG_TYPE "bolt-prof"
@@ -55,7 +55,7 @@ bool hasVolatileName(const BinaryFunction &BF) {
 /// Return standard escaped name of the function possibly renamed by BOLT.
 std::string normalizeName(StringRef NameRef) {
   // Strip "PG." prefix used for globalized locals.
-  NameRef = NameRef.startswith("PG.") ? NameRef.substr(2) : NameRef;
+  NameRef = NameRef.starts_with("PG.") ? NameRef.substr(2) : NameRef;
   return getEscapedName(NameRef);
 }
 
@@ -85,7 +85,6 @@ void FuncBranchData::appendFrom(const FuncBranchData &FBD, uint64_t Offset) {
     }
   }
   llvm::stable_sort(Data);
-  ExecutionCount += FBD.ExecutionCount;
   for (auto I = FBD.EntryData.begin(), E = FBD.EntryData.end(); I != E; ++I) {
     assert(I->To.Name == FBD.Name);
     auto NewElmt = EntryData.insert(EntryData.end(), *I);
@@ -104,20 +103,37 @@ uint64_t FuncBranchData::getNumExecutedBranches() const {
   return ExecutedBranches;
 }
 
-void SampleInfo::mergeWith(const SampleInfo &SI) { Hits += SI.Hits; }
+void FuncBranchData::setEntryCounts(BinaryFunction &BF) const {
+  uint64_t ExecCount = 0;
+  uint64_t ExternEntryCount = 0;
+  // If destination is the function start - update execution count.
+  // NB: the data is skewed since we cannot tell tail recursion from
+  //     branches to the function start.
+  for (const BranchInfo &BI : EntryData) {
+    if (BI.To.Offset != 0)
+      continue;
+    ExecCount += BI.Branches;
+    if (!BI.From.IsSymbol)
+      ExternEntryCount += BI.Branches;
+  }
+  BF.setExecutionCount(ExecCount);
+  BF.setExternEntryCount(ExternEntryCount);
+}
 
-void SampleInfo::print(raw_ostream &OS) const {
+void BasicSampleInfo::mergeWith(const BasicSampleInfo &SI) { Hits += SI.Hits; }
+
+void BasicSampleInfo::print(raw_ostream &OS) const {
   OS << Loc.IsSymbol << " " << Loc.Name << " " << Twine::utohexstr(Loc.Offset)
      << " " << Hits << "\n";
 }
 
-uint64_t FuncSampleData::getSamples(uint64_t Start, uint64_t End) const {
+uint64_t FuncBasicSampleData::getSamples(uint64_t Start, uint64_t End) const {
   assert(llvm::is_sorted(Data));
   struct Compare {
-    bool operator()(const SampleInfo &SI, const uint64_t Val) const {
+    bool operator()(const BasicSampleInfo &SI, const uint64_t Val) const {
       return SI.Loc.Offset < Val;
     }
-    bool operator()(const uint64_t Val, const SampleInfo &SI) const {
+    bool operator()(const uint64_t Val, const BasicSampleInfo &SI) const {
       return Val < SI.Loc.Offset;
     }
   };
@@ -129,14 +145,21 @@ uint64_t FuncSampleData::getSamples(uint64_t Start, uint64_t End) const {
   return Result;
 }
 
-void FuncSampleData::bumpCount(uint64_t Offset, uint64_t Count) {
+uint64_t FuncBasicSampleData::getSamples() const {
+  uint64_t Result = 0;
+  for (const BasicSampleInfo &I : Data)
+    Result += I.Hits;
+  return Result;
+}
+
+void FuncBasicSampleData::bumpCount(uint64_t Offset, uint64_t Count) {
   auto Iter = Index.find(Offset);
   if (Iter == Index.end()) {
     Data.emplace_back(Location(true, Name, Offset), Count);
     Index[Offset] = Data.size() - 1;
     return;
   }
-  SampleInfo &SI = Data[Iter->second];
+  BasicSampleInfo &SI = Data[Iter->second];
   SI.Hits += Count;
 }
 
@@ -193,35 +216,6 @@ void BranchInfo::print(raw_ostream &OS) const {
      << '\n';
 }
 
-ErrorOr<const BranchInfo &> FuncBranchData::getBranch(uint64_t From,
-                                                      uint64_t To) const {
-  for (const BranchInfo &I : Data)
-    if (I.From.Offset == From && I.To.Offset == To && I.From.Name == I.To.Name)
-      return I;
-
-  return make_error_code(llvm::errc::invalid_argument);
-}
-
-ErrorOr<const BranchInfo &>
-FuncBranchData::getDirectCallBranch(uint64_t From) const {
-  // Commented out because it can be expensive.
-  // assert(std::is_sorted(Data.begin(), Data.end()));
-  struct Compare {
-    bool operator()(const BranchInfo &BI, const uint64_t Val) const {
-      return BI.From.Offset < Val;
-    }
-    bool operator()(const uint64_t Val, const BranchInfo &BI) const {
-      return Val < BI.From.Offset;
-    }
-  };
-  auto Range = std::equal_range(Data.begin(), Data.end(), From, Compare());
-  for (auto I = Range.first; I != Range.second; ++I)
-    if (I->From.Name != I->To.Name)
-      return *I;
-
-  return make_error_code(llvm::errc::invalid_argument);
-}
-
 void MemInfo::print(raw_ostream &OS) const {
   OS << (Offset.IsSymbol + 3) << " " << Offset.Name << " "
      << Twine::utohexstr(Offset.Offset) << " " << (Addr.IsSymbol + 3) << " "
@@ -250,6 +244,22 @@ Error DataReader::preprocessProfile(BinaryContext &BC) {
   if (opts::DumpData)
     dump();
 
+  if (SymbolsMode) {
+    for (auto &BFI : BC.getBinaryFunctions()) {
+      BinaryFunction &Function = BFI.second;
+      for (StringRef Name : Function.getNames()) {
+        auto It = NamesToBranches.find(NameResolver::restore(Name));
+        if (It == NamesToBranches.end())
+          continue;
+        setBranchData(Function, &It->second);
+        It->second.setEntryCounts(Function);
+        It->second.Used = true;
+        break;
+      }
+    }
+    return Error::success();
+  }
+
   if (collectedInBoltedBinary())
     outs() << "BOLT-INFO: profile collection done on a binary already "
               "processed by BOLT\n";
@@ -262,7 +272,7 @@ Error DataReader::preprocessProfile(BinaryContext &BC) {
     }
     if (FuncBranchData *FuncData = getBranchDataForNames(Function.getNames())) {
       setBranchData(Function, FuncData);
-      Function.ExecutionCount = FuncData->ExecutionCount;
+      FuncData->setEntryCounts(Function);
       FuncData->Used = true;
     }
   }
@@ -317,9 +327,11 @@ Error DataReader::readProfile(BinaryContext &BC) {
   }
 
   uint64_t NumUnused = 0;
-  for (const StringMapEntry<FuncBranchData> &FuncData : NamesToBranches)
-    if (!FuncData.getValue().Used)
+  for (const auto &KV : NamesToBranches) {
+    const FuncBranchData &FBD = KV.second;
+    if (!FBD.Used)
       ++NumUnused;
+  }
   BC.setNumUnusedProfiledObjects(NumUnused);
 
   return Error::success();
@@ -334,8 +346,15 @@ std::error_code DataReader::parseInput() {
   }
   FileBuf = std::move(MB.get());
   ParsingBuf = FileBuf->getBuffer();
+
+  if (ParsingBuf.empty()) {
+    Diag << "WARNING: empty profile data file: " << Filename << "\n";
+    return make_error_code(llvm::errc::io_error);
+  }
+
   if (std::error_code EC = parse())
     return EC;
+
   if (!ParsingBuf.empty())
     Diag << "WARNING: invalid profile data detected at line " << Line
          << ". Possibly corrupted profile.\n";
@@ -346,16 +365,20 @@ std::error_code DataReader::parseInput() {
 }
 
 void DataReader::readProfile(BinaryFunction &BF) {
+  // Set entry counts for the common case.
+  if (FuncBranchData *FBD = getBranchData(BF))
+    FBD->setEntryCounts(BF);
+
   if (BF.empty())
     return;
 
   if (!hasLBR()) {
-    BF.ProfileFlags = BinaryFunction::PF_SAMPLE;
-    readSampleData(BF);
+    BF.ProfileFlags = BinaryFunction::PF_BASIC;
+    readBasicSampleData(BF);
     return;
   }
 
-  BF.ProfileFlags = BinaryFunction::PF_LBR;
+  BF.ProfileFlags = BinaryFunction::PF_BRANCH;
 
   // Possibly assign/re-assign branch profile data.
   matchProfileData(BF);
@@ -363,6 +386,10 @@ void DataReader::readProfile(BinaryFunction &BF) {
   FuncBranchData *FBD = getBranchData(BF);
   if (!FBD)
     return;
+
+  // Re-set entry counts in case FBD was swapped (LTO) or merged
+  // (fetchProfileForOtherEntryPoints).
+  FBD->setEntryCounts(BF);
 
   // Assign basic block counts to function entry points. These only include
   // counts for outside entries.
@@ -406,12 +433,11 @@ void DataReader::matchProfileData(BinaryFunction &BF) {
   FuncBranchData *FBD = getBranchData(BF);
   if (FBD) {
     BF.ProfileMatchRatio = evaluateProfileData(BF, *FBD);
-    BF.RawBranchCount = FBD->getNumExecutedBranches();
+    BF.RawSampleCount = FBD->getNumExecutedBranches();
     if (BF.ProfileMatchRatio == 1.0f) {
       if (fetchProfileForOtherEntryPoints(BF)) {
         BF.ProfileMatchRatio = evaluateProfileData(BF, *FBD);
-        BF.ExecutionCount = FBD->ExecutionCount;
-        BF.RawBranchCount = FBD->getNumExecutedBranches();
+        BF.RawSampleCount = FBD->getNumExecutedBranches();
       }
       return;
     }
@@ -440,7 +466,6 @@ void DataReader::matchProfileData(BinaryFunction &BF) {
     // Update function profile data with the new set.
     setBranchData(BF, NewBranchData);
     NewBranchData->Used = true;
-    BF.ExecutionCount = NewBranchData->ExecutionCount;
     BF.ProfileMatchRatio = 1.0f;
     break;
   }
@@ -553,12 +578,12 @@ float DataReader::evaluateProfileData(BinaryFunction &BF,
   return MatchRatio;
 }
 
-void DataReader::readSampleData(BinaryFunction &BF) {
-  FuncSampleData *SampleDataOrErr = getFuncSampleData(BF.getNames());
+void DataReader::readBasicSampleData(BinaryFunction &BF) {
+  FuncBasicSampleData *SampleDataOrErr = getFuncBasicSampleData(BF.getNames());
   if (!SampleDataOrErr)
     return;
 
-  // Basic samples mode territory (without LBR info)
+  // Basic samples mode territory (without brstack info)
   // First step is to assign BB execution count based on samples from perf
   BF.ProfileMatchRatio = 1.0f;
   BF.removeTagsFromProfile();
@@ -566,8 +591,8 @@ void DataReader::readSampleData(BinaryFunction &BF) {
   bool NormalizeByCalls = usesEvent("branches");
   static bool NagUser = true;
   if (NagUser) {
-    outs()
-        << "BOLT-INFO: operating with basic samples profiling data (no LBR).\n";
+    outs() << "BOLT-INFO: operating with basic samples profiling data (no "
+              "brstack).\n";
     if (NormalizeByInsnCount)
       outs() << "BOLT-INFO: normalizing samples by instruction count.\n";
     else if (NormalizeByCalls)
@@ -597,8 +622,6 @@ void DataReader::readSampleData(BinaryFunction &BF) {
   }
 
   BF.ExecutionCount = TotalEntryCount;
-
-  estimateEdgeCounts(BF);
 }
 
 void DataReader::convertBranchData(BinaryFunction &BF) const {
@@ -696,7 +719,8 @@ bool DataReader::recordBranch(BinaryFunction &BF, uint64_t From, uint64_t To,
       if (!BC.MIB->isNoop(Instr))
         break;
 
-      Offset += BC.MIB->getAnnotationWithDefault<uint32_t>(Instr, "Size");
+      if (std::optional<uint32_t> Size = BC.MIB->getSize(Instr))
+        Offset += *Size;
     }
 
     if (To == Offset)
@@ -773,6 +797,7 @@ bool DataReader::recordBranch(BinaryFunction &BF, uint64_t From, uint64_t To,
     if (collectedInBoltedBinary() && FromBB == ToBB)
       return true;
 
+    // Allow passthrough blocks.
     BinaryBasicBlock *FTSuccessor = FromBB->getConditionalSuccessor(false);
     if (FTSuccessor && FTSuccessor->succ_size() == 1 &&
         FTSuccessor->getSuccessor(ToBB->getLabel())) {
@@ -783,9 +808,8 @@ bool DataReader::recordBranch(BinaryFunction &BF, uint64_t From, uint64_t To,
         FTBI.MispredictedCount += Mispreds;
       ToBB = FTSuccessor;
     } else {
-      LLVM_DEBUG(dbgs() << "invalid branch in " << BF << '\n'
-                        << Twine::utohexstr(From) << " -> "
-                        << Twine::utohexstr(To) << '\n');
+      LLVM_DEBUG(dbgs() << "invalid branch in " << BF
+                        << formatv(": {0:x} -> {1:x}\n", From, To));
       return false;
     }
   }
@@ -846,8 +870,7 @@ ErrorOr<StringRef> DataReader::parseString(char EndChar, bool EndNl) {
   size_t StringEnd = 0;
   do {
     StringEnd = ParsingBuf.find_first_of(EndChars, StringEnd);
-    if (StringEnd == StringRef::npos ||
-        (StringEnd == 0 && ParsingBuf[StringEnd] != '\\')) {
+    if (StringEnd == StringRef::npos) {
       reportError("malformed field");
       return make_error_code(llvm::errc::io_error);
     }
@@ -896,9 +919,14 @@ ErrorOr<uint64_t> DataReader::parseHexField(char EndChar, bool EndNl) {
   StringRef NumStr = NumStrRes.get();
   uint64_t Num;
   if (NumStr.getAsInteger(16, Num)) {
-    reportError("expected hexidecimal number");
-    Diag << "Found: " << NumStr << "\n";
-    return make_error_code(llvm::errc::io_error);
+    // Accept signed input (e.g. -1) to support sentinel values like BR_ONLY.
+    int64_t SignedNum;
+    if (NumStr.getAsInteger(16, SignedNum)) {
+      reportError("expected hexadecimal number");
+      Diag << "Found: " << NumStr << "\n";
+      return make_error_code(llvm::errc::io_error);
+    }
+    return static_cast<uint64_t>(SignedNum);
   }
   return Num;
 }
@@ -1006,7 +1034,7 @@ ErrorOr<MemInfo> DataReader::parseMemInfo() {
   return MemInfo(Offset, Addr, CountRes.get());
 }
 
-ErrorOr<SampleInfo> DataReader::parseSampleInfo() {
+ErrorOr<BasicSampleInfo> DataReader::parseSampleInfo() {
   ErrorOr<Location> Res = parseLocation(FieldSeparator);
   if (std::error_code EC = Res.getError())
     return EC;
@@ -1024,13 +1052,12 @@ ErrorOr<SampleInfo> DataReader::parseSampleInfo() {
     return make_error_code(llvm::errc::io_error);
   }
 
-  return SampleInfo(std::move(Address), Occurrences);
+  return BasicSampleInfo(std::move(Address), Occurrences);
 }
 
 ErrorOr<bool> DataReader::maybeParseNoLBRFlag() {
-  if (ParsingBuf.size() < 6 || ParsingBuf.substr(0, 6) != "no_lbr")
+  if (!ParsingBuf.consume_front("no_lbr"))
     return false;
-  ParsingBuf = ParsingBuf.drop_front(6);
   Col += 6;
 
   if (ParsingBuf.size() > 0 && ParsingBuf[0] == ' ')
@@ -1050,14 +1077,14 @@ ErrorOr<bool> DataReader::maybeParseNoLBRFlag() {
   return true;
 }
 
-ErrorOr<bool> DataReader::maybeParseBATFlag() {
-  if (ParsingBuf.size() < 16 || ParsingBuf.substr(0, 16) != "boltedcollection")
+/// Return if \p Flag line was present in the line.
+ErrorOr<bool> DataReader::maybeParseFlag(StringRef Flag) {
+  if (!ParsingBuf.consume_front(Flag))
     return false;
-  ParsingBuf = ParsingBuf.drop_front(16);
-  Col += 16;
+  Col += Flag.size();
 
   if (!checkAndConsumeNewLine()) {
-    reportError("malformed boltedcollection line");
+    reportError((Twine("malformed ") + Flag + " line").str());
     return make_error_code(llvm::errc::io_error);
   }
   return true;
@@ -1083,41 +1110,26 @@ bool DataReader::hasMemData() {
 
 std::error_code DataReader::parseInNoLBRMode() {
   auto GetOrCreateFuncEntry = [&](StringRef Name) {
-    auto I = NamesToSamples.find(Name);
-    if (I == NamesToSamples.end()) {
-      bool Success;
-      std::tie(I, Success) = NamesToSamples.insert(std::make_pair(
-          Name, FuncSampleData(Name, FuncSampleData::ContainerTy())));
-
-      assert(Success && "unexpected result of insert");
-    }
-    return I;
+    return NamesToBasicSamples.try_emplace(Name, Name).first;
   };
 
   auto GetOrCreateFuncMemEntry = [&](StringRef Name) {
-    auto I = NamesToMemEvents.find(Name);
-    if (I == NamesToMemEvents.end()) {
-      bool Success;
-      std::tie(I, Success) = NamesToMemEvents.insert(
-          std::make_pair(Name, FuncMemData(Name, FuncMemData::ContainerTy())));
-      assert(Success && "unexpected result of insert");
-    }
-    return I;
+    return NamesToMemEvents.try_emplace(Name, Name).first;
   };
 
   while (hasBranchData()) {
-    ErrorOr<SampleInfo> Res = parseSampleInfo();
+    ErrorOr<BasicSampleInfo> Res = parseSampleInfo();
     if (std::error_code EC = Res.getError())
       return EC;
 
-    SampleInfo SI = Res.get();
+    BasicSampleInfo SI = Res.get();
 
     // Ignore samples not involving known locations
     if (!SI.Loc.IsSymbol)
       continue;
 
-    StringMapIterator<FuncSampleData> I = GetOrCreateFuncEntry(SI.Loc.Name);
-    I->getValue().Data.emplace_back(std::move(SI));
+    auto I = GetOrCreateFuncEntry(SI.Loc.Name);
+    I->second.Data.emplace_back(std::move(SI));
   }
 
   while (hasMemData()) {
@@ -1131,51 +1143,64 @@ std::error_code DataReader::parseInNoLBRMode() {
     if (!MI.Offset.IsSymbol)
       continue;
 
-    StringMapIterator<FuncMemData> I = GetOrCreateFuncMemEntry(MI.Offset.Name);
-    I->getValue().Data.emplace_back(std::move(MI));
+    auto I = GetOrCreateFuncMemEntry(MI.Offset.Name);
+    I->second.Data.emplace_back(std::move(MI));
   }
 
-  for (StringMapEntry<FuncSampleData> &FuncSamples : NamesToSamples)
-    llvm::stable_sort(FuncSamples.second.Data);
+  for (auto &FuncBasicSamples : NamesToBasicSamples)
+    llvm::stable_sort(FuncBasicSamples.second.Data);
 
-  for (StringMapEntry<FuncMemData> &MemEvents : NamesToMemEvents)
+  for (auto &MemEvents : NamesToMemEvents)
     llvm::stable_sort(MemEvents.second.Data);
+
+  return std::error_code();
+}
+
+std::error_code DataReader::parseInSymbolsMode() {
+  while (!ParsingBuf.empty()) {
+    ErrorOr<StringRef> NameOrErr = parseString('\n');
+    if (std::error_code EC = NameOrErr.getError())
+      return EC;
+    StringRef Name = NameOrErr.get();
+    if (Name.empty())
+      continue;
+    // Use branch entry data rather since basic samples only apply in no_lbr
+    // mode.
+    FuncBranchData &FBD = NamesToBranches.try_emplace(Name, Name).first->second;
+    FBD.EntryData.emplace_back(Location(0),
+                               Location(/*IsSymbol=*/true, Name, 0),
+                               /*Mispreds=*/0, /*Branches=*/1);
+  }
 
   return std::error_code();
 }
 
 std::error_code DataReader::parse() {
   auto GetOrCreateFuncEntry = [&](StringRef Name) {
-    auto I = NamesToBranches.find(Name);
-    if (I == NamesToBranches.end()) {
-      bool Success;
-      std::tie(I, Success) = NamesToBranches.insert(std::make_pair(
-          Name, FuncBranchData(Name, FuncBranchData::ContainerTy(),
-                               FuncBranchData::ContainerTy())));
-      assert(Success && "unexpected result of insert");
-    }
-    return I;
+    return NamesToBranches.try_emplace(Name, Name).first;
   };
 
   auto GetOrCreateFuncMemEntry = [&](StringRef Name) {
-    auto I = NamesToMemEvents.find(Name);
-    if (I == NamesToMemEvents.end()) {
-      bool Success;
-      std::tie(I, Success) = NamesToMemEvents.insert(
-          std::make_pair(Name, FuncMemData(Name, FuncMemData::ContainerTy())));
-      assert(Success && "unexpected result of insert");
-    }
-    return I;
+    return NamesToMemEvents.try_emplace(Name, Name).first;
   };
 
   Col = 0;
   Line = 1;
+  ErrorOr<bool> SymbolsFlagOrErr = maybeParseFlag("symbols");
+  if (!SymbolsFlagOrErr)
+    return SymbolsFlagOrErr.getError();
+  SymbolsMode = *SymbolsFlagOrErr;
+
+  // Symbols mode ignores other headers.
+  if (SymbolsMode)
+    return parseInSymbolsMode();
+
   ErrorOr<bool> FlagOrErr = maybeParseNoLBRFlag();
   if (!FlagOrErr)
     return FlagOrErr.getError();
   NoLBRMode = *FlagOrErr;
 
-  ErrorOr<bool> BATFlagOrErr = maybeParseBATFlag();
+  ErrorOr<bool> BATFlagOrErr = maybeParseFlag("boltedcollection");
   if (!BATFlagOrErr)
     return BATFlagOrErr.getError();
   BATMode = *BATFlagOrErr;
@@ -1199,23 +1224,14 @@ std::error_code DataReader::parse() {
     if (!BI.From.IsSymbol && !BI.To.IsSymbol)
       continue;
 
-    StringMapIterator<FuncBranchData> I = GetOrCreateFuncEntry(BI.From.Name);
-    I->getValue().Data.emplace_back(std::move(BI));
+    auto I = GetOrCreateFuncEntry(BI.From.Name);
+    I->second.Data.emplace_back(std::move(BI));
 
     // Add entry data for branches to another function or branches
     // to entry points (including recursive calls)
-    if (BI.To.IsSymbol &&
-        (!BI.From.Name.equals(BI.To.Name) || BI.To.Offset == 0)) {
+    if (BI.To.IsSymbol && (BI.From.Name != BI.To.Name || BI.To.Offset == 0)) {
       I = GetOrCreateFuncEntry(BI.To.Name);
-      I->getValue().EntryData.emplace_back(std::move(BI));
-    }
-
-    // If destination is the function start - update execution count.
-    // NB: the data is skewed since we cannot tell tail recursion from
-    //     branches to the function start.
-    if (BI.To.IsSymbol && BI.To.Offset == 0) {
-      I = GetOrCreateFuncEntry(BI.To.Name);
-      I->getValue().ExecutionCount += BI.Branches;
+      I->second.EntryData.emplace_back(std::move(BI));
     }
   }
 
@@ -1230,69 +1246,68 @@ std::error_code DataReader::parse() {
     if (!MI.Offset.IsSymbol)
       continue;
 
-    StringMapIterator<FuncMemData> I = GetOrCreateFuncMemEntry(MI.Offset.Name);
-    I->getValue().Data.emplace_back(std::move(MI));
+    auto I = GetOrCreateFuncMemEntry(MI.Offset.Name);
+    I->second.Data.emplace_back(std::move(MI));
   }
 
-  for (StringMapEntry<FuncBranchData> &FuncBranches : NamesToBranches)
+  for (auto &FuncBranches : NamesToBranches)
     llvm::stable_sort(FuncBranches.second.Data);
 
-  for (StringMapEntry<FuncMemData> &MemEvents : NamesToMemEvents)
+  for (auto &MemEvents : NamesToMemEvents)
     llvm::stable_sort(MemEvents.second.Data);
 
   return std::error_code();
 }
 
 void DataReader::buildLTONameMaps() {
-  for (StringMapEntry<FuncBranchData> &FuncData : NamesToBranches) {
-    const StringRef FuncName = FuncData.getKey();
+  for (auto &FuncData : NamesToBranches) {
+    const StringRef FuncName = FuncData.first;
     const std::optional<StringRef> CommonName = getLTOCommonName(FuncName);
     if (CommonName)
-      LTOCommonNameMap[*CommonName].push_back(&FuncData.getValue());
+      LTOCommonNameMap[*CommonName].push_back(&FuncData.second);
   }
 
-  for (StringMapEntry<FuncMemData> &FuncData : NamesToMemEvents) {
-    const StringRef FuncName = FuncData.getKey();
+  for (auto &FuncData : NamesToMemEvents) {
+    const StringRef FuncName = FuncData.first;
     const std::optional<StringRef> CommonName = getLTOCommonName(FuncName);
     if (CommonName)
-      LTOCommonNameMemMap[*CommonName].push_back(&FuncData.getValue());
+      LTOCommonNameMemMap[*CommonName].push_back(&FuncData.second);
   }
 }
 
-namespace {
 template <typename MapTy>
-decltype(MapTy::MapEntryTy::second) *
+static typename MapTy::mapped_type *
 fetchMapEntry(MapTy &Map, const std::vector<MCSymbol *> &Symbols) {
   // Do a reverse order iteration since the name in profile has a higher chance
   // of matching a name at the end of the list.
   for (const MCSymbol *Symbol : llvm::reverse(Symbols)) {
     auto I = Map.find(normalizeName(Symbol->getName()));
     if (I != Map.end())
-      return &I->getValue();
+      return &I->second;
   }
   return nullptr;
 }
 
 template <typename MapTy>
-decltype(MapTy::MapEntryTy::second) *
+static typename MapTy::mapped_type *
 fetchMapEntry(MapTy &Map, const std::vector<StringRef> &FuncNames) {
   // Do a reverse order iteration since the name in profile has a higher chance
   // of matching a name at the end of the list.
   for (StringRef Name : llvm::reverse(FuncNames)) {
     auto I = Map.find(normalizeName(Name));
     if (I != Map.end())
-      return &I->getValue();
+      return &I->second;
   }
   return nullptr;
 }
 
 template <typename MapTy>
-std::vector<decltype(MapTy::MapEntryTy::second) *> fetchMapEntriesRegex(
-    MapTy &Map,
-    const StringMap<std::vector<decltype(MapTy::MapEntryTy::second) *>>
-        &LTOCommonNameMap,
-    const std::vector<StringRef> &FuncNames) {
-  std::vector<decltype(MapTy::MapEntryTy::second) *> AllData;
+static std::vector<typename MapTy::mapped_type *>
+fetchMapEntriesRegex(MapTy &Map,
+                     const StringMap<std::vector<typename MapTy::mapped_type *>>
+                         &LTOCommonNameMap,
+                     const std::vector<StringRef> &FuncNames) {
+  std::vector<typename MapTy::mapped_type *> AllData;
   // Do a reverse order iteration since the name in profile has a higher chance
   // of matching a name at the end of the list.
   for (StringRef FuncName : llvm::reverse(FuncNames)) {
@@ -1301,26 +1316,24 @@ std::vector<decltype(MapTy::MapEntryTy::second) *> fetchMapEntriesRegex(
     if (LTOCommonName) {
       auto I = LTOCommonNameMap.find(*LTOCommonName);
       if (I != LTOCommonNameMap.end()) {
-        const std::vector<decltype(MapTy::MapEntryTy::second) *> &CommonData =
-            I->getValue();
+        const std::vector<typename MapTy::mapped_type *> &CommonData =
+            I->second;
         AllData.insert(AllData.end(), CommonData.begin(), CommonData.end());
       }
     } else {
       auto I = Map.find(Name);
       if (I != Map.end())
-        return {&I->getValue()};
+        return {&I->second};
     }
   }
   return AllData;
-}
-
 }
 
 bool DataReader::mayHaveProfileData(const BinaryFunction &Function) {
   if (getBranchData(Function) || getMemData(Function))
     return true;
 
-  if (getFuncSampleData(Function.getNames()) ||
+  if (getFuncBasicSampleData(Function.getNames()) ||
       getBranchDataForNames(Function.getNames()) ||
       getMemDataForNames(Function.getNames()))
     return true;
@@ -1356,9 +1369,10 @@ DataReader::getMemDataForNames(const std::vector<StringRef> &FuncNames) {
   return fetchMapEntry<NamesToMemEventsMapTy>(NamesToMemEvents, FuncNames);
 }
 
-FuncSampleData *
-DataReader::getFuncSampleData(const std::vector<StringRef> &FuncNames) {
-  return fetchMapEntry<NamesToSamplesMapTy>(NamesToSamples, FuncNames);
+FuncBasicSampleData *
+DataReader::getFuncBasicSampleData(const std::vector<StringRef> &FuncNames) {
+  return fetchMapEntry<NamesToBasicSamplesMapTy>(NamesToBasicSamples,
+                                                 FuncNames);
 }
 
 std::vector<FuncBranchData *> DataReader::getBranchDataForNamesRegex(
@@ -1372,8 +1386,8 @@ DataReader::getMemDataForNamesRegex(const std::vector<StringRef> &FuncNames) {
 }
 
 bool DataReader::hasLocalsWithFileName() const {
-  for (const StringMapEntry<FuncBranchData> &Func : NamesToBranches) {
-    const StringRef &FuncName = Func.getKey();
+  for (const auto &Func : NamesToBranches) {
+    const StringRef &FuncName = Func.first;
     if (FuncName.count('/') == 2 && FuncName[0] != '/')
       return true;
   }
@@ -1381,13 +1395,15 @@ bool DataReader::hasLocalsWithFileName() const {
 }
 
 void DataReader::dump() const {
-  for (const StringMapEntry<FuncBranchData> &Func : NamesToBranches) {
-    Diag << Func.getKey() << " branches:\n";
-    for (const BranchInfo &BI : Func.getValue().Data)
+  for (const auto &KV : NamesToBranches) {
+    const StringRef Name = KV.first;
+    const FuncBranchData &FBD = KV.second;
+    Diag << Name << " branches:\n";
+    for (const BranchInfo &BI : FBD.Data)
       Diag << BI.From.Name << " " << BI.From.Offset << " " << BI.To.Name << " "
            << BI.To.Offset << " " << BI.Mispreds << " " << BI.Branches << "\n";
-    Diag << Func.getKey() << " entry points:\n";
-    for (const BranchInfo &BI : Func.getValue().EntryData)
+    Diag << Name << " entry points:\n";
+    for (const BranchInfo &BI : FBD.EntryData)
       Diag << BI.From.Name << " " << BI.From.Offset << " " << BI.To.Name << " "
            << BI.To.Offset << " " << BI.Mispreds << " " << BI.Branches << "\n";
   }
@@ -1396,16 +1412,20 @@ void DataReader::dump() const {
     StringRef Event = I->getKey();
     Diag << "Data was collected with event: " << Event << "\n";
   }
-  for (const StringMapEntry<FuncSampleData> &Func : NamesToSamples) {
-    Diag << Func.getKey() << " samples:\n";
-    for (const SampleInfo &SI : Func.getValue().Data)
+  for (const auto &KV : NamesToBasicSamples) {
+    const StringRef Name = KV.first;
+    const FuncBasicSampleData &FSD = KV.second;
+    Diag << Name << " samples:\n";
+    for (const BasicSampleInfo &SI : FSD.Data)
       Diag << SI.Loc.Name << " " << SI.Loc.Offset << " " << SI.Hits << "\n";
   }
 
-  for (const StringMapEntry<FuncMemData> &Func : NamesToMemEvents) {
-    Diag << "Memory events for " << Func.getValue().Name;
+  for (const auto &KV : NamesToMemEvents) {
+    const StringRef Name = KV.first;
+    const FuncMemData &FMD = KV.second;
+    Diag << "Memory events for " << Name;
     Location LastOffset(0);
-    for (const MemInfo &MI : Func.getValue().Data) {
+    for (const MemInfo &MI : FMD.Data) {
       if (MI.Offset == LastOffset)
         Diag << ", " << MI.Addr << "/" << MI.Count;
       else

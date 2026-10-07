@@ -132,8 +132,8 @@ public:
         }
       }
     }
-    if (auto *C = D->getTrailingRequiresClause())
-      IndexCtx.indexBody(C, Parent);
+    if (const AssociatedConstraint &C = D->getTrailingRequiresClause())
+      IndexCtx.indexBody(C.ConstraintExpr, Parent);
   }
 
   bool handleObjCMethod(const ObjCMethodDecl *D,
@@ -665,17 +665,20 @@ public:
                        ClassTemplatePartialSpecializationDecl *>
         Template = D->getSpecializedTemplateOrPartial();
     const Decl *SpecializationOf =
-        Template.is<ClassTemplateDecl *>()
-            ? (Decl *)Template.get<ClassTemplateDecl *>()
-            : Template.get<ClassTemplatePartialSpecializationDecl *>();
+        isa<ClassTemplateDecl *>(Template)
+            ? (Decl *)cast<ClassTemplateDecl *>(Template)
+            : cast<ClassTemplatePartialSpecializationDecl *>(Template);
     if (!D->isThisDeclarationADefinition())
       IndexCtx.indexNestedNameSpecifierLoc(D->getQualifierLoc(), D);
     IndexCtx.indexTagDecl(
         D, SymbolRelation(SymbolRoleSet(SymbolRole::RelationSpecializationOf),
                           SpecializationOf));
-    if (TypeSourceInfo *TSI = D->getTypeAsWritten())
-      IndexCtx.indexTypeSourceInfo(TSI, /*Parent=*/nullptr,
-                                   D->getLexicalDeclContext());
+    // Template specialization arguments.
+    if (const ASTTemplateArgumentListInfo *TemplateArgInfo =
+            D->getTemplateArgsAsWritten()) {
+      for (const auto &Arg : TemplateArgInfo->arguments())
+        handleTemplateArgumentLoc(Arg, D, D->getLexicalDeclContext());
+    }
     return true;
   }
 
@@ -700,13 +703,17 @@ public:
         IndexCtx.handleDecl(TP);
       if (const auto *TTP = dyn_cast<TemplateTypeParmDecl>(TP)) {
         if (TTP->hasDefaultArgument())
-          IndexCtx.indexTypeSourceInfo(TTP->getDefaultArgumentInfo(), Parent);
+          handleTemplateArgumentLoc(TTP->getDefaultArgument(), Parent,
+                                    TP->getLexicalDeclContext());
         if (auto *C = TTP->getTypeConstraint())
-          IndexCtx.handleReference(C->getNamedConcept(), C->getConceptNameLoc(),
-                                   Parent, TTP->getLexicalDeclContext());
+          IndexCtx.handleReference(C->getNamedConcept().getAsTemplateDecl(),
+                                   C->getConceptNameLoc(), Parent,
+                                   TTP->getLexicalDeclContext());
       } else if (const auto *NTTP = dyn_cast<NonTypeTemplateParmDecl>(TP)) {
+        IndexCtx.indexTypeSourceInfo(NTTP->getTypeSourceInfo(), Parent);
         if (NTTP->hasDefaultArgument())
-          IndexCtx.indexBody(NTTP->getDefaultArgument(), Parent);
+          handleTemplateArgumentLoc(NTTP->getDefaultArgument(), Parent,
+                                    TP->getLexicalDeclContext());
       } else if (const auto *TTPD = dyn_cast<TemplateTemplateParmDecl>(TP)) {
         if (TTPD->hasDefaultArgument())
           handleTemplateArgumentLoc(TTPD->getDefaultArgument(), Parent,
@@ -755,6 +762,15 @@ public:
       IndexCtx.indexTypeSourceInfo(Ty, cast<NamedDecl>(D->getDeclContext()));
     }
     return true;
+  }
+
+  bool VisitFriendTemplateDecl(const FriendTemplateDecl *D) {
+    const NamedDecl *ND = cast<NamedDecl>(D->getDeclContext());
+    if (!D->getFriendType() && D->getFriendTemplateName().isNull())
+      ND = D->getFriendDecl();
+    for (TemplateParameterList *TPL : D->getTemplateParameterLists())
+      indexTemplateParameters(TPL, ND);
+    return VisitFriendDecl(D);
   }
 
   bool VisitImportDecl(const ImportDecl *D) {

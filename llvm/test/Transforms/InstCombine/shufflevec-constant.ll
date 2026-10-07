@@ -6,9 +6,9 @@ target triple = "i386-apple-darwin9"
 
 define <4 x float> @__inff4() nounwind readnone {
 ; CHECK-LABEL: @__inff4(
-; CHECK-NEXT:    ret <4 x float> <float 0.000000e+00, float 0.000000e+00, float 0x7FF0000000000000, float 0x7FF0000000000000>
+; CHECK-NEXT:    ret <4 x float> <float 0.000000e+00, float 0.000000e+00, float +inf, float +inf>
 ;
-  %tmp14 = extractelement <1 x double> bitcast (<2 x float> <float 0x7FF0000000000000, float 0x7FF0000000000000> to <1 x double>), i32 0
+  %tmp14 = extractelement <1 x double> bitcast (<2 x float> <float +inf, float +inf> to <1 x double>), i32 0
   %tmp4 = bitcast double %tmp14 to i64
   %tmp3 = bitcast i64 %tmp4 to <2 x float>
   %tmp8 = shufflevector <2 x float> %tmp3, <2 x float> undef, <4 x i32> <i32 0, i32 1, i32 undef, i32 undef>
@@ -18,7 +18,7 @@ define <4 x float> @__inff4() nounwind readnone {
 
 define <4 x i1> @shuffle_undef_fixed() {
 ; CHECK-LABEL: @shuffle_undef_fixed(
-; CHECK-NEXT:    ret <4 x i1> undef
+; CHECK-NEXT:    ret <4 x i1> poison
 ;
   %S = shufflevector <4 x i1> zeroinitializer, <4 x i1> zeroinitializer, <4 x i32> undef
   ret <4 x i1> %S
@@ -26,7 +26,7 @@ define <4 x i1> @shuffle_undef_fixed() {
 
 define <vscale x 4 x i1> @suffle_undef_scalable() {
 ; CHECK-LABEL: @suffle_undef_scalable(
-; CHECK-NEXT:    ret <vscale x 4 x i1> undef
+; CHECK-NEXT:    ret <vscale x 4 x i1> poison
 ;
   %S = shufflevector <vscale x 4 x i1> zeroinitializer, <vscale x 4 x i1> zeroinitializer, <vscale x 4 x i32> undef
   ret <vscale x 4 x i1> %S

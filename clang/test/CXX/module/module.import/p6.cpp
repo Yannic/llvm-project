@@ -3,6 +3,9 @@
 
 // RUN: %clang_cc1 -std=c++20 -x c++-header %t/bad-header-unit.h \
 // RUN:  -emit-header-unit -o %t/bad-header-unit.pcm -verify
+// RUN: %clang_cc1 -std=c++20 -x c++-header %t/bad-header-unit-declspec.h \
+// RUN:  -emit-header-unit -o %t/bad-header-unit.pcm -verify \
+// RUN:  -fdeclspec
 
 //--- bad-header-unit.h
 
@@ -22,6 +25,8 @@ int ok_var_decl;
 
 int bad_var_definition = 3;  // expected-error {{non-inline external definitions are not permitted in C++ header units}}
 
+/* The cases below should compile without diagnostics.  */
+
 class A {
 public:
     // This is a declaration instead of definition.
@@ -36,3 +41,52 @@ private:
   S(S&);
 };
 S::S(S&) = default;
+
+template <class _X>
+_X tmpl_var_ok_0 = static_cast<_X>(-1);
+
+template <typename _T>
+constexpr _T tmpl_var_ok_1 = static_cast<_T>(42);
+
+inline int a = tmpl_var_ok_1<int>;
+
+template <typename _Tp,
+          template <typename> class _T>
+constexpr int tmpl_var_ok_2 = _T<_Tp>::value ? 42 : 6174 ;
+
+template<class _Ep>
+int tmpl_OK (_Ep) { return 0; }
+
+template <class _T1>
+bool
+operator==(_T1& , _T1& ) { return false; }
+
+constexpr long one_k = 1000L;
+
+template <class ..._Args>
+void* tmpl_fn_ok
+(_Args ...__args) { return nullptr; }
+
+inline int foo (int a) {
+  return tmpl_OK (a);
+}
+
+template <typename T> struct S2 { static int v; };
+template <typename T> int S2<T>::v = 10;
+
+template <typename T> bool b() {
+    bool b1 = S2<T>::v == 10;
+    return b1 && true;
+}
+
+inline bool B = b<int>();
+
+__attribute__((weak)) int weak_fun_definition() { return 42; }
+
+__attribute__((weak)) int weak_var_definition = 42;
+
+//--- bad-header-unit-declspec.h
+
+/* The cases below should compile without diagnostics.  */
+
+__declspec(selectany) int selectany_var_definition = 42; // expected-no-diagnostics

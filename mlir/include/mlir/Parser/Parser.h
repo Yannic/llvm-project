@@ -64,10 +64,9 @@ inline OwningOpRef<ContainerOpT> constructContainerOpForParserIfNecessary(
         "block that has an implicit terminator or does not require one");
 
     OpBuilder builder(context);
-    ContainerOpT op = builder.create<ContainerOpT>(sourceFileLoc);
+    ContainerOpT op = ContainerOpT::create(builder, sourceFileLoc);
     OwningOpRef<ContainerOpT> opRef(op);
-    assert(op->getNumRegions() == 1 &&
-           llvm::hasSingleElement(op->getRegion(0)) &&
+    assert(op->getNumRegions() == 1 && op->getRegion(0).hasOneBlock() &&
            "expected generated operation to have a single region with a single "
            "block");
     Block *opBlock = &op->getRegion(0).front();
@@ -138,11 +137,14 @@ LogicalResult parseSourceFile(llvm::StringRef filename,
 /// If the block is non-empty, the operations are placed before the current
 /// terminator. If parsing is successful, success is returned. Otherwise, an
 /// error message is emitted through the error handler registered in the
-/// context, and failure is returned. If `sourceFileLoc` is non-null, it is
-/// populated with a file location representing the start of the source file
-/// that is being parsed.
+/// context, and failure is returned.
+/// `sourceName` is used as the file name of the source; any IR without
+/// locations will get a `FileLineColLoc` location with `sourceName` as the file
+/// name. If `sourceFileLoc` is non-null, it is populated with a file location
+/// representing the start of the source file that is being parsed.
 LogicalResult parseSourceString(llvm::StringRef sourceStr, Block *block,
                                 const ParserConfig &config,
+                                StringRef sourceName = "",
                                 LocationAttr *sourceFileLoc = nullptr);
 
 namespace detail {
@@ -235,12 +237,17 @@ parseSourceFile(llvm::StringRef filename,
 /// failure is returned. `ContainerOpT` is required to have a single region
 /// containing a single block, and must implement the
 /// `SingleBlockImplicitTerminator` trait.
+/// `sourceName` is used as the file name of the source; any IR without
+/// locations will get a `FileLineColLoc` location with `sourceName` as the file
+/// name.
 template <typename ContainerOpT = Operation *>
 inline OwningOpRef<ContainerOpT> parseSourceString(llvm::StringRef sourceStr,
-                                                   const ParserConfig &config) {
+                                                   const ParserConfig &config,
+                                                   StringRef sourceName = "") {
   LocationAttr sourceFileLoc;
   Block block;
-  if (failed(parseSourceString(sourceStr, &block, config, &sourceFileLoc)))
+  if (failed(parseSourceString(sourceStr, &block, config, sourceName,
+                               &sourceFileLoc)))
     return OwningOpRef<ContainerOpT>();
   return detail::constructContainerOpForParserIfNecessary<ContainerOpT>(
       &block, config.getContext(), sourceFileLoc);

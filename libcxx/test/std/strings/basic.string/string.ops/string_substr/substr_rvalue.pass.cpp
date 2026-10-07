@@ -20,6 +20,7 @@
 #include "make_string.h"
 #include "min_allocator.h"
 #include "test_allocator.h"
+#include "asan_testing.h"
 
 #define STR(string) MAKE_CSTRING(typename S::value_type, string)
 
@@ -32,6 +33,8 @@ constexpr void test(S orig, typename S::size_type pos, typename S::size_type n, 
   LIBCPP_ASSERT(orig.__invariants());
   LIBCPP_ASSERT(str.__invariants());
   assert(str == expected);
+  LIBCPP_ASSERT(is_string_asan_correct(orig));
+  LIBCPP_ASSERT(is_string_asan_correct(str));
 }
 
 template <class S>
@@ -40,6 +43,7 @@ constexpr void test(S orig, typename S::size_type pos, typename S::size_type n, 
   if (!std::is_constant_evaluated()) {
     try {
       S str = std::move(orig).substr(pos, n);
+      (void)str;
       assert(false);
     } catch (const std::out_of_range&) {
     }

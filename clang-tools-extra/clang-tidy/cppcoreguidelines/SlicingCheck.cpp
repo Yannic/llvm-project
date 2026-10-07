@@ -1,4 +1,4 @@
-//===--- SlicingCheck.cpp - clang-tidy-------------------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -40,12 +40,15 @@ void SlicingCheck::registerMatchers(MatchFinder *Finder) {
   const auto HasTypeDerivedFromBaseDecl =
       anyOf(hasType(IsDerivedFromBaseDecl),
             hasType(references(IsDerivedFromBaseDecl)));
-  const auto IsWithinDerivedCtor =
-      hasParent(cxxConstructorDecl(ofClass(equalsBoundNode("DerivedDecl"))));
+  const auto IsCallToBaseClass = hasParent(cxxConstructorDecl(
+      ofClass(isSameOrDerivedFrom(equalsBoundNode("DerivedDecl"))),
+      hasAnyConstructorInitializer(allOf(
+          isBaseInitializer(), withInitializer(equalsBoundNode("Call"))))));
 
   // Assignment slicing: "a = b;" and "a = std::move(b);" variants.
   const auto SlicesObjectInAssignment =
-      callExpr(callee(cxxMethodDecl(anyOf(isCopyAssignmentOperator(),
+      callExpr(expr().bind("Call"),
+               callee(cxxMethodDecl(anyOf(isCopyAssignmentOperator(),
                                           isMoveAssignmentOperator()),
                                     OfBaseClass)),
                hasArgument(1, HasTypeDerivedFromBaseDecl));
@@ -53,17 +56,17 @@ void SlicingCheck::registerMatchers(MatchFinder *Finder) {
   // Construction slicing: "A a{b};" and "f(b);" variants. Note that in case of
   // slicing the letter will create a temporary and therefore call a ctor.
   const auto SlicesObjectInCtor = cxxConstructExpr(
+      expr().bind("Call"),
       hasDeclaration(cxxConstructorDecl(
           anyOf(isCopyConstructor(), isMoveConstructor()), OfBaseClass)),
       hasArgument(0, HasTypeDerivedFromBaseDecl),
       // We need to disable matching on the call to the base copy/move
       // constructor in DerivedDecl's constructors.
-      unless(IsWithinDerivedCtor));
+      unless(IsCallToBaseClass));
 
-  Finder->addMatcher(traverse(TK_AsIs, expr(anyOf(SlicesObjectInAssignment,
-                                                  SlicesObjectInCtor))
-                                           .bind("Call")),
-                     this);
+  Finder->addMatcher(
+      traverse(TK_AsIs, expr(SlicesObjectInAssignment).bind("Call")), this);
+  Finder->addMatcher(traverse(TK_AsIs, SlicesObjectInCtor), this);
 }
 
 /// Warns on methods overridden in DerivedDecl with respect to BaseDecl.
@@ -86,13 +89,10 @@ void SlicingCheck::diagnoseSlicedOverriddenMethods(
     }
   }
   // Recursively process bases.
-  for (const auto &Base : DerivedDecl.bases()) {
-    if (const auto *BaseRecordType = Base.getType()->getAs<RecordType>()) {
-      if (const auto *BaseRecord = cast_or_null<CXXRecordDecl>(
-              BaseRecordType->getDecl()->getDefinition()))
-        diagnoseSlicedOverriddenMethods(Call, *BaseRecord, BaseDecl);
-    }
-  }
+  for (const auto &Base : DerivedDecl.bases())
+    if (const auto *BaseRecord = Base.getType()->getAsCXXRecordDecl();
+        BaseRecord && BaseRecord->isCompleteDefinition())
+      diagnoseSlicedOverriddenMethods(Call, *BaseRecord, BaseDecl);
 }
 
 void SlicingCheck::check(const MatchFinder::MatchResult &Result) {

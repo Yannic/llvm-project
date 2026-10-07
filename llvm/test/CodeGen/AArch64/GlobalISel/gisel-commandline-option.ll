@@ -36,7 +36,7 @@
 ; RUN: llc -mtriple=aarch64-- -debug-pass=Structure %s -o /dev/null 2>&1 \
 ; RUN:   --debugify-and-strip-all-safe=0 \
 ; RUN:   -verify-machineinstrs=0 -O1 -aarch64-enable-global-isel-at-O=0 \
-; RUN:   | FileCheck %s --check-prefix DISABLED
+; RUN:   | FileCheck %s --check-prefix NOT-ENABLED
 
 ; RUN: llc -mtriple=aarch64-- -debug-pass=Structure %s -o /dev/null 2>&1 \
 ; RUN:   --debugify-and-strip-all-safe=0 \
@@ -45,7 +45,7 @@
 
 ; RUN: llc -mtriple=aarch64-- -debug-pass=Structure %s -o /dev/null 2>&1 \
 ; RUN:   --debugify-and-strip-all-safe=0 \
-; RUN:   -verify-machineinstrs=0 | FileCheck %s --check-prefix DISABLED
+; RUN:   -verify-machineinstrs=0 | FileCheck %s --check-prefix NOT-ENABLED
 
 ; RUN: llc -mtriple=aarch64-- -fast-isel=0 -global-isel=false \
 ; RUN:   --debugify-and-strip-all-safe=0 \
@@ -58,20 +58,19 @@
 ; ENABLED-O1-NEXT: Function Alias Analysis Results
 ; ENABLED:       IRTranslator
 ; VERIFY-NEXT:   Verify generated machine code
-; ENABLED-NEXT:  Analysis for ComputingKnownBits
+; ENABLED-O1-NEXT:  Analysis for ComputingKnownBits
 ; ENABLED-O1-NEXT:  MachineDominator Tree Construction
 ; ENABLED-O1-NEXT:  Analysis containing CSE Info
 ; ENABLED-O1-NEXT:  PreLegalizerCombiner
+; ENABLED-O1-NEXT:  Localizer
 ; VERIFY-O0-NEXT:  AArch64O0PreLegalizerCombiner
 ; VERIFY-NEXT:   Verify generated machine code
 ; ENABLED-O1-NEXT: LoadStoreOpt
-; VERIFY-O0-NEXT:  Analysis containing CSE Info
-; ENABLED-NEXT:  Legalizer
+; ENABLED-O1-NEXT:  Analysis containing CSE Info
+; ENABLED:  Legalizer
 ; VERIFY-NEXT:   Verify generated machine code
 ; ENABLED:  RegBankSelect
 ; VERIFY-NEXT:   Verify generated machine code
-; ENABLED-NEXT:  Localizer
-; VERIFY-O0-NEXT:   Verify generated machine code
 ; ENABLED-NEXT: Analysis for ComputingKnownBits
 ; ENABLED-O1-NEXT: Lazy Branch Probability Analysis
 ; ENABLED-O1-NEXT: Lazy Block Frequency Analysis
@@ -82,6 +81,12 @@
 
 ; FALLBACK:       AArch64 Instruction Selection
 ; NOFALLBACK-NOT: AArch64 Instruction Selection
+
+; Should be included due to the potential for SDAG to use GlobalISel for optnone functions
+; NOT-ENABLED: IRTranslator
+
+; NOT-ENABLED: AArch64 Instruction Selection
+; NOT-ENABLED: Finalize ISel and expand pseudo-instructions
 
 ; DISABLED-NOT: IRTranslator
 

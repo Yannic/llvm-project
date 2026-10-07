@@ -98,7 +98,6 @@ int b;
 /// \returns aaa.
 typedef int (^test_param1)(int aaa, int ccc);
 
-// rdar://13094352
 // expected-warning@+2 {{'@method' command should be used in a comment attached to an Objective-C method declaration}}
 @interface I
 /*!	@method Base64EncodeEx
@@ -107,7 +106,6 @@ typedef id ID;
 - (unsigned) Base64EncodeEx : (ID)Arg;
 @end
 
-// rdar://12379114
 // expected-warning@+5 {{'@interface' command should not be used in a comment attached to a non-interface declaration}} 
 // expected-warning@+5 {{'@classdesign' command should not be used in a comment attached to a non-container declaration}}
 // expected-warning@+5 {{'@coclass' command should not be used in a comment attached to a non-container declaration}} 
@@ -124,7 +122,6 @@ typedef id OBJ;
 }
 @end
 
-// rdar://12379114
 // expected-warning@+4 {{'@methodgroup' command should be used in a comment attached to an Objective-C method declaration}}
 // expected-warning@+6 {{'@method' command should be used in a comment attached to an Objective-C method declaratio}}
 @interface rdar12379114
@@ -136,6 +133,18 @@ typedef id OBJ;
 */
 typedef unsigned int NSTimeInterval;
 - (id)initWithTimeout:(NSTimeInterval)timeout;
+@end
+
+// @method and @methodgroup should not warn when the comment is directly
+// attached to an Objective-C method declaration.
+@interface TestMethodAndMethodgroupAttached
+/*!
+ @methodgroup Creating a request
+*/
+/*!
+ @method doSomething
+*/
+- (id)doSomething;
 @end
 
 // expected-warning@+2 {{'@protocol' command should not be used in a comment attached to a non-protocol declaration}}
@@ -178,7 +187,6 @@ struct S;
 /// \t bbb IS_DOXYGEN_END
 int FooBar(void);
 
-// rdar://13836387
 /** \brief Module handling the incoming notifications from the system.
  *
  * This includes:
@@ -199,12 +207,11 @@ int FooBar(void);
 }
 @end
 
-// rdar://13927330
 /// @class Asset  <- '@class' may be used in a comment attached to a an interface declaration
 @interface Asset : NSObject
 @end
 
-// rdar://14024851 Check that this does not enter an infinite loop
+// Check that this does not enter an infinite loop
 @interface rdar14024851
 -(void)meth; // expected-note {{declared here}}
 @end
@@ -217,7 +224,6 @@ int FooBar(void);
 -(void)meth {}
 @end
 
-// rdar://14124644
 @interface test_vararg1
 /// @param[in] arg something
 /// @param[in] ... This is vararg

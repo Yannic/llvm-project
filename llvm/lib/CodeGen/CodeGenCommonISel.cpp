@@ -17,11 +17,32 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/Support/Casting.h"
 
 #define DEBUG_TYPE "codegen-common"
 
 using namespace llvm;
+
+const MDNode *llvm::getMemCacheHintMetadata(const Instruction &I,
+                                            unsigned OperandNo) {
+  const MDNode *MD = I.getMetadata(LLVMContext::MD_mem_cache_hint);
+  if (!MD)
+    return nullptr;
+
+  for (unsigned Idx = 0; Idx + 1 < MD->getNumOperands(); Idx += 2) {
+    const auto *OpNoCI = mdconst::extract<ConstantInt>(MD->getOperand(Idx));
+    const auto *Hint = cast<MDNode>(MD->getOperand(Idx + 1));
+    if (OpNoCI->getZExtValue() == OperandNo)
+      return Hint;
+  }
+
+  return nullptr;
+}
 
 /// Add a successor MBB to ParentMBB< creating a new MachineBB for BB if SuccMBB
 /// is 0.
@@ -173,11 +194,12 @@ llvm::findSplitPointForStackProtector(MachineBasicBlock *BB,
   return SplitPoint;
 }
 
-unsigned llvm::getInvertedFPClassTest(unsigned Test) {
-  unsigned InvertedTest = ~Test & fcAllFlags;
-  switch (InvertedTest) {
-  default:
-    break;
+FPClassTest llvm::invertFPClassTestIfSimpler(FPClassTest Test, bool UseFCmp) {
+  FPClassTest InvertedTest = ~Test;
+
+  // Pick the direction with fewer tests
+  // TODO: Handle more combinations of cases that can be handled together
+  switch (static_cast<unsigned>(InvertedTest)) {
   case fcNan:
   case fcSNan:
   case fcQNan:
@@ -196,9 +218,22 @@ unsigned llvm::getInvertedFPClassTest(unsigned Test) {
   case fcFinite:
   case fcPosFinite:
   case fcNegFinite:
+  case fcZero | fcNan:
+  case fcSubnormal | fcZero:
+  case fcSubnormal | fcZero | fcNan:
     return InvertedTest;
+  case fcInf | fcNan:
+  case fcPosInf | fcNan:
+  case fcNegInf | fcNan:
+    // If we're trying to use fcmp, we can take advantage of the nan check
+    // behavior of the compare (but this is more instructions in the integer
+    // expansion).
+    return UseFCmp ? InvertedTest : fcNone;
+  default:
+    return fcNone;
   }
-  return 0;
+
+  llvm_unreachable("covered FPClassTest");
 }
 
 static MachineOperand *getSalvageOpsForCopy(const MachineRegisterInfo &MRI,
@@ -254,7 +289,8 @@ void llvm::salvageDebugInfoForDbgValue(const MachineRegisterInfo &MRI,
       continue;
     }
 
-    int UseMOIdx = DbgMI->findRegisterUseOperandIdx(DefMO->getReg());
+    int UseMOIdx =
+        DbgMI->findRegisterUseOperandIdx(DefMO->getReg(), /*TRI=*/nullptr);
     assert(UseMOIdx != -1 && DbgMI->hasDebugOperandForReg(DefMO->getReg()) &&
            "Must use salvaged instruction as its location");
 

@@ -1,16 +1,28 @@
 // RUN: %clang_cc1 -verify=expected,omp45 -fopenmp -fopenmp-version=45 %s -Wuninitialized
 // RUN: %clang_cc1 -verify=expected,omp45 -fopenmp -fopenmp-version=45 -std=c++98 %s -Wuninitialized
 // RUN: %clang_cc1 -verify=expected,omp45 -fopenmp -fopenmp-version=45 -std=c++11 %s -Wuninitialized
-// RUN: %clang_cc1 -verify=expected,omp50 -fopenmp -fopenmp-version=50 %s -Wuninitialized
-// RUN: %clang_cc1 -verify=expected,omp50 -fopenmp -fopenmp-version=50 -std=c++98 %s -Wuninitialized
-// RUN: %clang_cc1 -verify=expected,omp50 -fopenmp -fopenmp-version=50 -std=c++11 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp50 -fopenmp %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp50 -fopenmp -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp50 -fopenmp -std=c++11 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp52 -fopenmp -fopenmp-version=52 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp52 -fopenmp -fopenmp-version=52 -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp52 -fopenmp -fopenmp-version=52 -std=c++11 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp60 -fopenmp -fopenmp-version=60 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp60 -fopenmp -fopenmp-version=60 -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp60 -fopenmp -fopenmp-version=60 -std=c++11 %s -Wuninitialized
 
 // RUN: %clang_cc1 -verify=expected,omp45 -fopenmp-simd -fopenmp-version=45 %s -Wuninitialized
 // RUN: %clang_cc1 -verify=expected,omp45 -fopenmp-simd -fopenmp-version=45 -std=c++98 %s -Wuninitialized
 // RUN: %clang_cc1 -verify=expected,omp45 -fopenmp-simd -fopenmp-version=45 -std=c++11 %s -Wuninitialized
-// RUN: %clang_cc1 -verify=expected,omp50 -fopenmp-simd -fopenmp-version=50 %s -Wuninitialized
-// RUN: %clang_cc1 -verify=expected,omp50 -fopenmp-simd -fopenmp-version=50 -std=c++98 %s -Wuninitialized
-// RUN: %clang_cc1 -verify=expected,omp50 -fopenmp-simd -fopenmp-version=50 -std=c++11 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp50 -fopenmp-simd %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp50 -fopenmp-simd -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp50 -fopenmp-simd -std=c++11 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp52 -fopenmp-simd -fopenmp-version=52 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp52 -fopenmp-simd -fopenmp-version=52 -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp52 -fopenmp-simd -fopenmp-version=52 -std=c++11 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp60 -fopenmp-simd -fopenmp-version=60 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp60 -fopenmp-simd -fopenmp-version=60 -std=c++98 %s -Wuninitialized
+// RUN: %clang_cc1 -verify=expected,ge50,omp60 -fopenmp-simd -fopenmp-version=60 -std=c++11 %s -Wuninitialized
 
 typedef void **omp_allocator_handle_t;
 extern const omp_allocator_handle_t omp_null_allocator;
@@ -129,9 +141,9 @@ T tmain(T argc) {
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(|| : argc ? i : argc) // expected-error 2 {{expected variable name, array element or array section}}
   for (int j=0; j<100; j++) foo();
-#pragma omp target teams distribute parallel for reduction(foo : argc) //expected-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'float'}} expected-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'int'}}
+#pragma omp target teams distribute parallel for reduction(foo : argc) //omp45-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'float'}} omp45-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'int'}} omp50-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'float'}} omp50-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'int'}} omp52-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'float'}} omp52-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'int'}} omp60-error {{incorrect reduction identifier, expected one of '+', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'float'}} omp60-error {{incorrect reduction identifier, expected one of '+', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'int'}}
   for (int j=0; j<100; j++) foo();
-#pragma omp target teams distribute parallel for reduction(&& : argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
+#pragma omp target teams distribute parallel for reduction(&& : argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}} omp45-error 2 {{unexpected OpenMP clause 'allocate' in directive '#pragma omp target teams distribute parallel for'}}
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(^ : T) // expected-error {{'T' does not refer to a value}}
   for (int j=0; j<100; j++) foo();
@@ -145,7 +157,7 @@ T tmain(T argc) {
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(* : ca) // expected-error {{const-qualified variable cannot be reduction}}
   for (int j=0; j<100; j++) foo();
-#pragma omp target teams distribute parallel for reduction(- : da) // expected-error {{const-qualified variable cannot be reduction}} expected-error {{const-qualified variable cannot be reduction}}
+#pragma omp target teams distribute parallel for reduction(- : da) // expected-error 2 {{const-qualified variable cannot be reduction}} omp52-warning 3 {{minus(-) operator for reductions is deprecated; use + or user defined reduction instead}}
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(^ : fl) // expected-error {{invalid operands to binary expression ('float' and 'float')}}
   for (int j=0; j<100; j++) foo();
@@ -170,7 +182,7 @@ T tmain(T argc) {
 #pragma omp parallel reduction(min : i)
 #pragma omp target teams distribute parallel for reduction(max : j) // expected-error 2 {{argument of OpenMP clause 'reduction' must reference the same object in all threads}}
   for (int j=0; j<100; j++) foo();
-#pragma omp target teams distribute parallel for reduction(+ : fl) allocate(omp_thread_mem_alloc: fl) uses_allocators(omp_thread_mem_alloc)// expected-warning 2 {{allocator with the 'thread' trait access has unspecified behavior on 'target teams distribute parallel for' directive}} omp45-error {{unexpected OpenMP clause 'uses_allocators' in directive '#pragma omp target teams distribute parallel for'}}
+#pragma omp target teams distribute parallel for reduction(+ : fl) allocate(omp_thread_mem_alloc: fl) uses_allocators(omp_thread_mem_alloc)// ge50-warning 2 {{allocator with the 'thread' trait access has unspecified behavior on 'target teams distribute parallel for' directive}} omp45-error {{unexpected OpenMP clause 'uses_allocators' in directive '#pragma omp target teams distribute parallel for'}} omp45-error {{unexpected OpenMP clause 'allocate' in directive '#pragma omp target teams distribute parallel for'}}
     for (int j=0; j<100; j++) foo();
 
   return T();
@@ -210,7 +222,7 @@ int main(int argc, char **argv) {
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(\) // expected-error {{expected unqualified-id}} expected-warning {{missing ':' after reduction identifier - ignoring}}
   for (int j=0; j<100; j++) foo();
-#pragma omp target teams distribute parallel for reduction(foo : argc // expected-error {{expected ')'}} expected-note {{to match this '('}} expected-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max'}}
+#pragma omp target teams distribute parallel for reduction(foo : argc // expected-error {{expected ')'}} expected-note {{to match this '('}} omp45-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max'}} omp50-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max'}} omp52-error {{incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max'}}  omp60-error {{incorrect reduction identifier, expected one of '+', '*', '&', '|', '^', '&&', '||', 'min' or 'max'}}
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(| : argc, // expected-error {{expected expression}} expected-error {{expected ')'}} expected-note {{to match this '('}}
   for (int j=0; j<100; j++) foo();
@@ -232,7 +244,7 @@ int main(int argc, char **argv) {
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(* : ca) // expected-error {{const-qualified variable cannot be reduction}}
   for (int j=0; j<100; j++) foo();
-#pragma omp target teams distribute parallel for reduction(- : da, z) // expected-error {{const-qualified variable cannot be reduction}}
+#pragma omp target teams distribute parallel for reduction(- : da, z) // expected-error {{const-qualified variable cannot be reduction}} omp52-warning {{minus(-) operator for reductions is deprecated; use + or user defined reduction instead}} omp60-error {{incorrect reduction identifier, expected one of '+', '*', '&', '|', '^', '&&', '||', 'min' or 'max' or declare reduction for type 'int'}}
   for (int j=0; j<100; j++) foo();
 #pragma omp target teams distribute parallel for reduction(^ : fl) // expected-error {{invalid operands to binary expression ('float' and 'float')}}
   for (int j=0; j<100; j++) foo();

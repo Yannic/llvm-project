@@ -17,28 +17,36 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PrintPasses.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
-PrintModulePass::PrintModulePass() : OS(dbgs()) {}
+PrintModulePass::PrintModulePass()
+    : OS(dbgs()), ShouldPreserveUseListOrder(false), EmitSummaryIndex(false),
+      ShouldRenumberMetadata(false) {}
 PrintModulePass::PrintModulePass(raw_ostream &OS, const std::string &Banner,
                                  bool ShouldPreserveUseListOrder,
-                                 bool EmitSummaryIndex)
+                                 bool EmitSummaryIndex,
+                                 bool ShouldRenumberMetadata)
     : OS(OS), Banner(Banner),
       ShouldPreserveUseListOrder(ShouldPreserveUseListOrder),
-      EmitSummaryIndex(EmitSummaryIndex) {}
+      EmitSummaryIndex(EmitSummaryIndex),
+      ShouldRenumberMetadata(ShouldRenumberMetadata) {}
 
 PreservedAnalyses PrintModulePass::run(Module &M, ModuleAnalysisManager &AM) {
-  if (llvm::isFunctionInPrintList("*")) {
+  if (ShouldRenumberMetadata)
+    M.renumberMetadataForAssembly();
+
+  if (shouldPrintAllFunctions()) {
     if (!Banner.empty())
       OS << Banner << "\n";
     M.print(OS, nullptr, ShouldPreserveUseListOrder);
   } else {
     bool BannerPrinted = false;
     for (const auto &F : M.functions()) {
-      if (llvm::isFunctionInPrintList(F.getName())) {
+      if (shouldPrintFunction(F)) {
         if (!BannerPrinted && !Banner.empty()) {
           OS << Banner << "\n";
           BannerPrinted = true;
@@ -53,7 +61,7 @@ PreservedAnalyses PrintModulePass::run(Module &M, ModuleAnalysisManager &AM) {
                        : nullptr;
   if (Index) {
     if (Index->modulePaths().empty())
-      Index->addModule("", 0);
+      Index->addModule("");
     Index->print(OS);
   }
 
@@ -66,11 +74,13 @@ PrintFunctionPass::PrintFunctionPass(raw_ostream &OS, const std::string &Banner)
 
 PreservedAnalyses PrintFunctionPass::run(Function &F,
                                          FunctionAnalysisManager &) {
-  if (isFunctionInPrintList(F.getName())) {
-    if (forcePrintModuleIR())
-      OS << Banner << " (function: " << F.getName() << ")\n" << *F.getParent();
-    else
+  if (shouldPrintFunction(F)) {
+    if (forcePrintModuleIR()) {
+      OS << Banner << " (function: " << F.getName() << ")\n";
+      F.getParent()->print(OS, nullptr);
+    } else
       OS << Banner << '\n' << static_cast<Value &>(F);
   }
+
   return PreservedAnalyses::all();
 }

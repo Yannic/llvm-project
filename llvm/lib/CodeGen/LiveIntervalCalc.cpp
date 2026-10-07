@@ -12,7 +12,6 @@
 
 #include "llvm/CodeGen/LiveIntervalCalc.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
@@ -20,7 +19,6 @@
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/MC/LaneBitmask.h"
-#include "llvm/Support/ErrorHandling.h"
 #include <cassert>
 
 using namespace llvm;
@@ -91,8 +89,8 @@ void LiveIntervalCalc::calculate(LiveInterval &LI, bool TrackSubRegs) {
   // Step 2: Extend live segments to all uses, constructing SSA form as
   // necessary.
   if (LI.hasSubRanges()) {
+    LiveIntervalCalc SubLIC;
     for (LiveInterval::SubRange &S : LI.subranges()) {
-      LiveIntervalCalc SubLIC;
       SubLIC.reset(MF, Indexes, DomTree, Alloc);
       SubLIC.extendToUses(S, Reg, S.LaneMask, &LI);
     }

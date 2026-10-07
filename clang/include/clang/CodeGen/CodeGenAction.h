@@ -9,6 +9,7 @@
 #ifndef LLVM_CLANG_CODEGEN_CODEGENACTION_H
 #define LLVM_CLANG_CODEGEN_CODEGENACTION_H
 
+#include "clang/CodeGen/ModuleLinker.h"
 #include "clang/Frontend/FrontendAction.h"
 #include <memory>
 
@@ -23,26 +24,6 @@ class CodeGenerator;
 
 class CodeGenAction : public ASTFrontendAction {
 private:
-  // Let BackendConsumer access LinkModule.
-  friend class BackendConsumer;
-
-  /// Info about module to link into a module we're generating.
-  struct LinkModule {
-    /// The module to link in.
-    std::unique_ptr<llvm::Module> Module;
-
-    /// If true, we set attributes on Module's functions according to our
-    /// CodeGenOptions and LangOptions, as though we were generating the
-    /// function ourselves.
-    bool PropagateAttrs;
-
-    /// If true, we use LLVM module internalizer.
-    bool Internalize;
-
-    /// Bitwise combination of llvm::LinkerFlags used when we link the module.
-    unsigned LinkFlags;
-  };
-
   unsigned Act;
   std::unique_ptr<llvm::Module> TheModule;
 
@@ -54,6 +35,8 @@ private:
   std::unique_ptr<llvm::Module> loadModule(llvm::MemoryBufferRef MBRef);
 
 protected:
+  bool BeginSourceFileAction(CompilerInstance &CI) override;
+
   /// Create a new code generation action.  If the optional \p _VMContext
   /// parameter is supplied, the action uses it without taking ownership,
   /// otherwise it creates a fresh LLVM context and takes ownership.
@@ -80,7 +63,7 @@ public:
 
   CodeGenerator *getCodeGenerator() const;
 
-  BackendConsumer *BEConsumer;
+  BackendConsumer *BEConsumer = nullptr;
 };
 
 class EmitAssemblyAction : public CodeGenAction {

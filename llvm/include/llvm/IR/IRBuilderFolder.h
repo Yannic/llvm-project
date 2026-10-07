@@ -15,13 +15,15 @@
 #define LLVM_IR_IRBUILDERFOLDER_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/IR/GEPNoWrapFlags.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/Support/Compiler.h"
 
 namespace llvm {
 
 /// IRBuilderFolder - Interface for constant folding in IRBuilder.
-class IRBuilderFolder {
+class LLVM_ABI IRBuilderFolder {
 public:
   virtual ~IRBuilderFolder();
 
@@ -48,13 +50,15 @@ public:
   virtual Value *FoldUnOpFMF(Instruction::UnaryOps Opc, Value *V,
                              FastMathFlags FMF) const = 0;
 
-  virtual Value *FoldICmp(CmpInst::Predicate P, Value *LHS,
-                          Value *RHS) const = 0;
+  virtual Value *FoldCmp(CmpInst::Predicate P, Value *LHS,
+                         Value *RHS) const = 0;
 
-  virtual Value *FoldGEP(Type *Ty, Value *Ptr, ArrayRef<Value *> IdxList,
-                         bool IsInBounds = false) const = 0;
+  virtual Value *FoldGEP(const DataLayout &DL, Type *Ty, Value *Ptr,
+                         ArrayRef<Value *> IdxList,
+                         GEPNoWrapFlags NW) const = 0;
 
-  virtual Value *FoldSelect(Value *C, Value *True, Value *False) const = 0;
+  virtual Value *FoldSelect(Value *C, Value *True, Value *False,
+                            FastMathFlags FMF = FastMathFlags()) const = 0;
 
   virtual Value *FoldExtractValue(Value *Agg,
                                   ArrayRef<unsigned> IdxList) const = 0;
@@ -70,31 +74,25 @@ public:
   virtual Value *FoldShuffleVector(Value *V1, Value *V2,
                                    ArrayRef<int> Mask) const = 0;
 
+  virtual Value *FoldCast(Instruction::CastOps Op, Value *V,
+                          Type *DestTy) const = 0;
+
+  virtual Value *FoldIntrinsic(Intrinsic::ID ID, ArrayRef<Value *> Ops,
+                               Type *Ty, FastMathFlags FMF = {},
+                               Function *CtxF = nullptr) const = 0;
+
+  virtual Value *FoldBitInsert(Value *Base, Value *Val,
+                               Value *Offset) const = 0;
+
+  virtual Value *FoldBitExtract(Type *Ty, Value *Src, Value *Offset) const = 0;
+
   //===--------------------------------------------------------------------===//
   // Cast/Conversion Operators
   //===--------------------------------------------------------------------===//
 
-  virtual Value *CreateCast(Instruction::CastOps Op, Constant *C,
-                            Type *DestTy) const = 0;
   virtual Value *CreatePointerCast(Constant *C, Type *DestTy) const = 0;
   virtual Value *CreatePointerBitCastOrAddrSpaceCast(Constant *C,
                                                      Type *DestTy) const = 0;
-  virtual Value *CreateIntCast(Constant *C, Type *DestTy,
-                               bool isSigned) const = 0;
-  virtual Value *CreateFPCast(Constant *C, Type *DestTy) const = 0;
-  virtual Value *CreateBitCast(Constant *C, Type *DestTy) const = 0;
-  virtual Value *CreateIntToPtr(Constant *C, Type *DestTy) const = 0;
-  virtual Value *CreatePtrToInt(Constant *C, Type *DestTy) const = 0;
-  virtual Value *CreateZExtOrBitCast(Constant *C, Type *DestTy) const = 0;
-  virtual Value *CreateSExtOrBitCast(Constant *C, Type *DestTy) const = 0;
-  virtual Value *CreateTruncOrBitCast(Constant *C, Type *DestTy) const = 0;
-
-  //===--------------------------------------------------------------------===//
-  // Compare Instructions
-  //===--------------------------------------------------------------------===//
-
-  virtual Value *CreateFCmp(CmpInst::Predicate P, Constant *LHS,
-                            Constant *RHS) const = 0;
 };
 
 } // end namespace llvm

@@ -26,12 +26,12 @@ namespace llvm {
     LatencyPriorityQueue *PQ;
     explicit latency_sort(LatencyPriorityQueue *pq) : PQ(pq) {}
 
-    bool operator()(const SUnit* LHS, const SUnit* RHS) const;
+    LLVM_ABI bool operator()(const SUnit *LHS, const SUnit *RHS) const;
   };
 
-  class LatencyPriorityQueue : public SchedulingPriorityQueue {
+  class LLVM_ABI LatencyPriorityQueue : public SchedulingPriorityQueue {
     // SUnits - The SUnits for the current graph.
-    std::vector<SUnit> *SUnits;
+    std::vector<SUnit> *SUnits = nullptr;
 
     /// NumNodesSolelyBlocking - This vector contains, for every node in the
     /// Queue, the number of nodes that the node is the sole unscheduled

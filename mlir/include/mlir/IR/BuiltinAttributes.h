@@ -10,10 +10,9 @@
 #define MLIR_IR_BUILTINATTRIBUTES_H
 
 #include "mlir/IR/BuiltinAttributeInterfaces.h"
-#include "mlir/IR/SubElementInterfaces.h"
+#include "mlir/Support/Complex.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/Sequence.h"
-#include <complex>
 #include <optional>
 
 namespace mlir {
@@ -31,6 +30,12 @@ class IntegerType;
 class Location;
 class Operation;
 class RankedTensorType;
+
+namespace detail {
+struct DenseTypedElementsAttrStorage;
+struct DenseStringElementsAttrStorage;
+struct StringAttrStorage;
+} // namespace detail
 
 //===----------------------------------------------------------------------===//
 // Elements Attributes
@@ -70,6 +75,8 @@ template <typename T>
 struct is_complex_t : public std::false_type {};
 template <typename T>
 struct is_complex_t<std::complex<T>> : public std::true_type {};
+template <typename T>
+struct is_complex_t<mlir::NonFloatComplex<T>> : public std::true_type {};
 } // namespace detail
 
 /// An attribute that represents a reference to a dense vector or tensor
@@ -79,9 +86,9 @@ public:
   using Attribute::Attribute;
 
   /// Allow implicit conversion to ElementsAttr.
-  operator ElementsAttr() const {
-    return *this ? cast<ElementsAttr>() : nullptr;
-  }
+  operator ElementsAttr() const { return cast_if_present<ElementsAttr>(*this); }
+  /// Allow implicit conversion to TypedAttr.
+  operator TypedAttr() const { return ElementsAttr(*this); }
 
   /// Type trait used to check if the given type T is a potentially valid C++
   /// floating point type that can be used to access the underlying element
@@ -162,7 +169,7 @@ public:
   /// element type of 'type'. 'type' must be a vector or tensor with static
   /// shape.
   static DenseElementsAttr get(ShapedType type,
-                               ArrayRef<std::complex<APInt>> values);
+                               ArrayRef<mlir::Complex<APInt>> values);
 
   /// Constructs a dense float elements attribute from an array of APFloat
   /// values. Each APFloat value is expected to have the same bitwidth as the
@@ -175,7 +182,7 @@ public:
   /// element type of 'type'. 'type' must be a vector or tensor with static
   /// shape.
   static DenseElementsAttr get(ShapedType type,
-                               ArrayRef<std::complex<APFloat>> values);
+                               ArrayRef<mlir::Complex<APFloat>> values);
 
   /// Construct a dense elements attribute for an initializer_list of values.
   /// Each value is expected to be the same bitwidth of the element type of
@@ -194,25 +201,12 @@ public:
   ///
   /// The format of the raw buffer is a densely packed array of values that
   /// can be bitcast to the storage format of the element type specified.
-  /// Types that are not byte aligned will be:
-  ///   - For bitwidth > 1: Rounded up to the next byte.
-  ///   - For bitwidth = 1: Packed into 8bit bytes with bits corresponding to
-  ///     the linear order of the shape type from MSB to LSB, padded to on the
-  ///     right.
+  /// Types that are not byte aligned will be rounded up to the next byte.
   static DenseElementsAttr getFromRawBuffer(ShapedType type,
                                             ArrayRef<char> rawBuffer);
 
   /// Returns true if the given buffer is a valid raw buffer for the given type.
-  /// `detectedSplat` is set if the buffer is valid and represents a splat
-  /// buffer. The definition may be expanded over time, but currently, a
-  /// splat buffer is detected if:
-  ///   - For >1bit: The buffer consists of a single element.
-  ///   - For 1bit: The buffer consists of a single byte with value 0 or 255.
-  ///
-  /// User code should be prepared for additional, conformant patterns to be
-  /// identified as splats in the future.
-  static bool isValidRawBuffer(ShapedType type, ArrayRef<char> rawBuffer,
-                               bool &detectedSplat);
+  static bool isValidRawBuffer(ShapedType type, ArrayRef<char> rawBuffer);
 
   //===--------------------------------------------------------------------===//
   // Iterators
@@ -306,11 +300,11 @@ public:
   /// values.
   class ComplexIntElementIterator
       : public detail::DenseElementIndexedIteratorImpl<
-            ComplexIntElementIterator, std::complex<APInt>, std::complex<APInt>,
-            std::complex<APInt>> {
+            ComplexIntElementIterator, mlir::Complex<APInt>,
+            mlir::Complex<APInt>, mlir::Complex<APInt>> {
   public:
-    /// Accesses the raw std::complex<APInt> value at this iterator position.
-    std::complex<APInt> operator*() const;
+    /// Accesses the raw mlir::Complex<APInt> value at this iterator position.
+    mlir::Complex<APInt> operator*() const;
 
   private:
     friend DenseElementsAttr;
@@ -347,10 +341,10 @@ public:
   class ComplexFloatElementIterator final
       : public llvm::mapped_iterator_base<ComplexFloatElementIterator,
                                           ComplexIntElementIterator,
-                                          std::complex<APFloat>> {
+                                          mlir::Complex<APFloat>> {
   public:
     /// Map the element to the iterator result type.
-    std::complex<APFloat> mapElement(const std::complex<APInt> &value) const {
+    mlir::Complex<APFloat> mapElement(const mlir::Complex<APInt> &value) const {
       return {APFloat(*smt, value.real()), APFloat(*smt, value.imag())};
     }
 
@@ -390,7 +384,7 @@ public:
                        !std::is_same<Attribute, T>::value,
                    T>
   getSplatValue() const {
-    return getSplatValue<Attribute>().template cast<T>();
+    return llvm::cast<T>(getSplatValue<Attribute>());
   }
 
   /// Try to get an iterator of the given type to the start of the held element
@@ -450,7 +444,7 @@ public:
         ElementIterator<T>(rawData, splat, getNumElements()));
   }
 
-  /// Try to get the held element values as a range of std::complex.
+  /// Try to get the held element values as a range of mlir::Complex.
   template <typename T, typename ElementT>
   using ComplexValueTemplateCheckT =
       std::enable_if_t<detail::is_complex_t<T>::value &&
@@ -511,7 +505,7 @@ public:
                                      T>::mapped_iterator_base;
 
     /// Map the element to the iterator result type.
-    T mapElement(Attribute attr) const { return attr.cast<T>(); }
+    T mapElement(Attribute attr) const { return llvm::cast<T>(attr); }
   };
   template <typename T, typename = DerivedAttrValueTemplateCheckT<T>>
   FailureOr<iterator_range_impl<DerivedAttributeElementIterator<T>>>
@@ -553,7 +547,7 @@ public:
   /// element type of this attribute must be a complex of integer type.
   template <typename T>
   using ComplexAPIntValueTemplateCheckT =
-      std::enable_if_t<std::is_same<T, std::complex<APInt>>::value>;
+      std::enable_if_t<std::is_same<T, mlir::Complex<APInt>>::value>;
   template <typename T, typename = ComplexAPIntValueTemplateCheckT<T>>
   FailureOr<iterator_range_impl<ComplexIntElementIterator>>
   tryGetValues() const {
@@ -574,7 +568,7 @@ public:
   /// element type of this attribute must be a complex of float type.
   template <typename T>
   using ComplexAPFloatValueTemplateCheckT =
-      std::enable_if_t<std::is_same<T, std::complex<APFloat>>::value>;
+      std::enable_if_t<std::is_same<T, mlir::Complex<APFloat>>::value>;
   template <typename T, typename = ComplexAPFloatValueTemplateCheckT<T>>
   FailureOr<iterator_range_impl<ComplexFloatElementIterator>>
   tryGetValues() const {
@@ -685,7 +679,7 @@ public:
 
   /// Method for support type inquiry through isa, cast and dyn_cast.
   static bool classof(Attribute attr) {
-    auto denseAttr = attr.dyn_cast<DenseElementsAttr>();
+    auto denseAttr = llvm::dyn_cast<DenseElementsAttr>(attr);
     return denseAttr && denseAttr.isSplat();
   }
 };
@@ -710,8 +704,15 @@ using DenseResourceElementsHandle = DialectResourceBlobHandle<BuiltinDialect>;
 //===----------------------------------------------------------------------===//
 
 namespace mlir {
+/// DenseIntOrFPElementsAttr was renamed to DenseTypedElementsAttr. This alias
+/// is provided for backwards compatibility. It will be removed in the future.
+using DenseIntOrFPElementsAttr [[deprecated(
+    "DenseIntOrFPElementsAttr has been renamed to DenseTypedElementsAttr")]] =
+    DenseTypedElementsAttr;
+
 //===----------------------------------------------------------------------===//
 // DenseArrayAttr
+//===----------------------------------------------------------------------===//
 
 namespace detail {
 /// Base class for DenseArrayAttr that is instantiated and specialized for each
@@ -767,6 +768,7 @@ using DenseF64ArrayAttr = detail::DenseArrayAttrImpl<double>;
 
 //===----------------------------------------------------------------------===//
 // DenseResourceElementsAttr
+//===----------------------------------------------------------------------===//
 
 namespace detail {
 /// Base class for DenseResourceElementsAttr that is instantiated and
@@ -843,9 +845,10 @@ public:
 
   static BoolAttr get(MLIRContext *context, bool value);
 
-  /// Enable conversion to IntegerAttr. This uses conversion vs. inheritance to
-  /// avoid bringing in all of IntegerAttrs methods.
+  /// Enable conversion to IntegerAttr and its interfaces. This uses conversion
+  /// vs. inheritance to avoid bringing in all of IntegerAttrs methods.
   operator IntegerAttr() const { return IntegerAttr(impl); }
+  operator TypedAttr() const { return IntegerAttr(impl); }
 
   /// Return the boolean value of this attribute.
   bool getValue() const;
@@ -887,7 +890,7 @@ public:
 
   /// Methods for support type inquiry through isa, cast, and dyn_cast.
   static bool classof(Attribute attr) {
-    SymbolRefAttr refAttr = attr.dyn_cast<SymbolRefAttr>();
+    SymbolRefAttr refAttr = llvm::dyn_cast<SymbolRefAttr>(attr);
     return refAttr && refAttr.getNestedReferences().empty();
   }
 
@@ -902,24 +905,23 @@ private:
 
 /// An attribute that represents a reference to a dense float vector or tensor
 /// object. Each element is stored as a double.
-class DenseFPElementsAttr : public DenseIntOrFPElementsAttr {
+class DenseFPElementsAttr : public DenseTypedElementsAttr {
 public:
   using iterator = DenseElementsAttr::FloatElementIterator;
 
-  using DenseIntOrFPElementsAttr::DenseIntOrFPElementsAttr;
+  using DenseTypedElementsAttr::DenseTypedElementsAttr;
 
   /// Get an instance of a DenseFPElementsAttr with the given arguments. This
   /// simply wraps the DenseElementsAttr::get calls.
   template <typename Arg>
   static DenseFPElementsAttr get(const ShapedType &type, Arg &&arg) {
-    return DenseElementsAttr::get(type, llvm::ArrayRef(arg))
-        .template cast<DenseFPElementsAttr>();
+    return llvm::cast<DenseFPElementsAttr>(
+        DenseElementsAttr::get(type, llvm::ArrayRef(arg)));
   }
   template <typename T>
   static DenseFPElementsAttr get(const ShapedType &type,
                                  const std::initializer_list<T> &list) {
-    return DenseElementsAttr::get(type, list)
-        .template cast<DenseFPElementsAttr>();
+    return llvm::cast<DenseFPElementsAttr>(DenseElementsAttr::get(type, list));
   }
 
   /// Generates a new DenseElementsAttr by mapping each value attribute, and
@@ -942,26 +944,25 @@ public:
 
 /// An attribute that represents a reference to a dense integer vector or tensor
 /// object.
-class DenseIntElementsAttr : public DenseIntOrFPElementsAttr {
+class DenseIntElementsAttr : public DenseTypedElementsAttr {
 public:
   /// DenseIntElementsAttr iterates on APInt, so we can use the raw element
   /// iterator directly.
   using iterator = DenseElementsAttr::IntElementIterator;
 
-  using DenseIntOrFPElementsAttr::DenseIntOrFPElementsAttr;
+  using DenseTypedElementsAttr::DenseTypedElementsAttr;
 
   /// Get an instance of a DenseIntElementsAttr with the given arguments. This
   /// simply wraps the DenseElementsAttr::get calls.
   template <typename Arg>
   static DenseIntElementsAttr get(const ShapedType &type, Arg &&arg) {
-    return DenseElementsAttr::get(type, llvm::ArrayRef(arg))
-        .template cast<DenseIntElementsAttr>();
+    return llvm::cast<DenseIntElementsAttr>(
+        DenseElementsAttr::get(type, llvm::ArrayRef(arg)));
   }
   template <typename T>
   static DenseIntElementsAttr get(const ShapedType &type,
                                   const std::initializer_list<T> &list) {
-    return DenseElementsAttr::get(type, list)
-        .template cast<DenseIntElementsAttr>();
+    return llvm::cast<DenseIntElementsAttr>(DenseElementsAttr::get(type, list));
   }
 
   /// Generates a new DenseElementsAttr by mapping each value attribute, and
@@ -988,7 +989,7 @@ auto SparseElementsAttr::try_value_begin_impl(OverloadToken<T>) const
   auto valueIt = getValues().try_value_begin<T>();
   if (failed(valueIt))
     return failure();
-  const std::vector<ptrdiff_t> flatSparseIndices(getFlattenedSparseIndices());
+  const SmallVector<ptrdiff_t> flatSparseIndices(getFlattenedSparseIndices());
   std::function<T(ptrdiff_t)> mapFn =
       [flatSparseIndices{flatSparseIndices}, valueIt{std::move(*valueIt)},
        zeroValue{std::move(zeroValue)}](ptrdiff_t index) {
@@ -1001,6 +1002,48 @@ auto SparseElementsAttr::try_value_begin_impl(OverloadToken<T>) const
       };
   return iterator<T>(llvm::seq<ptrdiff_t>(0, getNumElements()).begin(), mapFn);
 }
+
+//===----------------------------------------------------------------------===//
+// DistinctAttr
+//===----------------------------------------------------------------------===//
+
+namespace detail {
+struct DistinctAttrStorage;
+class DistinctAttributeUniquer;
+} // namespace detail
+
+/// An attribute that associates a referenced attribute with a unique
+/// identifier. Every call to the create function allocates a new distinct
+/// attribute instance. The address of the attribute instance serves as a
+/// temporary identifier. Similar to the names of SSA values, the final
+/// identifiers are generated during pretty printing. This delayed numbering
+/// ensures the printed identifiers are deterministic even if multiple distinct
+/// attribute instances are created in-parallel.
+///
+/// Examples:
+///
+/// #distinct = distinct[0]<42.0 : f32>
+/// #distinct1 = distinct[1]<42.0 : f32>
+/// #distinct2 = distinct[2]<array<i32: 10, 42>>
+///
+/// NOTE: The distinct attribute cannot be defined using ODS since it uses a
+/// custom distinct attribute uniquer that cannot be set from ODS.
+class DistinctAttr
+    : public detail::StorageUserBase<DistinctAttr, Attribute,
+                                     detail::DistinctAttrStorage,
+                                     detail::DistinctAttributeUniquer> {
+public:
+  using Base::Base;
+
+  /// Returns the referenced attribute.
+  Attribute getReferencedAttr() const;
+
+  /// Creates a distinct attribute that associates a referenced attribute with a
+  /// unique identifier.
+  static DistinctAttr create(Attribute referencedAttr);
+
+  static constexpr StringLiteral name = "builtin.distinct";
+};
 
 //===----------------------------------------------------------------------===//
 // StringAttr
@@ -1061,14 +1104,6 @@ namespace llvm {
 
 template <>
 struct DenseMapInfo<mlir::StringAttr> : public DenseMapInfo<mlir::Attribute> {
-  static mlir::StringAttr getEmptyKey() {
-    const void *pointer = llvm::DenseMapInfo<const void *>::getEmptyKey();
-    return mlir::StringAttr::getFromOpaquePointer(pointer);
-  }
-  static mlir::StringAttr getTombstoneKey() {
-    const void *pointer = llvm::DenseMapInfo<const void *>::getTombstoneKey();
-    return mlir::StringAttr::getFromOpaquePointer(pointer);
-  }
 };
 template <>
 struct PointerLikeTypeTraits<mlir::StringAttr>

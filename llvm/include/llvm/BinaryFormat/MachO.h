@@ -183,44 +183,40 @@ enum SectionType : uint32_t {
   LAST_KNOWN_SECTION_TYPE = S_INIT_FUNC_OFFSETS
 };
 
-enum : uint32_t {
-  // Constant masks for the "flags[31:24]" field in llvm::MachO::section and
-  // llvm::MachO::section_64 (mask "flags" with SECTION_ATTRIBUTES_USR)
+// Constant masks for the "flags[31:24]" field in llvm::MachO::section and
+// llvm::MachO::section_64 (mask "flags" with SECTION_ATTRIBUTES_USR)
 
-  /// S_ATTR_PURE_INSTRUCTIONS - Section contains only true machine
-  /// instructions.
-  S_ATTR_PURE_INSTRUCTIONS = 0x80000000u,
-  /// S_ATTR_NO_TOC - Section contains coalesced symbols that are not to be
-  /// in a ranlib table of contents.
-  S_ATTR_NO_TOC = 0x40000000u,
-  /// S_ATTR_STRIP_STATIC_SYMS - Ok to strip static symbols in this section
-  /// in files with the MY_DYLDLINK flag.
-  S_ATTR_STRIP_STATIC_SYMS = 0x20000000u,
-  /// S_ATTR_NO_DEAD_STRIP - No dead stripping.
-  S_ATTR_NO_DEAD_STRIP = 0x10000000u,
-  /// S_ATTR_LIVE_SUPPORT - Blocks are live if they reference live blocks.
-  S_ATTR_LIVE_SUPPORT = 0x08000000u,
-  /// S_ATTR_SELF_MODIFYING_CODE - Used with i386 code stubs written on by
-  /// dyld.
-  S_ATTR_SELF_MODIFYING_CODE = 0x04000000u,
-  /// S_ATTR_DEBUG - A debug section.
-  S_ATTR_DEBUG = 0x02000000u,
+/// Section contains only true machine instructions.
+constexpr uint32_t S_ATTR_PURE_INSTRUCTIONS = 0x80000000u;
+/// Section contains coalesced symbols that are not to be in a ranlib table of
+/// contents.
+constexpr uint32_t S_ATTR_NO_TOC = 0x40000000u;
+/// Ok to strip static symbols in this section in files with the MY_DYLDLINK
+/// flag.
+constexpr uint32_t S_ATTR_STRIP_STATIC_SYMS = 0x20000000u;
+/// No dead stripping.
+constexpr uint32_t S_ATTR_NO_DEAD_STRIP = 0x10000000u;
+/// Blocks are live if they reference live blocks.
+constexpr uint32_t S_ATTR_LIVE_SUPPORT = 0x08000000u;
+/// Used with i386 code stubs written on by dyld.
+constexpr uint32_t S_ATTR_SELF_MODIFYING_CODE = 0x04000000u;
+/// A debug section.
+constexpr uint32_t S_ATTR_DEBUG = 0x02000000u;
 
-  // Constant masks for the "flags[23:8]" field in llvm::MachO::section and
-  // llvm::MachO::section_64 (mask "flags" with SECTION_ATTRIBUTES_SYS)
+// Constant masks for the "flags[23:8]" field in llvm::MachO::section and
+// llvm::MachO::section_64 (mask "flags" with SECTION_ATTRIBUTES_SYS)
 
-  /// S_ATTR_SOME_INSTRUCTIONS - Section contains some machine instructions.
-  S_ATTR_SOME_INSTRUCTIONS = 0x00000400u,
-  /// S_ATTR_EXT_RELOC - Section has external relocation entries.
-  S_ATTR_EXT_RELOC = 0x00000200u,
-  /// S_ATTR_LOC_RELOC - Section has local relocation entries.
-  S_ATTR_LOC_RELOC = 0x00000100u,
+/// Section contains some machine instructions.
+constexpr uint32_t S_ATTR_SOME_INSTRUCTIONS = 0x00000400u;
+/// Section has external relocation entries.
+constexpr uint32_t S_ATTR_EXT_RELOC = 0x00000200u;
+/// Section has local relocation entries.
+constexpr uint32_t S_ATTR_LOC_RELOC = 0x00000100u;
 
-  // Constant masks for the value of an indirect symbol in an indirect
-  // symbol table
-  INDIRECT_SYMBOL_LOCAL = 0x80000000u,
-  INDIRECT_SYMBOL_ABS = 0x40000000u
-};
+// Constant masks for the value of an indirect symbol in an indirect symbol
+// table.
+constexpr uint32_t INDIRECT_SYMBOL_LOCAL = 0x80000000u;
+constexpr uint32_t INDIRECT_SYMBOL_ABS = 0x40000000u;
 
 enum DataRegionType {
   // Constants for the "kind" field in a data_in_code_entry structure
@@ -373,6 +369,7 @@ enum StabType {
   N_SSYM = 0x60u,
   N_SO = 0x64u,
   N_OSO = 0x66u,
+  N_LIB = 0x68u,
   N_LSYM = 0x80u,
   N_BINCL = 0x82u,
   N_SOL = 0x84u,
@@ -473,6 +470,65 @@ enum RelocationInfoType {
   ARM64_RELOC_TLVP_LOAD_PAGEOFF12 = 9,
   // Must be followed by ARM64_RELOC_PAGE21 or ARM64_RELOC_PAGEOFF12.
   ARM64_RELOC_ADDEND = 10,
+  // An authenticated pointer.
+  ARM64_RELOC_AUTHENTICATED_POINTER = 11,
+
+  // For pointers. For example, for a .word directive in assembly
+  // representing a memory location where data is stored:
+  //      .word: _bar
+  RISCV_RELOC_UNSIGNED = 0,
+  // Subtractor operand. Must be followed by a RISCV_RELOC_UNSIGNED,
+  // which is the pointer from which to subtract the subtractor. For
+  // example:
+  //
+  //          .global _a
+  //          .global _b
+  //    _a: ...
+  //    _b: ...
+  //
+  //    .data_region
+  //    .word _a - _b
+  //    .end_data_region
+  RISCV_RELOC_SUBTRACTOR = 1,
+  // A jal/j instruction with 21-bit displacement. For example, a
+  // function call:
+  //
+  //    _foo:
+  //          jal _bar
+  RISCV_RELOC_BRANCH21 = 2,
+  // High 20 bits of pointer. r_pcrel=1 means this is paired with an
+  // AUIPC.  r_pcrel=0 means this is paired with a LUI.
+  RISCV_RELOC_HI20 = 3,
+  // An ADDI or LW/SW instruction that requires low 12 bits to be
+  // adjusted. r_pcrel=1 means this is paired with an AUIPC.
+  // r_pcrel=0 means this is paired with a LUI (llvm currently does
+  // not support no-PIC). Note: the compiler places the distance to
+  // the paired AUIPC in the imm12 (e.g. if previous instruction is
+  // the AUIPC, the imm12 is -4 or 0xFFC).  NOTE: this mean that the
+  // separation between hi/lo has to fit in (signed) 12 bits. Beyond
+  // 12-bits, the pc-relative offset is not inlined in the imm12, but
+  // it is instead stored in the 24-bits of a RISCV_RELOC_ADDEND
+  // record.
+  RISCV_RELOC_LO12 = 4,
+  // High 20 bits of GOT slot. r_pcrel=1 means this is paired with an
+  // AUIPC.  r_pcrel=0 means this is paired with a LUI (the compiler
+  // may emit a @got reloc for a reference to anything outside the
+  // translation unit, then the linker elides the @got if the target
+  // is in range).
+  RISCV_RELOC_GOT_HI20 = 5,
+  // Low 12 bits of GOT slot. r_pcrel=1 means this is paired with an
+  // AUIPC.  r_pcrel=0 means this is paired with a LUI.
+  RISCV_RELOC_GOT_LO12 = 6,
+  // For pointers to GOT slots. To be used by C++ exception handling,
+  // in the Language Specific Data Area (LSDA, __gcc_except_tab
+  // section). Not currently used, but added for completeness.
+  RISCV_RELOC_POINTER_TO_GOT = 7,
+  // Adds a static offset to a relocation.  Must be followed by
+  // RISCV_RELOC_PCREL_HI, RISCV_RELOC_BRANCH21 or
+  // RISCV_RELOC_LO12. For example, the 16 bytes offset in:
+  //
+  //         auipc a0, %pcrel_hi(var+16)
+  RISCV_RELOC_ADDEND = 8,
 
   // Constant values for the r_type field in an x86_64 architecture
   // llvm::MachO::relocation_info or llvm::MachO::scattered_relocation_info
@@ -495,21 +551,14 @@ enum { VM_PROT_READ = 0x1, VM_PROT_WRITE = 0x2, VM_PROT_EXECUTE = 0x4 };
 
 // Values for platform field in build_version_command.
 enum PlatformType {
-  PLATFORM_UNKNOWN = 0,
-  PLATFORM_MACOS = 1,
-  PLATFORM_IOS = 2,
-  PLATFORM_TVOS = 3,
-  PLATFORM_WATCHOS = 4,
-  PLATFORM_BRIDGEOS = 5,
-  PLATFORM_MACCATALYST = 6,
-  PLATFORM_IOSSIMULATOR = 7,
-  PLATFORM_TVOSSIMULATOR = 8,
-  PLATFORM_WATCHOSSIMULATOR = 9,
-  PLATFORM_DRIVERKIT = 10,
+#define PLATFORM(platform, id, name, build_name, target, tapi_target,          \
+                 marketing)                                                    \
+  PLATFORM_##platform = id,
+#include "MachO.def"
 };
 
 // Values for tools enum in build_tool_version.
-enum { TOOL_CLANG = 1, TOOL_SWIFT = 2, TOOL_LD = 3 };
+enum { TOOL_CLANG = 1, TOOL_SWIFT = 2, TOOL_LD = 3, TOOL_LLD = 4 };
 
 // Structs from <mach-o/loader.h>
 
@@ -869,6 +918,12 @@ struct build_version_command {
   uint32_t ntools;   // number of tool entries following this
 };
 
+struct target_triple_command {
+  uint32_t cmd;     // LC_TARGET_TRIPLE
+  uint32_t cmdsize; // including string
+  uint32_t triple;  // target triple string
+};
+
 struct dyld_env_command {
   uint32_t cmd;
   uint32_t cmdsize;
@@ -896,12 +951,17 @@ struct linker_option_command {
   uint32_t count;
 };
 
+union lc_str {
+  uint32_t offset;
+};
+
 struct fileset_entry_command {
   uint32_t cmd;
   uint32_t cmdsize;
   uint64_t vmaddr;
   uint64_t fileoff;
-  uint32_t entry_id;
+  union lc_str entry_id;
+  uint32_t reserved;
 };
 
 // The symseg_command is obsolete and no longer supported.
@@ -1037,8 +1097,8 @@ enum {
 // Values for dyld_chained_starts_in_segment::page_start.
 enum {
   DYLD_CHAINED_PTR_START_NONE = 0xFFFF,
-  DYLD_CHAINED_PTR_START_MULTI = 0x8000,
-  DYLD_CHAINED_PTR_START_LAST = 0x8000,
+  DYLD_CHAINED_PTR_START_MULTI = 0x8000, // page which has multiple starts
+  DYLD_CHAINED_PTR_START_LAST = 0x8000,  // last chain_start for a given page
 };
 
 // Values for dyld_chained_starts_in_segment::pointer_format.
@@ -1071,7 +1131,7 @@ struct dyld_chained_fixups_header {
 };
 
 /// dyld_chained_starts_in_image is embedded in LC_DYLD_CHAINED_FIXUPS payload.
-/// Each each seg_info_offset entry is the offset into this struct for that
+/// Each seg_info_offset entry is the offset into this struct for that
 /// segment followed by pool of dyld_chain_starts_in_segment data.
 struct dyld_chained_starts_in_image {
   uint32_t seg_count;
@@ -1432,7 +1492,8 @@ inline void swapStruct(fileset_entry_command &C) {
   sys::swapByteOrder(C.cmdsize);
   sys::swapByteOrder(C.vmaddr);
   sys::swapByteOrder(C.fileoff);
-  sys::swapByteOrder(C.entry_id);
+  sys::swapByteOrder(C.entry_id.offset);
+  sys::swapByteOrder(C.reserved);
 }
 
 inline void swapStruct(version_min_command &C) {
@@ -1456,6 +1517,12 @@ inline void swapStruct(build_version_command &C) {
   sys::swapByteOrder(C.minos);
   sys::swapByteOrder(C.sdk);
   sys::swapByteOrder(C.ntools);
+}
+
+inline void swapStruct(target_triple_command &C) {
+  sys::swapByteOrder(C.cmd);
+  sys::swapByteOrder(C.cmdsize);
+  sys::swapByteOrder(C.triple);
 }
 
 inline void swapStruct(build_tool_version &C) {
@@ -1569,7 +1636,9 @@ enum CPUType {
   CPU_TYPE_ARM64_32 = CPU_TYPE_ARM | CPU_ARCH_ABI64_32,
   CPU_TYPE_SPARC = 14,
   CPU_TYPE_POWERPC = 18,
-  CPU_TYPE_POWERPC64 = CPU_TYPE_POWERPC | CPU_ARCH_ABI64
+  CPU_TYPE_POWERPC64 = CPU_TYPE_POWERPC | CPU_ARCH_ABI64,
+
+  CPU_TYPE_RISCV = 24,
 };
 
 enum : uint32_t {
@@ -1632,14 +1701,50 @@ enum CPUSubTypeARM {
   CPU_SUBTYPE_ARM_V7K = 12,
   CPU_SUBTYPE_ARM_V6M = 14,
   CPU_SUBTYPE_ARM_V7M = 15,
-  CPU_SUBTYPE_ARM_V7EM = 16
+  CPU_SUBTYPE_ARM_V7EM = 16,
+  CPU_SUBTYPE_ARM_V8M_MAIN = 17,
+  CPU_SUBTYPE_ARM_V8M_BASE = 18,
+  CPU_SUBTYPE_ARM_V8_1M_MAIN = 19,
 };
 
-enum CPUSubTypeARM64 {
+enum CPUSubTypeARM64 : uint32_t {
   CPU_SUBTYPE_ARM64_ALL = 0,
   CPU_SUBTYPE_ARM64_V8 = 1,
   CPU_SUBTYPE_ARM64E = 2,
+  CPU_SUBTYPE_ARM64E_X1 = 12,
+
+  // arm64e uses the capability bits to encode ptrauth ABI information.
+  // Bit 63 marks the binary as Versioned.
+  CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK = 0x80000000U,
+  // Bit 62 marks the binary as using a kernel ABI.
+  CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK = 0x40000000U,
+  // Bits [59:56] hold the 4-bit ptrauth ABI version.
+  CPU_SUBTYPE_ARM64E_PTRAUTH_MASK = 0x0f000000U,
 };
+
+inline unsigned CPU_SUBTYPE_ARM64E_PTRAUTH_VERSION(uint32_t ST) {
+  return (ST & CPU_SUBTYPE_ARM64E_PTRAUTH_MASK) >> 24;
+}
+
+inline uint32_t
+CPU_SUBTYPE_ARM64E_WITH_PTRAUTH_VERSION(unsigned PtrAuthABIVersion,
+                                        bool PtrAuthKernelABIVersion) {
+  assert((PtrAuthABIVersion <= 0xF) &&
+         "ptrauth abi version must fit in 4 bits");
+  return CPU_SUBTYPE_ARM64E | CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK |
+         (PtrAuthKernelABIVersion
+              ? (uint32_t)CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK
+              : 0) |
+         (PtrAuthABIVersion << 24);
+}
+
+inline bool CPU_SUBTYPE_ARM64E_IS_VERSIONED_PTRAUTH_ABI(uint32_t ST) {
+  return ST & CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK;
+}
+
+inline bool CPU_SUBTYPE_ARM64E_IS_KERNEL_PTRAUTH_ABI(uint32_t ST) {
+  return ST & CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK;
+}
 
 enum CPUSubTypeARM64_32 { CPU_SUBTYPE_ARM64_32_V8 = 1 };
 
@@ -1664,8 +1769,15 @@ enum CPUSubTypePowerPC {
   CPU_SUBTYPE_MC98601 = CPU_SUBTYPE_POWERPC_601
 };
 
-Expected<uint32_t> getCPUType(const Triple &T);
-Expected<uint32_t> getCPUSubType(const Triple &T);
+enum CPUSubTypeRISCV {
+  CPU_SUBTYPE_RISCV_ALL = 0,
+};
+
+LLVM_ABI Expected<uint32_t> getCPUType(const Triple &T);
+LLVM_ABI Expected<uint32_t> getCPUSubType(const Triple &T);
+LLVM_ABI Expected<uint32_t> getCPUSubType(const Triple &T,
+                                          unsigned PtrAuthABIVersion,
+                                          bool PtrAuthKernelABIVersion);
 
 struct x86_thread_state32_t {
   uint32_t eax;

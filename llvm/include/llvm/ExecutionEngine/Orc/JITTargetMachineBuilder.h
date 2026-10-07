@@ -13,12 +13,14 @@
 #ifndef LLVM_EXECUTIONENGINE_ORC_JITTARGETMACHINEBUILDER_H
 #define LLVM_EXECUTIONENGINE_ORC_JITTARGETMACHINEBUILDER_H
 
-#include "llvm/ADT/Triple.h"
-#include "llvm/MC/SubtargetFeature.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/SubtargetFeature.h"
+#include "llvm/TargetParser/Triple.h"
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,19 +40,17 @@ class JITTargetMachineBuilder {
 public:
   /// Create a JITTargetMachineBuilder based on the given triple.
   ///
-  /// Note: TargetOptions is default-constructed, then EmulatedTLS and
-  /// ExplicitEmulatedTLS are set to true. If EmulatedTLS is not
-  /// required, these values should be reset before calling
-  /// createTargetMachine.
-  JITTargetMachineBuilder(Triple TT);
+  /// Note: TargetOptions is default-constructed, then EmulatedTLS is set to
+  /// true. If EmulatedTLS is not required, these values should be reset before
+  /// calling createTargetMachine.
+  LLVM_ABI JITTargetMachineBuilder(Triple TT);
 
   /// Create a JITTargetMachineBuilder for the host system.
   ///
-  /// Note: TargetOptions is default-constructed, then EmulatedTLS and
-  /// ExplicitEmulatedTLS are set to true. If EmulatedTLS is not
-  /// required, these values should be reset before calling
-  /// createTargetMachine.
-  static Expected<JITTargetMachineBuilder> detectHost();
+  /// Note: TargetOptions is default-constructed, then EmulatedTLS is set to
+  /// true. If EmulatedTLS is not required, these values should be reset before
+  /// calling createTargetMachine.
+  LLVM_ABI static Expected<JITTargetMachineBuilder> detectHost();
 
   /// Create a TargetMachine.
   ///
@@ -59,19 +59,13 @@ public:
   /// the target's AsmPrinter must both be registered. To JIT assembly
   /// (including inline and module level assembly) the target's AsmParser must
   /// also be registered.
-  Expected<std::unique_ptr<TargetMachine>> createTargetMachine();
+  LLVM_ABI Expected<std::unique_ptr<TargetMachine>> createTargetMachine();
 
   /// Get the default DataLayout for the target.
   ///
-  /// Note: This is reasonably expensive, as it creates a temporary
-  /// TargetMachine instance under the hood. It is only suitable for use during
+  /// Note: This is reasonably expensive. It is only suitable for use during
   /// JIT setup.
-  Expected<DataLayout> getDefaultDataLayoutForTarget() {
-    auto TM = createTargetMachine();
-    if (!TM)
-      return TM.takeError();
-    return (*TM)->createDataLayout();
-  }
+  LLVM_ABI Expected<DataLayout> getDefaultDataLayoutForTarget() const;
 
   /// Set the CPU string.
   JITTargetMachineBuilder &setCPU(std::string CPU) {
@@ -101,7 +95,7 @@ public:
   const std::optional<CodeModel::Model> &getCodeModel() const { return CM; }
 
   /// Set the LLVM CodeGen optimization level.
-  JITTargetMachineBuilder &setCodeGenOptLevel(CodeGenOpt::Level OptLevel) {
+  JITTargetMachineBuilder &setCodeGenOptLevel(CodeGenOptLevel OptLevel) {
     this->OptLevel = OptLevel;
     return *this;
   }
@@ -113,7 +107,7 @@ public:
   }
 
   /// Add subtarget features.
-  JITTargetMachineBuilder &
+  LLVM_ABI JITTargetMachineBuilder &
   addFeatures(const std::vector<std::string> &FeatureVec);
 
   /// Access subtarget features.
@@ -125,9 +119,9 @@ public:
   /// Set TargetOptions.
   ///
   /// Note: This operation will overwrite any previously configured options,
-  /// including EmulatedTLS, ExplicitEmulatedTLS, and UseInitArray which
-  /// the JITTargetMachineBuilder sets by default. Clients are responsible
-  /// for re-enabling these overwritten options.
+  /// including EmulatedTLS and UseInitArray which the JITTargetMachineBuilder
+  /// sets by default. Clients are responsible for re-enabling these overwritten
+  /// options.
   JITTargetMachineBuilder &setOptions(TargetOptions Options) {
     this->Options = std::move(Options);
     return *this;
@@ -152,7 +146,7 @@ private:
   TargetOptions Options;
   std::optional<Reloc::Model> RM;
   std::optional<CodeModel::Model> CM;
-  CodeGenOpt::Level OptLevel = CodeGenOpt::Default;
+  CodeGenOptLevel OptLevel = CodeGenOptLevel::Default;
 };
 
 #ifndef NDEBUG
@@ -161,7 +155,7 @@ public:
   JITTargetMachineBuilderPrinter(JITTargetMachineBuilder &JTMB,
                                  StringRef Indent)
       : JTMB(JTMB), Indent(Indent) {}
-  void print(raw_ostream &OS) const;
+  LLVM_ABI void print(raw_ostream &OS) const;
 
   friend raw_ostream &operator<<(raw_ostream &OS,
                                  const JITTargetMachineBuilderPrinter &JTMBP) {

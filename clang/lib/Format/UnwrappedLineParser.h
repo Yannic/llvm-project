@@ -15,14 +15,9 @@
 #ifndef LLVM_CLANG_LIB_FORMAT_UNWRAPPEDLINEPARSER_H
 #define LLVM_CLANG_LIB_FORMAT_UNWRAPPEDLINEPARSER_H
 
-#include "FormatToken.h"
-#include "clang/Basic/IdentifierTable.h"
-#include "clang/Format/Format.h"
-#include "llvm/ADT/BitVector.h"
-#include "llvm/Support/Regex.h"
-#include <list>
+#include "Macros.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include <stack>
-#include <vector>
 
 namespace clang {
 namespace format {
@@ -36,30 +31,39 @@ struct UnwrappedLineNode;
 /// \c UnwrappedLineFormatter. The key property is that changing the formatting
 /// within an unwrapped line does not affect any other unwrapped lines.
 struct UnwrappedLine {
-  UnwrappedLine();
+  UnwrappedLine() = default;
 
   /// The \c Tokens comprising this \c UnwrappedLine.
   std::list<UnwrappedLineNode> Tokens;
 
   /// The indent level of the \c UnwrappedLine.
-  unsigned Level;
+  unsigned Level = 0;
 
-  /// The \c PPBranchLevel (adjusted for header guards) if this line is a
+  /// The \c PPState::BranchLevel (adjusted for header guards) if this line is a
   /// \c InMacroBody line, and 0 otherwise.
-  unsigned PPLevel;
+  unsigned PPLevel = 0;
 
   /// Whether this \c UnwrappedLine is part of a preprocessor directive.
-  bool InPPDirective;
+  bool InPPDirective = false;
   /// Whether this \c UnwrappedLine is part of a pramga directive.
-  bool InPragmaDirective;
+  bool InPragmaDirective = false;
   /// Whether it is part of a macro body.
-  bool InMacroBody;
+  bool InMacroBody = false;
 
-  bool MustBeDeclaration;
+  /// Nesting level of unbraced body of a control statement.
+  unsigned UnbracedBodyLevel = 0;
+
+  bool MustBeDeclaration = false;
+
+  /// Whether the parser has seen \c decltype(auto) in this line.
+  bool SeenDecltypeAuto = false;
 
   /// \c True if this line should be indented by ContinuationIndent in
   /// addition to the normal indention level.
   bool IsContinuation = false;
+
+  /// Whether it is a C++20 module/import declaration.
+  bool IsModuleOrImportDecl = false;
 
   /// If this \c UnwrappedLine closes a block in a sequence of lines,
   /// \c MatchingOpeningBlockLineIndex stores the index of the corresponding
@@ -76,6 +80,19 @@ struct UnwrappedLine {
   unsigned FirstStartColumn = 0;
 };
 
+/// Interface for users of the UnwrappedLineParser to receive the parsed lines.
+/// Parsing a single snippet of code can lead to multiple runs, where each
+/// run is a coherent view of the file.
+///
+/// For example, different runs are generated:
+/// - for different combinations of #if blocks
+/// - when macros are involved, for the expanded code and the as-written code
+///
+/// Some tokens will only be visible in a subset of the runs.
+/// For each run, \c UnwrappedLineParser will call \c consumeUnwrappedLine
+/// for each parsed unwrapped line, and then \c finishRun to indicate
+/// that the set of unwrapped lines before is one coherent view of the
+/// code snippet to be formatted.
 class UnwrappedLineConsumer {
 public:
   virtual ~UnwrappedLineConsumer() {}
@@ -87,10 +104,12 @@ class FormatTokenSource;
 
 class UnwrappedLineParser {
 public:
-  UnwrappedLineParser(const FormatStyle &Style,
+  UnwrappedLineParser(SourceManager &SourceMgr, const FormatStyle &Style,
                       const AdditionalKeywords &Keywords,
                       unsigned FirstStartColumn, ArrayRef<FormatToken *> Tokens,
-                      UnwrappedLineConsumer &Callback);
+                      UnwrappedLineConsumer &Callback,
+                      llvm::SpecificBumpPtrAllocator<FormatToken> &Allocator,
+                      IdentifierTable &IdentTable);
 
   void parse();
 
@@ -106,20 +125,17 @@ private:
   void parseFile();
   bool precededByCommentOrPPDirective() const;
   bool parseLevel(const FormatToken *OpeningBrace = nullptr,
-                  bool CanContainBracedList = true,
-                  TokenType NextLBracesType = TT_Unknown,
                   IfStmtKind *IfKind = nullptr,
-                  FormatToken **IfLeftBrace = nullptr);
+                  FormatToken **IfLeftBrace = nullptr,
+                  bool *SeenExplicitAccessModifier = nullptr);
   bool mightFitOnOneLine(UnwrappedLine &Line,
                          const FormatToken *OpeningBrace = nullptr) const;
   FormatToken *parseBlock(bool MustBeDeclaration = false,
                           unsigned AddLevels = 1u, bool MunchSemi = true,
                           bool KeepBraces = true, IfStmtKind *IfKind = nullptr,
                           bool UnindentWhitesmithsBraces = false,
-                          bool CanContainBracedList = true,
-                          TokenType NextLBracesType = TT_Unknown);
-  void parseChildBlock(bool CanContainBracedList = true,
-                       TokenType NextLBracesType = TT_Unknown);
+                          bool IndentAfterExplicitAccessModifier = false);
+  void parseChildBlock();
   void parsePPDirective();
   void parsePPDefine();
   void parsePPIf(bool IfDef);
@@ -128,45 +144,48 @@ private:
   void parsePPPragma();
   void parsePPUnknown();
   void readTokenWithJavaScriptASI();
-  void parseStructuralElement(bool IsTopLevel = false,
-                              TokenType NextLBracesType = TT_Unknown,
+  void parseStructuralElement(const FormatToken *OpeningBrace = nullptr,
                               IfStmtKind *IfKind = nullptr,
                               FormatToken **IfLeftBrace = nullptr,
                               bool *HasDoWhile = nullptr,
                               bool *HasLabel = nullptr);
   bool tryToParseBracedList();
-  bool parseBracedList(bool ContinueOnSemicolons = false, bool IsEnum = false,
-                       tok::TokenKind ClosingBraceKind = tok::r_brace);
-  void parseParens(TokenType AmpAmpTokenType = TT_Unknown);
+  bool parseBracedList(bool IsAngleBracket = false, bool IsEnum = false);
+  bool parseParens(TokenType StarAndAmpTokenType = TT_Unknown,
+                   bool InMacroCall = false);
   void parseSquare(bool LambdaIntroducer = false);
   void keepAncestorBraces();
   void parseUnbracedBody(bool CheckEOF = false);
   void handleAttributes();
   bool handleCppAttributes();
   bool isBlockBegin(const FormatToken &Tok) const;
-  FormatToken *parseIfThenElse(IfStmtKind *IfKind, bool KeepBraces = false);
+  FormatToken *parseIfThenElse(IfStmtKind *IfKind, bool KeepBraces = false,
+                               bool IsVerilogAssert = false);
   void parseTryCatch();
   void parseLoopBody(bool KeepBraces, bool WrapRightBrace);
-  void parseForOrWhileLoop();
+  void parseForOrWhileLoop(bool HasParens = true);
   void parseDoWhile();
-  void parseLabel(bool LeftAlignLabel = false);
+  void parseLabel(bool IsGotoLabel = false);
   void parseCaseLabel();
-  void parseSwitch();
+  void parseSwitch(bool IsExpr);
   void parseNamespace();
-  bool parseModuleImport();
+  bool parseModuleDecl();
+  bool parseImportDecl();
   void parseNew();
   void parseAccessSpecifier();
   bool parseEnum();
   bool parseStructLike();
-  bool parseRequires();
-  void parseRequiresClause(FormatToken *RequiresToken);
-  void parseRequiresExpression(FormatToken *RequiresToken);
+  bool parseRequires(bool SeenEqual);
+  void parseRequiresClause();
+  void parseRequiresExpression();
   void parseConstraintExpression();
+  void parseCppExportBlock();
+  void parseNamespaceOrExportBlock(unsigned AddLevels);
   void parseJavaEnumBody();
   // Parses a record (aka class) as a top level element. If ParseAsExpr is true,
   // parses the record as a child block, i.e. if the class declaration is an
   // expression.
-  void parseRecord(bool ParseAsExpr = false);
+  void parseRecord(bool ParseAsExpr = false, bool IsJavaRecord = false);
   void parseObjCLightweightGenerics();
   void parseObjCMethod();
   void parseObjCProtocolList();
@@ -193,6 +212,13 @@ private:
   unsigned parseVerilogHierarchyHeader();
   void parseVerilogTable();
   void parseVerilogCaseLabel();
+  // For import, export, and extern.
+  void parseVerilogExtern();
+  // Skip things that can precede the keywords like module.
+  void skipVerilogQualifiers();
+  struct PPState;
+  std::optional<llvm::SmallVector<llvm::SmallVector<FormatToken *, 8>, 1>>
+  parseMacroCall(const PPState &SavedPPState);
 
   // Used by addUnwrappedLine to denote whether to keep or remove a level
   // when resetting the line state.
@@ -217,13 +243,14 @@ private:
   // NextTok specifies the next token. A null pointer NextTok is supported, and
   // signifies either the absence of a next token, or that the next token
   // shouldn't be taken into account for the analysis.
-  void distributeComments(const SmallVectorImpl<FormatToken *> &Comments,
+  void distributeComments(const ArrayRef<FormatToken *> &Comments,
                           const FormatToken *NextTok);
 
   // Adds the comment preceding the next token to unwrapped lines.
   void flushComments(bool NewlineBeforeNext);
   void pushToken(FormatToken *Tok);
   void calculateBraceTypes(bool ExpectClassBody = false);
+  void setPreviousRBraceType(TokenType Type);
 
   // Marks a conditional compilation edge (for example, an '#if', '#ifdef',
   // '#else' or merge conflict marker). If 'Unreachable' is true, assumes
@@ -236,23 +263,56 @@ private:
 
   bool isOnNewLine(const FormatToken &FormatTok);
 
+  // Returns whether there is a macro expansion in the line, i.e. a token that
+  // was expanded from a macro call.
+  bool containsExpansion(const UnwrappedLine &Line) const;
+
   // Compute hash of the current preprocessor branch.
   // This is used to identify the different branches, and thus track if block
   // open and close in the same branch.
   size_t computePPHash() const;
+
+  bool parsingPPDirective() const { return CurrentLines != &Lines; }
 
   // FIXME: We are constantly running into bugs where Line.Level is incorrectly
   // subtracted from beyond 0. Introduce a method to subtract from Line.Level
   // and use that everywhere in the Parser.
   std::unique_ptr<UnwrappedLine> Line;
 
+  // Lines that are created by macro expansion.
+  // When formatting code containing macro calls, we first format the expanded
+  // lines to set the token types correctly. Afterwards, we format the
+  // reconstructed macro calls, re-using the token types determined in the first
+  // step.
+  // ExpandedLines will be reset every time we create a new LineAndExpansion
+  // instance once a line containing macro calls has been parsed.
+  SmallVector<UnwrappedLine, 8> CurrentExpandedLines;
+
+  // Maps from the first token of a top-level UnwrappedLine that contains
+  // a macro call to the replacement UnwrappedLines expanded from the macro
+  // call.
+  llvm::DenseMap<FormatToken *, SmallVector<UnwrappedLine, 8>> ExpandedLines;
+
+  // Map from the macro identifier to a line containing the full unexpanded
+  // macro call.
+  llvm::DenseMap<FormatToken *, std::unique_ptr<UnwrappedLine>> Unexpanded;
+
+  // For recursive macro expansions, trigger reconstruction only on the
+  // outermost expansion.
+  bool InExpansion = false;
+
+  // Set while we reconstruct a macro call.
+  // For reconstruction, we feed the expanded lines into the reconstructor
+  // until it is finished.
+  std::optional<MacroCallReconstructor> Reconstruct;
+
   // Comments are sorted into unwrapped lines by whether they are in the same
   // line as the previous token, or not. If not, they belong to the next token.
   // Since the next token might already be in a new unwrapped line, we need to
   // store the comments belonging to that token.
   SmallVector<FormatToken *, 1> CommentsBeforeNextToken;
-  FormatToken *FormatTok;
-  bool MustBreakBeforeNextToken;
+
+  FormatToken *FormatTok = nullptr;
 
   // The parsed lines. Only added to through \c CurrentLines.
   SmallVector<UnwrappedLine, 8> Lines;
@@ -273,6 +333,8 @@ private:
   llvm::BitVector DeclarationScopeStack;
 
   const FormatStyle &Style;
+  bool IsCpp;
+  LangOptions LangOpts;
   const AdditionalKeywords &Keywords;
 
   llvm::Regex CommentPragmasRegex;
@@ -280,14 +342,19 @@ private:
   FormatTokenSource *Tokens;
   UnwrappedLineConsumer &Callback;
 
-  // FIXME: This is a temporary measure until we have reworked the ownership
-  // of the format tokens. The goal is to have the actual tokens created and
-  // owned outside of and handed into the UnwrappedLineParser.
   ArrayRef<FormatToken *> AllTokens;
 
   // Keeps a stack of the states of nested control statements (true if the
   // statement contains more than some predefined number of nested statements).
   SmallVector<bool, 8> NestedTooDeep;
+
+  // Keeps a stack of the states of nested lambdas (true if the return type of
+  // the lambda is `decltype(auto)`).
+  SmallVector<bool, 4> NestedLambdas;
+
+  // Whether the parser is parsing the body of a function whose return type is
+  // `decltype(auto)`.
+  bool IsDecltypeAutoFunction = false;
 
   // Represents preprocessor branch type, so we can find matching
   // #if/#else/#endif directives.
@@ -302,30 +369,6 @@ private:
     size_t Line;
   };
 
-  // Keeps a stack of currently active preprocessor branching directives.
-  SmallVector<PPBranch, 16> PPStack;
-
-  // The \c UnwrappedLineParser re-parses the code for each combination
-  // of preprocessor branches that can be taken.
-  // To that end, we take the same branch (#if, #else, or one of the #elif
-  // branches) for each nesting level of preprocessor branches.
-  // \c PPBranchLevel stores the current nesting level of preprocessor
-  // branches during one pass over the code.
-  int PPBranchLevel;
-
-  // Contains the current branch (#if, #else or one of the #elif branches)
-  // for each nesting level.
-  SmallVector<int, 8> PPLevelBranchIndex;
-
-  // Contains the maximum number of branches at each nesting level.
-  SmallVector<int, 8> PPLevelBranchCount;
-
-  // Contains the number of branches per nesting level we are currently
-  // in while parsing a preprocessor branch sequence.
-  // This is used to update PPLevelBranchCount at the end of a branch
-  // sequence.
-  std::stack<int> PPChainBranchIndex;
-
   // Include guard search state. Used to fixup preprocessor indent levels
   // so that include guards do not participate in indentation.
   enum IncludeGuardState {
@@ -336,17 +379,67 @@ private:
     IG_Rejected, // Search failed or never started.
   };
 
-  // Current state of include guard search.
-  IncludeGuardState IncludeGuard;
+  IncludeGuardState
+  getIncludeGuardState(FormatStyle::PPDirectiveIndentStyle Style) const {
+    return Style == FormatStyle::PPDIS_None || Style == FormatStyle::PPDIS_Leave
+               ? IG_Rejected
+               : IG_Inited;
+  }
 
-  // Points to the #ifndef condition for a potential include guard. Null unless
-  // IncludeGuardState == IG_IfNdefed.
-  FormatToken *IncludeGuardToken;
+  // The preprocessor bookkeeping that is rolled back when the token stream is
+  // rewound over preprocessor directives, which happens if the speculatively
+  // parsed arguments of a macro call are discarded. See readToken().
+  struct PPState {
+    explicit PPState(IncludeGuardState IncludeGuard)
+        : IncludeGuard(IncludeGuard) {}
+
+    // Keeps a stack of currently active preprocessor branching directives.
+    SmallVector<PPBranch, 16> Stack;
+
+    // The \c UnwrappedLineParser re-parses the code for each combination
+    // of preprocessor branches that can be taken.
+    // To that end, we take the same branch (#if, #else, or one of the #elif
+    // branches) for each nesting level of preprocessor branches.
+    // \c BranchLevel stores the current nesting level of preprocessor
+    // branches during one pass over the code.
+    int BranchLevel = -1;
+
+    // Contains the current branch (#if, #else or one of the #elif branches)
+    // for each nesting level.
+    SmallVector<int, 8> LevelBranchIndex;
+
+    // Contains the maximum number of branches at each nesting level.
+    SmallVector<int, 8> LevelBranchCount;
+
+    // Contains the number of branches per nesting level we are currently
+    // in while parsing a preprocessor branch sequence.
+    // This is used to update LevelBranchCount at the end of a branch
+    // sequence.
+    std::stack<int> ChainBranchIndex;
+
+    // Current state of include guard search.
+    IncludeGuardState IncludeGuard;
+
+    // Points to the #ifndef condition for a potential include guard. Null
+    // unless IncludeGuardState == IG_IfNdefed.
+    FormatToken *IncludeGuardToken = nullptr;
+
+    // Has just finished parsing a preprocessor line.
+    bool AtEndOfPPLine = false;
+  } PP;
+
+  // The hash tokens of the parsed preprocessor directives. The lines of a
+  // directive are kept when the token stream is rewound over it, so it is then
+  // parsed again only for its effect on the preprocessor bookkeeping. See
+  // readToken().
+  llvm::SmallPtrSet<const FormatToken *, 16> ParsedPPDirectives;
 
   // Contains the first start column where the source begins. This is zero for
   // normal source code and may be nonzero when formatting a code fragment that
   // does not start at the beginning of the file.
   unsigned FirstStartColumn;
+
+  MacroExpander Macros;
 
   friend class ScopedLineState;
   friend class CompoundStatementIndenter;
@@ -354,16 +447,15 @@ private:
 
 struct UnwrappedLineNode {
   UnwrappedLineNode() : Tok(nullptr) {}
-  UnwrappedLineNode(FormatToken *Tok) : Tok(Tok) {}
+  UnwrappedLineNode(FormatToken *Tok,
+                    llvm::ArrayRef<UnwrappedLine> Children = {})
+      : Tok(Tok), Children(Children) {}
 
   FormatToken *Tok;
   SmallVector<UnwrappedLine, 0> Children;
 };
 
-inline UnwrappedLine::UnwrappedLine()
-    : Level(0), PPLevel(0), InPPDirective(false), InPragmaDirective(false),
-      InMacroBody(false), MustBeDeclaration(false),
-      MatchingOpeningBlockLineIndex(kInvalidIndex) {}
+std::ostream &operator<<(std::ostream &Stream, const UnwrappedLine &Line);
 
 } // end namespace format
 } // end namespace clang

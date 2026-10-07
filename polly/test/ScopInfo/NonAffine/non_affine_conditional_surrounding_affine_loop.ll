@@ -1,12 +1,5 @@
-; RUN: opt %loadPolly -polly-allow-nonaffine-branches \
-; RUN:     -polly-invariant-load-hoisting=true \
-; RUN:     -polly-allow-nonaffine-loops=true \
-; RUN:     -polly-print-scops -disable-output < %s | FileCheck %s --check-prefix=INNERMOST
-; RUN: opt %loadPolly -polly-allow-nonaffine \
-; RUN:     -polly-invariant-load-hoisting=true \
-; RUN:     -polly-allow-nonaffine-branches -polly-allow-nonaffine-loops=true \
-; RUN:     -polly-print-scops -disable-output < %s | FileCheck %s \
-; RUN:     --check-prefix=ALL
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-allow-nonaffine-branches -plugin-arg=Polly,-polly-invariant-load-hoisting=true -plugin-arg=Polly,-polly-allow-nonaffine-loops=true '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s --check-prefix=INNERMOST
+; RUN: opt %loadNPMPolly -plugin-arg=Polly,-polly-allow-nonaffine -plugin-arg=Polly,-polly-invariant-load-hoisting=true -plugin-arg=Polly,-polly-allow-nonaffine-branches -plugin-arg=Polly,-polly-allow-nonaffine-loops=true '-passes=polly-custom<scops>' -plugin-arg=Polly,-polly-print-scops -disable-output < %s 2>&1 | FileCheck %s --check-prefix=ALL
 ;
 ; Negative test for INNERMOST.
 ; At the moment we will optimistically assume A[i] in the conditional before the inner

@@ -4,19 +4,21 @@
 // its table.
 // expected-remark@below {{symbol_removable function successfully erased}}
 module attributes {sym.outside_use = @symbol_foo } {
-  // expected-remark@+1 {{symbol has 2 uses}}
+  // expected-remark@+1 {{symbol has 3 uses}}
   func.func private @symbol_foo()
 
   // expected-remark@below {{symbol has no uses}}
   // expected-remark@below {{found use of symbol : @symbol_foo}}
-  // expected-remark@below {{symbol contains 2 nested references}}
+  // expected-remark@below {{symbol contains 3 nested references}}
   func.func @symbol_bar() attributes {sym.use = @symbol_foo} {
     // expected-remark@+1 {{found use of symbol : @symbol_foo}}
     "foo.op"() {
       non_symbol_attr,
-      use = [{ nested_symbol = [@symbol_foo]}],
+      use = [{nested_symbol = [@symbol_foo]}],
       z_other_non_symbol_attr
     } : () -> ()
+    // expected-remark@+1 {{found use of symbol : @symbol_foo}}
+    "foo.op"() { use = distinct[0]<@symbol_foo> } : () -> ()
   }
 
   // expected-remark@below {{symbol has no uses}}
@@ -65,4 +67,41 @@ module {
 func.func @symbol_bar() {
   "foo.possibly_unknown_symbol_table"() ({
   }) : () -> ()
+}
+
+// -----
+
+module {
+  // expected-remark@below {{symbol has 2 uses}}
+  module @inner_module {
+    // expected-remark@below {{symbol has 1 uses}}
+    func.func private @private_inner()
+    // expected-remark@below {{symbol has 1 uses}}
+    func.func nested @nested_inner()
+  }
+
+
+  // expected-remark@below {{symbol has no uses}}
+  // expected-remark@below {{symbol contains 2 nested references}}
+  func.func @outer_caller() {
+    // expected-remark@below {{found use of symbol : @inner_module::@nested_inner : "inner_module"}}
+    // expected-remark@below {{found use of symbol : @inner_module::@nested_inner : "nested_inner"}}
+    "foo.op"() { use = @inner_module::@nested_inner } : () -> ()
+    // expected-remark@below {{failed to resolve use of symbol : @inner_module::@private_inner : "inner_module"}}
+    // expected-remark@below {{failed to resolve use of symbol : @inner_module::@private_inner : "private_inner"}}
+    "foo.op"() { use = @inner_module::@private_inner } : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Test that external functions in nested modules are not incorrectly erased
+// from the outer module's symbol table.
+// Regression test for https://github.com/llvm/llvm-project/issues/60583
+module {
+  module {
+    // expected-remark@below {{symbol has no uses}}
+    func.func private @printMemrefF32(%ptr : memref<*xf32>)
+  }
 }

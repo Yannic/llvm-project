@@ -3,6 +3,7 @@
 #include "ARMTargetMachine.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetSelect.h"
@@ -17,7 +18,7 @@ namespace {
 /// TODO: Some of this might be useful for other architectures as well - extract
 ///       the platform-independent parts somewhere they can be reused.
 void runChecks(
-    LLVMTargetMachine *TM, const ARMBaseInstrInfo *II,
+    TargetMachine *TM, const ARMBaseInstrInfo *II,
     const StringRef InputIRSnippet, const StringRef InputMIRSnippet,
     unsigned Expected,
     std::function<void(const ARMBaseInstrInfo &, MachineFunction &, unsigned &)>
@@ -51,8 +52,8 @@ void runChecks(
   std::unique_ptr<Module> M = MParser->parseIRModule();
   ASSERT_TRUE(M);
 
-  M->setTargetTriple(TM->getTargetTriple().getTriple());
-  M->setDataLayout(TM->createDataLayout());
+  M->setTargetTriple(TM->getTargetTriple());
+  M->setDataLayout(TM->getTargetTriple().computeDataLayout());
 
   MachineModuleInfo MMI(TM);
   bool Res = MParser->parseMachineFunctions(*M, MMI);
@@ -72,7 +73,7 @@ TEST(InstSizes, PseudoInst) {
   LLVMInitializeARMTarget();
   LLVMInitializeARMTargetMC();
 
-  auto TT(Triple::normalize("thumbv8.1m.main-none-none-eabi"));
+  Triple TT("thumbv8.1m.main-none-none-eabi");
   std::string Error;
   const Target *T = TargetRegistry::lookupTarget(TT, Error);
   if (!T) {
@@ -81,12 +82,14 @@ TEST(InstSizes, PseudoInst) {
   }
 
   TargetOptions Options;
-  auto TM = std::unique_ptr<LLVMTargetMachine>(static_cast<LLVMTargetMachine *>(
+  auto TM = std::unique_ptr<TargetMachine>(
       T->createTargetMachine(TT, "generic", "", Options, std::nullopt,
-                             std::nullopt, CodeGenOpt::Default)));
+                             std::nullopt, CodeGenOptLevel::Default));
   ARMSubtarget ST(TM->getTargetTriple(), std::string(TM->getTargetCPU()),
                   std::string(TM->getTargetFeatureString()),
-                  *static_cast<const ARMBaseTargetMachine *>(TM.get()), false);
+                  *static_cast<const ARMBaseTargetMachine *>(TM.get()), false,
+                  TM->getTargetTriple().getDefaultFloatABI(),
+                  ARM::computeTargetABI(TM->getTargetTriple()));
   const ARMBaseInstrInfo *II = ST.getInstrInfo();
 
   auto cmpInstSize = [](const ARMBaseInstrInfo &II, MachineFunction &MF,
@@ -142,12 +145,12 @@ TEST(InstSizes, PseudoInst) {
   runChecks(TM.get(), II, "",
             "    Int_eh_sjlj_longjmp $r0, $r1, implicit-def $r7,"
             " implicit-def $lr, implicit-def $sp\n",
-            16u, cmpInstSize);
+            20u, cmpInstSize);
 
   runChecks(TM.get(), II, "",
             "    tInt_eh_sjlj_longjmp $r0, $r1, implicit-def $r7,"
             " implicit-def $lr, implicit-def $sp\n",
-            10u, cmpInstSize);
+            12u, cmpInstSize);
 
   runChecks(TM.get(), II, "",
             "    tInt_WIN_eh_sjlj_longjmp $r0, $r1, implicit-def $r11,"

@@ -1,6 +1,3 @@
-include(AddFileDependencies)
-include(CMakeParseArguments)
-
 function(llvm_replace_compiler_option var old new)
   # Replaces a compiler option or switch `old' in `var' by `new'.
   # If `old' is not in `var', appends `new' to `var'.
@@ -21,10 +18,19 @@ endfunction(llvm_replace_compiler_option)
 
 macro(add_td_sources srcs)
   file(GLOB tds *.td)
-  if( tds )
-    source_group("TableGen descriptions" FILES ${tds})
-    set_source_files_properties(${tds} PROPERTIES HEADER_FILE_ONLY ON)
-    list(APPEND ${srcs} ${tds})
+  # Explicit existence check is necessary to filter dangling symlinks out
+  # (e.g. editor lock files such as Emacs' `.#foo.td`), as also done in
+  # add_header_files_for_glob below.
+  set(existing_tds)
+  foreach(td ${tds})
+    if(EXISTS ${td})
+      list(APPEND existing_tds ${td})
+    endif()
+  endforeach()
+  if( existing_tds )
+    source_group("TableGen descriptions" FILES ${existing_tds})
+    set_source_files_properties(${existing_tds} PROPERTIES HEADER_FILE_ONLY ON)
+    list(APPEND ${srcs} ${existing_tds})
   endif()
 endmacro(add_td_sources)
 
@@ -59,9 +65,7 @@ endfunction(find_all_header_files)
 function(llvm_process_sources OUT_VAR)
   cmake_parse_arguments(ARG "PARTIAL_SOURCES_INTENDED" "" "ADDITIONAL_HEADERS;ADDITIONAL_HEADER_DIRS" ${ARGN})
   set(sources ${ARG_UNPARSED_ARGUMENTS})
-  if (NOT ARG_PARTIAL_SOURCES_INTENDED)
-    llvm_check_source_file_list(${sources})
-  endif()
+  llvm_check_source_file_list(${sources})
 
   # This adds .td and .h files to the Visual Studio solution:
   add_td_sources(sources)
@@ -90,6 +94,12 @@ function(llvm_check_source_file_list)
     file(GLOB globbed *.c *.cpp)
   endif()
 
+  set_property(DIRECTORY APPEND PROPERTY LLVM_SOURCE_FILES ${listed})
+  if (ARG_PARTIAL_SOURCES_INTENDED) # llvm_process_source's scope
+    return()
+  endif()
+  get_directory_property(listed LLVM_SOURCE_FILES)
+
   foreach(g ${globbed})
     get_filename_component(fn ${g} NAME)
     if(ARG_SOURCE_DIR)
@@ -109,7 +119,12 @@ function(llvm_check_source_file_list)
           else()
               set(fn_relative "${fn}")
           endif()
-          message(SEND_ERROR "Found unknown source file ${fn_relative}
+          message(SEND_ERROR "Found erroneous configuration for source file ${fn_relative}
+LLVM's build system enforces that all source files are added to a build target, \
+that exactly one build target exists in each directory, \
+and that this target lists all files in that directory. \
+If you want multiple targets in the same directory, add \
+PARTIAL_SOURCES_INTENDED to the target specification, though it is discouraged.
 Please update ${CMAKE_CURRENT_LIST_FILE}\n")
         endif()
       endif()

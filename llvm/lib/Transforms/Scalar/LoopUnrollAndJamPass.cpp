@@ -32,15 +32,10 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/InitializePasses.h"
-#include "llvm/Pass.h"
-#include "llvm/PassRegistry.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Scalar/LoopPassManager.h"
 #include "llvm/Transforms/Utils/LoopPeel.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
@@ -89,15 +84,6 @@ static cl::opt<unsigned> PragmaUnrollAndJamThreshold(
     cl::desc("Unrolled size limit for loops with an unroll_and_jam(full) or "
              "unroll_count pragma."));
 
-// Returns the loop hint metadata node with the given name (for example,
-// "llvm.loop.unroll.count").  If no such metadata node exists, then nullptr is
-// returned.
-static MDNode *getUnrollMetadataForLoop(const Loop *L, StringRef Name) {
-  if (MDNode *LoopID = L->getLoopID())
-    return GetUnrollMetadata(LoopID, Name);
-  return nullptr;
-}
-
 // Returns true if the loop has any metadata starting with Prefix. For example a
 // Prefix of "llvm.loop.unroll." returns true if we have any unroll metadata.
 static bool hasAnyUnrollPragma(const Loop *L, StringRef Prefix) {
@@ -115,7 +101,7 @@ static bool hasAnyUnrollPragma(const Loop *L, StringRef Prefix) {
       if (!S)
         continue;
 
-      if (S->getString().startswith(Prefix))
+      if (S->getString().starts_with(Prefix))
         return true;
     }
   }
@@ -142,67 +128,65 @@ static unsigned unrollAndJamCountPragmaValue(const Loop *L) {
   return 0;
 }
 
-// Returns loop size estimation for unrolled loop.
+// Returns loop size estimation for an unrolled-and-jammed loop with the given
+// unroll count.
 static uint64_t
 getUnrollAndJammedLoopSize(unsigned LoopSize,
-                           TargetTransformInfo::UnrollingPreferences &UP) {
+                           const TargetTransformInfo::UnrollingPreferences &UP,
+                           unsigned Count) {
   assert(LoopSize >= UP.BEInsns && "LoopSize should not be less than BEInsns!");
-  return static_cast<uint64_t>(LoopSize - UP.BEInsns) * UP.Count + UP.BEInsns;
+  return static_cast<uint64_t>(LoopSize - UP.BEInsns) * Count + UP.BEInsns;
 }
 
-// Calculates unroll and jam count and writes it to UP.Count. Returns true if
-// unroll count was set explicitly.
-static bool computeUnrollAndJamCount(
+// Calculates unroll and jam count.
+static unsigned computeUnrollAndJamCount(
     Loop *L, Loop *SubLoop, const TargetTransformInfo &TTI, DominatorTree &DT,
     LoopInfo *LI, AssumptionCache *AC, ScalarEvolution &SE,
     const SmallPtrSetImpl<const Value *> &EphValues,
     OptimizationRemarkEmitter *ORE, unsigned OuterTripCount,
-    unsigned OuterTripMultiple, unsigned OuterLoopSize, unsigned InnerTripCount,
-    unsigned InnerLoopSize, TargetTransformInfo::UnrollingPreferences &UP,
+    unsigned OuterTripMultiple, const UnrollCostEstimator &OuterUCE,
+    unsigned InnerTripCount, unsigned InnerLoopSize,
+    bool &IsExplicitUnrollAndJam, TargetTransformInfo::UnrollingPreferences &UP,
     TargetTransformInfo::PeelingPreferences &PP) {
-  // First up use computeUnrollCount from the loop unroller to get a count
-  // for unrolling the outer loop, plus any loops requiring explicit
-  // unrolling we leave to the unroller. This uses UP.Threshold /
-  // UP.PartialThreshold / UP.MaxCount to come up with sensible loop values.
-  // We have already checked that the loop has no unroll.* pragmas.
-  unsigned MaxTripCount = 0;
-  bool UseUpperBound = false;
-  bool ExplicitUnroll = computeUnrollCount(
-    L, TTI, DT, LI, AC, SE, EphValues, ORE, OuterTripCount, MaxTripCount,
-      /*MaxOrZero*/ false, OuterTripMultiple, OuterLoopSize, UP, PP,
-      UseUpperBound);
-  if (ExplicitUnroll || UseUpperBound) {
-    // If the user explicitly set the loop as unrolled, dont UnJ it. Leave it
-    // for the unroller instead.
-    LLVM_DEBUG(dbgs() << "Won't unroll-and-jam; explicit count set by "
-                         "computeUnrollCount\n");
-    UP.Count = 0;
-    return false;
-  }
+  unsigned OuterLoopSize = OuterUCE.getRolledLoopSize();
+  IsExplicitUnrollAndJam = false;
 
-  // Override with any explicit Count from the "unroll-and-jam-count" option.
+  // Use computeUnrollCount from the loop unroller to get a count for
+  // unrolling the outer loop. This uses UP.Threshold / UP.PartialThreshold /
+  // UP.MaxCount to come up with sensible loop values.
+  // We have already checked that the loop has no unroll.* pragmas.
+  unsigned Count =
+      computeUnrollCount(L, TTI, DT, LI, AC, SE, EphValues, ORE, OuterTripCount,
+                         /*MaxTripCount*/ 0, /*MaxOrZero*/ false,
+                         OuterTripMultiple, OuterUCE, UP, PP);
+
+  // Override with any explicit count from the "unroll-and-jam-count" option.
   bool UserUnrollCount = UnrollAndJamCount.getNumOccurrences() > 0;
   if (UserUnrollCount) {
-    UP.Count = UnrollAndJamCount;
+    Count = UnrollAndJamCount;
     UP.Force = true;
     if (UP.AllowRemainder &&
-        getUnrollAndJammedLoopSize(OuterLoopSize, UP) < UP.Threshold &&
-        getUnrollAndJammedLoopSize(InnerLoopSize, UP) <
-            UP.UnrollAndJamInnerLoopThreshold)
-      return true;
+        getUnrollAndJammedLoopSize(OuterLoopSize, UP, Count) < UP.Threshold &&
+        getUnrollAndJammedLoopSize(InnerLoopSize, UP, Count) <
+            UP.UnrollAndJamInnerLoopThreshold) {
+      IsExplicitUnrollAndJam = true;
+      return Count;
+    }
   }
 
   // Check for unroll_and_jam pragmas
   unsigned PragmaCount = unrollAndJamCountPragmaValue(L);
   if (PragmaCount > 0) {
-    UP.Count = PragmaCount;
+    Count = PragmaCount;
     UP.Runtime = true;
     UP.Force = true;
     if ((UP.AllowRemainder || (OuterTripMultiple % PragmaCount == 0)) &&
-        getUnrollAndJammedLoopSize(OuterLoopSize, UP) < UP.Threshold &&
-        getUnrollAndJammedLoopSize(InnerLoopSize, UP) <
-            UP.UnrollAndJamInnerLoopThreshold)
-      return true;
+        getUnrollAndJammedLoopSize(OuterLoopSize, UP, Count) < UP.Threshold &&
+        getUnrollAndJammedLoopSize(InnerLoopSize, UP, Count) <
+            UP.UnrollAndJamInnerLoopThreshold) {
+      IsExplicitUnrollAndJam = true;
+      return Count;
+    }
   }
 
   bool PragmaEnableUnroll = hasUnrollAndJamEnablePragma(L);
@@ -214,35 +198,36 @@ static bool computeUnrollAndJamCount(
   if (ExplicitUnrollAndJam)
     UP.UnrollAndJamInnerLoopThreshold = PragmaUnrollAndJamThreshold;
 
-  if (!UP.AllowRemainder && getUnrollAndJammedLoopSize(InnerLoopSize, UP) >=
-                                UP.UnrollAndJamInnerLoopThreshold) {
+  if (!UP.AllowRemainder &&
+      getUnrollAndJammedLoopSize(InnerLoopSize, UP, Count) >=
+          UP.UnrollAndJamInnerLoopThreshold) {
     LLVM_DEBUG(dbgs() << "Won't unroll-and-jam; can't create remainder and "
                          "inner loop too large\n");
-    UP.Count = 0;
-    return false;
+    return 0;
   }
 
   // We have a sensible limit for the outer loop, now adjust it for the inner
   // loop and UP.UnrollAndJamInnerLoopThreshold. If the outer limit was set
   // explicitly, we want to stick to it.
   if (!ExplicitUnrollAndJamCount && UP.AllowRemainder) {
-    while (UP.Count != 0 && getUnrollAndJammedLoopSize(InnerLoopSize, UP) >=
-                                UP.UnrollAndJamInnerLoopThreshold)
-      UP.Count--;
+    while (Count != 0 && getUnrollAndJammedLoopSize(InnerLoopSize, UP, Count) >=
+                             UP.UnrollAndJamInnerLoopThreshold)
+      Count--;
   }
 
   // If we are explicitly unroll and jamming, we are done. Otherwise there are a
   // number of extra performance heuristics to check.
-  if (ExplicitUnrollAndJam)
-    return true;
+  if (ExplicitUnrollAndJam) {
+    IsExplicitUnrollAndJam = true;
+    return Count;
+  }
 
   // If the inner loop count is known and small, leave the entire loop nest to
   // be the unroller
   if (InnerTripCount && InnerLoopSize * InnerTripCount < UP.Threshold) {
     LLVM_DEBUG(dbgs() << "Won't unroll-and-jam; small inner loop count is "
                          "being left for the unroller\n");
-    UP.Count = 0;
-    return false;
+    return 0;
   }
 
   // Check for situations where UnJ is likely to be unprofitable. Including
@@ -250,8 +235,7 @@ static bool computeUnrollAndJamCount(
   if (SubLoop->getBlocks().size() != 1) {
     LLVM_DEBUG(
         dbgs() << "Won't unroll-and-jam; More than one inner loop block\n");
-    UP.Count = 0;
-    return false;
+    return 0;
   }
 
   // Limit to loops where there is something to gain from unrolling and
@@ -270,11 +254,10 @@ static bool computeUnrollAndJamCount(
   }
   if (NumInvariant == 0) {
     LLVM_DEBUG(dbgs() << "Won't unroll-and-jam; No loop invariant loads\n");
-    UP.Count = 0;
-    return false;
+    return 0;
   }
 
-  return false;
+  return Count;
 }
 
 static LoopUnrollResult
@@ -284,7 +267,7 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
                       OptimizationRemarkEmitter &ORE, int OptLevel) {
   TargetTransformInfo::UnrollingPreferences UP = gatherUnrollingPreferences(
       L, SE, TTI, nullptr, nullptr, ORE, OptLevel, std::nullopt, std::nullopt,
-      std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+      std::nullopt, std::nullopt, std::nullopt);
   TargetTransformInfo::PeelingPreferences PP =
       gatherPeelingPreferences(L, SE, TTI, std::nullopt, std::nullopt);
 
@@ -322,39 +305,30 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
   }
 
   // Approximate the loop size and collect useful info
-  unsigned NumInlineCandidates;
-  bool NotDuplicatable;
-  bool Convergent;
   SmallPtrSet<const Value *, 32> EphValues;
   CodeMetrics::collectEphemeralValues(L, &AC, EphValues);
   Loop *SubLoop = L->getSubLoops()[0];
-  InstructionCost InnerLoopSizeIC =
-      ApproximateLoopSize(SubLoop, NumInlineCandidates, NotDuplicatable,
-                          Convergent, TTI, EphValues, UP.BEInsns);
-  InstructionCost OuterLoopSizeIC =
-      ApproximateLoopSize(L, NumInlineCandidates, NotDuplicatable, Convergent,
-                          TTI, EphValues, UP.BEInsns);
-  LLVM_DEBUG(dbgs() << "  Outer Loop Size: " << OuterLoopSizeIC << "\n");
-  LLVM_DEBUG(dbgs() << "  Inner Loop Size: " << InnerLoopSizeIC << "\n");
+  UnrollCostEstimator InnerUCE(SubLoop, TTI, EphValues, UP.BEInsns);
+  UnrollCostEstimator OuterUCE(L, TTI, EphValues, UP.BEInsns);
 
-  if (!InnerLoopSizeIC.isValid() || !OuterLoopSizeIC.isValid()) {
-    LLVM_DEBUG(dbgs() << "  Not unrolling loop which contains instructions"
-                      << " with invalid cost.\n");
+  if (!InnerUCE.canUnroll() || !OuterUCE.canUnroll()) {
+    LLVM_DEBUG(dbgs() << "  Loop not considered unrollable\n");
     return LoopUnrollResult::Unmodified;
   }
-  unsigned InnerLoopSize = *InnerLoopSizeIC.getValue();
-  unsigned OuterLoopSize = *OuterLoopSizeIC.getValue();
 
-  if (NotDuplicatable) {
-    LLVM_DEBUG(dbgs() << "  Not unrolling loop which contains non-duplicatable "
-                         "instructions.\n");
-    return LoopUnrollResult::Unmodified;
-  }
-  if (NumInlineCandidates != 0) {
+  unsigned InnerLoopSize = InnerUCE.getRolledLoopSize();
+  LLVM_DEBUG(dbgs() << "  Outer Loop Size: " << OuterUCE.getRolledLoopSize()
+                    << "\n");
+  LLVM_DEBUG(dbgs() << "  Inner Loop Size: " << InnerLoopSize << "\n");
+
+  if (InnerUCE.NumInlineCandidates != 0 || OuterUCE.NumInlineCandidates != 0) {
     LLVM_DEBUG(dbgs() << "  Not unrolling loop with inlinable calls.\n");
     return LoopUnrollResult::Unmodified;
   }
-  if (Convergent) {
+  // FIXME: The call to canUnroll() allows some controlled convergent
+  // operations, but we block them here for future changes.
+  if (InnerUCE.Convergence != ConvergenceKind::None ||
+      OuterUCE.Convergence != ConvergenceKind::None) {
     LLVM_DEBUG(
         dbgs() << "  Not unrolling loop with convergent instructions.\n");
     return LoopUnrollResult::Unmodified;
@@ -381,19 +355,21 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
   unsigned InnerTripCount = SE.getSmallConstantTripCount(SubLoop, SubLoopLatch);
 
   // Decide if, and by how much, to unroll
-  bool IsCountSetExplicitly = computeUnrollAndJamCount(
-    L, SubLoop, TTI, DT, LI, &AC, SE, EphValues, &ORE, OuterTripCount,
-      OuterTripMultiple, OuterLoopSize, InnerTripCount, InnerLoopSize, UP, PP);
-  if (UP.Count <= 1)
+  bool IsExplicitUnrollAndJam = false;
+  unsigned Count = computeUnrollAndJamCount(
+      L, SubLoop, TTI, DT, LI, &AC, SE, EphValues, &ORE, OuterTripCount,
+      OuterTripMultiple, OuterUCE, InnerTripCount, InnerLoopSize,
+      IsExplicitUnrollAndJam, UP, PP);
+  if (Count <= 1)
     return LoopUnrollResult::Unmodified;
   // Unroll factor (Count) must be less or equal to TripCount.
-  if (OuterTripCount && UP.Count > OuterTripCount)
-    UP.Count = OuterTripCount;
+  if (OuterTripCount && Count > OuterTripCount)
+    Count = OuterTripCount;
 
   Loop *EpilogueOuterLoop = nullptr;
   LoopUnrollResult UnrollResult = UnrollAndJamLoop(
-      L, UP.Count, OuterTripCount, OuterTripMultiple, UP.UnrollRemainder, LI,
-      &SE, &DT, &AC, &TTI, &ORE, &EpilogueOuterLoop);
+      L, Count, OuterTripCount, OuterTripMultiple, UP.UnrollRemainder, LI, &SE,
+      &DT, &AC, &TTI, &ORE, &EpilogueOuterLoop);
 
   // Assign new loop attributes.
   if (EpilogueOuterLoop) {
@@ -424,9 +400,9 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
     }
   }
 
-  // If loop has an unroll count pragma or unrolled by explicitly set count
-  // mark loop as unrolled to prevent unrolling beyond that requested.
-  if (UnrollResult != LoopUnrollResult::FullyUnrolled && IsCountSetExplicitly)
+  // If unroll-and-jam was explicitly requested, mark the loop as already
+  // unrolled to prevent unrolling beyond that request.
+  if (UnrollResult != LoopUnrollResult::FullyUnrolled && IsExplicitUnrollAndJam)
     L->setLoopAlreadyUnrolled();
 
   return UnrollResult;
@@ -437,7 +413,7 @@ static bool tryToUnrollAndJamLoop(LoopNest &LN, DominatorTree &DT, LoopInfo &LI,
                                   const TargetTransformInfo &TTI,
                                   AssumptionCache &AC, DependenceInfo &DI,
                                   OptimizationRemarkEmitter &ORE, int OptLevel,
-                                  LPMUpdater &U) {
+                                  LPMUpdater &U, bool &AnyLoopRemoved) {
   bool DidSomething = false;
   ArrayRef<Loop *> Loops = LN.getLoops();
   Loop *OutmostLoop = &LN.getOutermostLoop();
@@ -453,81 +429,14 @@ static bool tryToUnrollAndJamLoop(LoopNest &LN, DominatorTree &DT, LoopInfo &LI,
         tryToUnrollAndJamLoop(L, DT, &LI, SE, TTI, AC, DI, ORE, OptLevel);
     if (Result != LoopUnrollResult::Unmodified)
       DidSomething = true;
-    if (L == OutmostLoop && Result == LoopUnrollResult::FullyUnrolled)
-      U.markLoopAsDeleted(*L, LoopName);
+    if (Result == LoopUnrollResult::FullyUnrolled) {
+      if (L == OutmostLoop)
+        U.markLoopAsDeleted(*L, LoopName);
+      AnyLoopRemoved = true;
+    }
   }
 
   return DidSomething;
-}
-
-namespace {
-
-class LoopUnrollAndJam : public LoopPass {
-public:
-  static char ID; // Pass ID, replacement for typeid
-  unsigned OptLevel;
-
-  LoopUnrollAndJam(int OptLevel = 2) : LoopPass(ID), OptLevel(OptLevel) {
-    initializeLoopUnrollAndJamPass(*PassRegistry::getPassRegistry());
-  }
-
-  bool runOnLoop(Loop *L, LPPassManager &LPM) override {
-    if (skipLoop(L))
-      return false;
-
-    auto *F = L->getHeader()->getParent();
-    auto &SE = getAnalysis<ScalarEvolutionWrapperPass>().getSE();
-    auto *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-    auto &DI = getAnalysis<DependenceAnalysisWrapperPass>().getDI();
-    auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-    auto &TTI = getAnalysis<TargetTransformInfoWrapperPass>().getTTI(*F);
-    auto &ORE = getAnalysis<OptimizationRemarkEmitterWrapperPass>().getORE();
-    auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(*F);
-
-    LoopUnrollResult Result =
-        tryToUnrollAndJamLoop(L, DT, LI, SE, TTI, AC, DI, ORE, OptLevel);
-
-    if (Result == LoopUnrollResult::FullyUnrolled)
-      LPM.markLoopAsDeleted(*L);
-
-    return Result != LoopUnrollResult::Unmodified;
-  }
-
-  /// This transformation requires natural loop information & requires that
-  /// loop preheaders be inserted into the CFG...
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<DominatorTreeWrapperPass>();
-    AU.addRequired<LoopInfoWrapperPass>();
-    AU.addRequired<ScalarEvolutionWrapperPass>();
-    AU.addRequired<TargetTransformInfoWrapperPass>();
-    AU.addRequired<AssumptionCacheTracker>();
-    AU.addRequired<DependenceAnalysisWrapperPass>();
-    AU.addRequired<OptimizationRemarkEmitterWrapperPass>();
-    getLoopAnalysisUsage(AU);
-  }
-};
-
-} // end anonymous namespace
-
-char LoopUnrollAndJam::ID = 0;
-
-INITIALIZE_PASS_BEGIN(LoopUnrollAndJam, "loop-unroll-and-jam",
-                      "Unroll and Jam loops", false, false)
-INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LoopPass)
-INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(LoopSimplify)
-INITIALIZE_PASS_DEPENDENCY(LCSSAWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker)
-INITIALIZE_PASS_DEPENDENCY(DependenceAnalysisWrapperPass)
-INITIALIZE_PASS_DEPENDENCY(OptimizationRemarkEmitterWrapperPass)
-INITIALIZE_PASS_END(LoopUnrollAndJam, "loop-unroll-and-jam",
-                    "Unroll and Jam loops", false, false)
-
-Pass *llvm::createLoopUnrollAndJamPass(int OptLevel) {
-  return new LoopUnrollAndJam(OptLevel);
 }
 
 PreservedAnalyses LoopUnrollAndJamPass::run(LoopNest &LN,
@@ -539,11 +448,13 @@ PreservedAnalyses LoopUnrollAndJamPass::run(LoopNest &LN,
   DependenceInfo DI(&F, &AR.AA, &AR.SE, &AR.LI);
   OptimizationRemarkEmitter ORE(&F);
 
+  bool AnyLoopRemoved = false;
   if (!tryToUnrollAndJamLoop(LN, AR.DT, AR.LI, AR.SE, AR.TTI, AR.AC, DI, ORE,
-                             OptLevel, U))
+                             OptLevel, U, AnyLoopRemoved))
     return PreservedAnalyses::all();
 
   auto PA = getLoopPassPreservedAnalyses();
-  PA.preserve<LoopNestAnalysis>();
+  if (!AnyLoopRemoved)
+    PA.preserve<LoopNestAnalysis>();
   return PA;
 }

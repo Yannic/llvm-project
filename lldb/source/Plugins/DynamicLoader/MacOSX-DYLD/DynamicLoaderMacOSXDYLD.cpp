@@ -40,7 +40,7 @@
 #endif
 
 #ifndef __APPLE__
-#include "Utility/UuidCompatibility.h"
+#include "lldb/Utility/AppleUuidCompatibility.h"
 #else
 #include <uuid/uuid.h>
 #endif
@@ -75,7 +75,9 @@ DynamicLoader *DynamicLoaderMacOSXDYLD::CreateInstance(Process *process,
       case llvm::Triple::IOS:
       case llvm::Triple::TvOS:
       case llvm::Triple::WatchOS:
-      // NEED_BRIDGEOS_TRIPLE case llvm::Triple::BridgeOS:
+      case llvm::Triple::BridgeOS:
+      case llvm::Triple::DriverKit:
+      case llvm::Triple::XROS:
         create = triple_ref.getVendor() == llvm::Triple::Apple;
         break;
       default:
@@ -258,10 +260,13 @@ bool DynamicLoaderMacOSXDYLD::ReadDYLDInfoFromMemoryAndSetNotificationCallback(
       ModuleSP dyld_module_sp;
       if (ParseLoadCommands(data, m_dyld, &m_dyld.file_spec)) {
         if (m_dyld.file_spec) {
-          UpdateDYLDImageInfoFromNewImageInfo(m_dyld);
+          if (!UpdateDYLDImageInfoFromNewImageInfo(m_dyld))
+            return false;
         }
       }
       dyld_module_sp = GetDYLDModule();
+      if (!dyld_module_sp)
+        return false;
 
       Target &target = m_process->GetTarget();
 
@@ -278,9 +283,9 @@ bool DynamicLoaderMacOSXDYLD::ReadDYLDInfoFromMemoryAndSetNotificationCallback(
       }
 
       if (m_dyld_all_image_infos_addr == LLDB_INVALID_ADDRESS) {
-        ConstString g_sect_name("__all_image_info");
         SectionSP dyld_aii_section_sp =
-            dyld_module_sp->GetSectionList()->FindSectionByName(g_sect_name);
+            dyld_module_sp->GetSectionList()->FindSectionByName(
+                "__all_image_info");
         if (dyld_aii_section_sp) {
           Address dyld_aii_addr(dyld_aii_section_sp, 0);
           m_dyld_all_image_infos_addr = dyld_aii_addr.GetLoadAddress(&target);
@@ -292,8 +297,8 @@ bool DynamicLoaderMacOSXDYLD::ReadDYLDInfoFromMemoryAndSetNotificationCallback(
 
       // If we didn't have an executable before, but now we do, then the dyld
       // module shared pointer might be unique and we may need to add it again
-      // (since Target::SetExecutableModule() will clear the images). So append
-      // the dyld module back to the list if it is
+      // (since Target::RebuildModuleListWithExecutable() will clear the
+      // images). So append the dyld module back to the list if it is
       /// unique!
       if (dyld_module_sp) {
         target.GetImages().AppendIfNeeded(dyld_module_sp);
@@ -568,8 +573,9 @@ bool DynamicLoaderMacOSXDYLD::AddModulesUsingImageInfosAddress(
               ->GetSize() == image_infos_count) {
     bool return_value = false;
     if (JSONImageInformationIntoImageInfo(image_infos_json_sp, image_infos)) {
-      UpdateSpecialBinariesFromNewImageInfos(image_infos);
-      return_value = AddModulesUsingImageInfos(image_infos);
+      auto images = PreloadModulesFromImageInfos(image_infos);
+      UpdateSpecialBinariesFromPreloadedModules(images);
+      return_value = AddModulesUsingPreloadedModules(images);
     }
     m_dyld_image_infos_stop_id = m_process->GetStopID();
     return return_value;
@@ -693,7 +699,7 @@ bool DynamicLoaderMacOSXDYLD::ReadImageInfos(
          i++) {
       image_infos[i].address = info_data_ref.GetAddress(&info_data_offset);
       lldb::addr_t path_addr = info_data_ref.GetAddress(&info_data_offset);
-      image_infos[i].mod_date = info_data_ref.GetAddress(&info_data_offset);
+      info_data_ref.GetAddress(&info_data_offset); // mod_date, unused */
 
       char raw_path[PATH_MAX];
       m_process->ReadCStringFromMemory(path_addr, raw_path, sizeof(raw_path),
@@ -861,8 +867,9 @@ uint32_t DynamicLoaderMacOSXDYLD::ParseLoadCommands(const DataExtractor &data,
       load_cmd.cmdsize = data.GetU32(&offset);
       switch (load_cmd.cmd) {
       case llvm::MachO::LC_SEGMENT: {
-        segment.name.SetTrimmedCStringWithLength(
-            (const char *)data.GetData(&offset, 16), 16);
+        data.CopyData(offset, 16, segment.name);
+        segment.name[16] = '\0';
+        offset += 16;
         // We are putting 4 uint32_t values 4 uint64_t values so we have to use
         // multiple 32 bit gets below.
         segment.vmaddr = data.GetU32(&offset);
@@ -875,8 +882,9 @@ uint32_t DynamicLoaderMacOSXDYLD::ParseLoadCommands(const DataExtractor &data,
       } break;
 
       case llvm::MachO::LC_SEGMENT_64: {
-        segment.name.SetTrimmedCStringWithLength(
-            (const char *)data.GetData(&offset, 16), 16);
+        data.CopyData(offset, 16, segment.name);
+        segment.name[16] = '\0';
+        offset += 16;
         // Extract vmaddr, vmsize, fileoff, and filesize all at once
         data.GetU64(&offset, &segment.vmaddr, 4);
         // Extract maxprot, initprot, nsects and flags all at once
@@ -888,8 +896,8 @@ uint32_t DynamicLoaderMacOSXDYLD::ParseLoadCommands(const DataExtractor &data,
         if (lc_id_dylinker) {
           const lldb::offset_t name_offset =
               load_cmd_offset + data.GetU32(&offset);
-          const char *path = data.PeekCStr(name_offset);
-          lc_id_dylinker->SetFile(path, FileSpec::Style::native);
+          if (std::optional<llvm::StringRef> path = data.PeekCStr(name_offset))
+            lc_id_dylinker->SetFile(*path, FileSpec::Style::native);
           FileSystem::Instance().Resolve(*lc_id_dylinker);
         }
         break;
@@ -918,7 +926,7 @@ uint32_t DynamicLoaderMacOSXDYLD::ParseLoadCommands(const DataExtractor &data,
     // starts of file offset zero and that has bytes in the file...
     if ((dylib_info.segments[i].fileoff == 0 &&
          dylib_info.segments[i].filesize > 0) ||
-        (dylib_info.segments[i].name == "__TEXT")) {
+        (llvm::StringRef(dylib_info.segments[i].name) == "__TEXT")) {
       dylib_info.slide = dylib_info.address - dylib_info.segments[i].vmaddr;
       // We have found the slide amount, so we can exit this for loop.
       break;
@@ -970,8 +978,8 @@ void DynamicLoaderMacOSXDYLD::UpdateImageInfosHeaderAndLoadCommands(
         // re-add it back to make sure it is always in the list.
         ModuleSP dyld_module_sp(GetDYLDModule());
 
-        m_process->GetTarget().SetExecutableModule(exe_module_sp,
-                                                   eLoadDependentsNo);
+        m_process->GetTarget().RebuildModuleListWithExecutable(
+            exe_module_sp, eLoadDependentsNo);
 
         if (dyld_module_sp) {
           if (target.GetImages().AppendIfNeeded(dyld_module_sp)) {
@@ -1059,17 +1067,19 @@ Status DynamicLoaderMacOSXDYLD::CanLoadImage() {
       return error; // Success
   }
 
-  error.SetErrorString("unsafe to load or unload shared libraries");
+  error = Status::FromErrorString("unsafe to load or unload shared libraries");
   return error;
 }
 
 bool DynamicLoaderMacOSXDYLD::GetSharedCacheInformation(
     lldb::addr_t &base_address, UUID &uuid, LazyBool &using_shared_cache,
-    LazyBool &private_shared_cache) {
+    LazyBool &private_shared_cache, FileSpec &shared_cache_filepath,
+    std::optional<uint64_t> &size) {
   base_address = LLDB_INVALID_ADDRESS;
   uuid.Clear();
   using_shared_cache = eLazyBoolCalculate;
   private_shared_cache = eLazyBoolCalculate;
+  size.reset();
 
   if (m_process) {
     addr_t all_image_infos = m_process->GetImageInfoAddress();

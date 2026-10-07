@@ -58,6 +58,23 @@ entry:
   ret <2 x i64> %4
 }
 
+; concatenation test for swapped operands
+define <2 x i64> @test_mm_cvtne2ps2bf16_128_concat(<4 x float> %A, <4 x float> %B) {
+; CHECK-LABEL: test_mm_cvtne2ps2bf16_128_concat:
+; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    vcvtneps2bf16 %xmm0, %xmm0 # encoding: [0x62,0xf2,0x7e,0x08,0x72,0xc0]
+; CHECK-NEXT:    vcvtneps2bf16 %xmm1, %xmm1 # encoding: [0x62,0xf2,0x7e,0x08,0x72,0xc9]
+; CHECK-NEXT:    vmovlhps %xmm1, %xmm0, %xmm0 # EVEX TO VEX Compression encoding: [0xc5,0xf8,0x16,0xc1]
+; CHECK-NEXT:    # xmm0 = xmm0[0],xmm1[0]
+; CHECK-NEXT:    ret{{[l|q]}} # encoding: [0xc3]
+entry:
+  %0 = tail call <8 x bfloat> @llvm.x86.avx512bf16.mask.cvtneps2bf16.128(<4 x float> %A, <8 x bfloat> poison, <4 x i1> <i1 true, i1 true, i1 true, i1 true>)
+  %1 = tail call <8 x bfloat> @llvm.x86.avx512bf16.mask.cvtneps2bf16.128(<4 x float> %B, <8 x bfloat> poison, <4 x i1> <i1 true, i1 true, i1 true, i1 true>)
+  %2 = shufflevector <8 x bfloat> %0, <8 x bfloat> %1, <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 8, i32 9, i32 10, i32 11>
+  %3 = bitcast <8 x bfloat> %2 to <2 x i64>
+  ret <2 x i64> %3
+}
+
 declare <16 x bfloat> @llvm.x86.avx512bf16.cvtne2ps2bf16.256(<8 x float>, <8 x float>) #3
 
 define <4 x i64> @test_mm256_cvtne2ps2bf16_256(<8 x float> %A, <8 x float> %B) local_unnamed_addr #1 {
@@ -110,6 +127,20 @@ entry:
   %3 = select <16 x i1> %2, <16 x bfloat> %0, <16 x bfloat> %1
   %4 = bitcast <16 x bfloat> %3 to <4 x i64>
   ret <4 x i64> %4
+}
+
+; concatenation test for swapped operands
+define <4 x i64> @test_mm256_cvtne2ps2bf16_256_concat(<8 x float> %A, <8 x float> %B) {
+; CHECK-LABEL: test_mm256_cvtne2ps2bf16_256_concat:
+; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    vcvtne2ps2bf16 %ymm0, %ymm1, %ymm0 # encoding: [0x62,0xf2,0x77,0x28,0x72,0xc0]
+; CHECK-NEXT:    ret{{[l|q]}} # encoding: [0xc3]
+entry:
+  %0 = tail call <8 x bfloat> @llvm.x86.avx512bf16.cvtneps2bf16.256(<8 x float> %A)
+  %1 = tail call <8 x bfloat> @llvm.x86.avx512bf16.cvtneps2bf16.256(<8 x float> %B)
+  %2 = shufflevector <8 x bfloat> %0, <8 x bfloat> %1, <16 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7, i32 8, i32 9, i32 10, i32 11, i32 12, i32 13, i32 14, i32 15>
+  %3 = bitcast <16 x bfloat> %2 to <4 x i64>
+  ret <4 x i64> %3
 }
 
 declare <8 x bfloat> @llvm.x86.avx512bf16.cvtneps2bf16.256(<8 x float>) #3
@@ -355,4 +386,51 @@ entry:
   %1 = bitcast i4 %U to <4 x i1>
   %2 = select <4 x i1> %1, <4 x float> %0, <4 x float> %E
   ret <4 x float> %2
+}
+
+define <16 x i16> @test_no_vbroadcast1() {
+; CHECK-LABEL: test_no_vbroadcast1:
+; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    vcvtneps2bf16 %xmm0, %xmm0 # encoding: [0x62,0xf2,0x7e,0x08,0x72,0xc0]
+; CHECK-NEXT:    vpbroadcastw %xmm0, %ymm0 # EVEX TO VEX Compression encoding: [0xc4,0xe2,0x7d,0x79,0xc0]
+; CHECK-NEXT:    ret{{[l|q]}} # encoding: [0xc3]
+entry:
+  %0 = tail call <8 x bfloat> @llvm.x86.avx512bf16.mask.cvtneps2bf16.128(<4 x float> poison, <8 x bfloat> zeroinitializer, <4 x i1> <i1 true, i1 true, i1 true, i1 true>)
+  %1 = bitcast <8 x bfloat> %0 to <8 x i16>
+  %2 = shufflevector <8 x i16> %1, <8 x i16> undef, <16 x i32> zeroinitializer
+  ret <16 x i16> %2
+}
+
+define <16 x bfloat> @test_no_vbroadcast2() nounwind {
+; CHECK-LABEL: test_no_vbroadcast2:
+; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    vcvtneps2bf16 %xmm0, %xmm0 # encoding: [0x62,0xf2,0x7e,0x08,0x72,0xc0]
+; CHECK-NEXT:    vpbroadcastw %xmm0, %ymm0 # EVEX TO VEX Compression encoding: [0xc4,0xe2,0x7d,0x79,0xc0]
+; CHECK-NEXT:    ret{{[l|q]}} # encoding: [0xc3]
+entry:
+  %0 = tail call <8 x bfloat> @llvm.x86.avx512bf16.mask.cvtneps2bf16.128(<4 x float> poison, <8 x bfloat> zeroinitializer, <4 x i1> <i1 true, i1 true, i1 true, i1 true>)
+  %1 = shufflevector <8 x bfloat> %0, <8 x bfloat> undef, <16 x i32> zeroinitializer
+  ret <16 x bfloat> %1
+}
+
+define <16 x i32> @pr83358() {
+; X86-LABEL: pr83358:
+; X86:       # %bb.0:
+; X86-NEXT:    vcvtneps2bf16y {{\.?LCPI[0-9]+_[0-9]+}}, %xmm0 # encoding: [0x62,0xf2,0x7e,0x28,0x72,0x05,A,A,A,A]
+; X86-NEXT:    # fixup A - offset: 6, value: {{\.?LCPI[0-9]+_[0-9]+}}, kind: FK_Data_4
+; X86-NEXT:    vshufi64x2 $0, %zmm0, %zmm0, %zmm0 # encoding: [0x62,0xf3,0xfd,0x48,0x43,0xc0,0x00]
+; X86-NEXT:    # zmm0 = zmm0[0,1,0,1,0,1,0,1]
+; X86-NEXT:    retl # encoding: [0xc3]
+;
+; X64-LABEL: pr83358:
+; X64:       # %bb.0:
+; X64-NEXT:    vcvtneps2bf16y {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0 # encoding: [0x62,0xf2,0x7e,0x28,0x72,0x05,A,A,A,A]
+; X64-NEXT:    # fixup A - offset: 6, value: {{\.?LCPI[0-9]+_[0-9]+}}, kind: reloc_riprel_4byte
+; X64-NEXT:    vshufi64x2 $0, %zmm0, %zmm0, %zmm0 # encoding: [0x62,0xf3,0xfd,0x48,0x43,0xc0,0x00]
+; X64-NEXT:    # zmm0 = zmm0[0,1,0,1,0,1,0,1]
+; X64-NEXT:    retq # encoding: [0xc3]
+  %1 = call <8 x bfloat> @llvm.x86.avx512bf16.cvtneps2bf16.256(<8 x float> <float 1.000000e+00, float 2.000000e+00, float 3.000000e+00, float 4.000000e+00, float 5.000000e+00, float 6.000000e+00, float 7.000000e+00, float 8.000000e+00>)
+  %2 = bitcast <8 x bfloat> %1 to <4 x i32>
+  %3 = shufflevector <4 x i32> %2, <4 x i32> undef, <16 x i32> <i32 0, i32 1, i32 2, i32 3, i32 0, i32 1, i32 2, i32 3, i32 0, i32 1, i32 2, i32 3, i32 0, i32 1, i32 2, i32 3>
+  ret <16 x i32> %3
 }

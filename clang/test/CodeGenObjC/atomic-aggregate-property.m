@@ -1,7 +1,5 @@
 // RUN: %clang_cc1 -no-enable-noundef-analysis -triple x86_64-apple-darwin10  -fobjc-gc -emit-llvm -o - %s | FileCheck -check-prefix CHECK-LP64 %s
 // RUN: %clang_cc1 -no-enable-noundef-analysis -x objective-c++ -triple x86_64-apple-darwin10  -fobjc-gc -emit-llvm -o - %s | FileCheck -check-prefix CHECK-LP64 %s
-// rdar: // 7849824
-// <rdar://problem/12547611>
 
 struct s {
   double a, b, c, d;  
@@ -47,7 +45,9 @@ struct s2 {};
 // CHECK-LP64: call ptr @objc_memmove_collectable(
 
 // CHECK-LP64: define internal void @"\01-[A a]"(
-// (do nothing)
+// CHECK-LP64-NOT: objc_copyStruct
+// CHECK-LP64: ret void
 
 // CHECK-LP64: define internal void @"\01-[A setA:]"(
-// (do nothing)
+// CHECK-LP64-NOT: objc_copyStruct
+// CHECK-LP64: ret void

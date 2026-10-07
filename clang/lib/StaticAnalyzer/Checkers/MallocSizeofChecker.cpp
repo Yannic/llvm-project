@@ -12,14 +12,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/AST/TypeLoc.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
@@ -150,12 +149,39 @@ static bool typesCompatible(ASTContext &C, QualType A, QualType B) {
     if (A.getTypePtr() == B.getTypePtr())
       return true;
 
-    if (const PointerType *ptrA = A->getAs<PointerType>())
-      if (const PointerType *ptrB = B->getAs<PointerType>()) {
-        A = ptrA->getPointeeType();
-        B = ptrB->getPointeeType();
-        continue;
+    const PointerType *ptrA = A->getAs<PointerType>();
+    const PointerType *ptrB = B->getAs<PointerType>();
+
+    // When neither type is a pointer and exactly one is a record type, check
+    // target-specific size and alignment. This avoids false positives for
+    // types that wrap another type with the same layout (e.g.
+    // std::atomic<int32_t> vs int32_t, or struct{int32_t x;} vs int32_t),
+    // while preserving warnings for unrelated types that happen to share a
+    // size (e.g. long vs double, struct A vs struct B).
+    if (!ptrA && !ptrB && (A->isRecordType() != B->isRecordType()) &&
+        !A->isIncompleteType() && !B->isIncompleteType()) {
+      const RecordType *RecTy = A->getAs<RecordType>();
+      QualType Scalar = B;
+      if (!RecTy) {
+        RecTy = B->getAs<RecordType>();
+        Scalar = A;
       }
+      if (const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(RecTy->getDecl())) {
+        if (RD->isStandardLayout()) {
+          const CXXRecordDecl *Base = RD->getStandardLayoutBaseWithFields();
+          auto F = Base->field_begin();
+          if (F != Base->field_end() && std::next(F) == Base->field_end() &&
+              C.getCanonicalType((*F)->getType()) == Scalar)
+            return true;
+        }
+      }
+    }
+
+    if (ptrA && ptrB) {
+      A = ptrA->getPointeeType();
+      B = ptrB->getPointeeType();
+      continue;
+    }
 
     break;
   }
@@ -182,22 +208,20 @@ public:
     AnalysisDeclContext *ADC = mgr.getAnalysisDeclContext(D);
     CastedAllocFinder Finder(&BR.getContext());
     Finder.Visit(D->getBody());
-    for (CastedAllocFinder::CallVec::iterator i = Finder.Calls.begin(),
-         e = Finder.Calls.end(); i != e; ++i) {
-      QualType CastedType = i->CastedExpr->getType();
+    for (const auto &CallRec : Finder.Calls) {
+      QualType CastedType = CallRec.CastedExpr->getType();
       if (!CastedType->isPointerType())
         continue;
       QualType PointeeType = CastedType->getPointeeType();
       if (PointeeType->isVoidType())
         continue;
 
-      for (CallExpr::const_arg_iterator ai = i->AllocCall->arg_begin(),
-           ae = i->AllocCall->arg_end(); ai != ae; ++ai) {
-        if (!(*ai)->getType()->isIntegralOrUnscopedEnumerationType())
+      for (const Expr *Arg : CallRec.AllocCall->arguments()) {
+        if (!Arg->getType()->isIntegralOrUnscopedEnumerationType())
           continue;
 
         SizeofFinder SFinder;
-        SFinder.Visit(*ai);
+        SFinder.Visit(Arg);
         if (SFinder.Sizeofs.size() != 1)
           continue;
 
@@ -212,18 +236,18 @@ public:
           continue;
 
         const TypeSourceInfo *TSI = nullptr;
-        if (i->CastedExprParent.is<const VarDecl *>()) {
-          TSI =
-              i->CastedExprParent.get<const VarDecl *>()->getTypeSourceInfo();
+        if (const auto *VD =
+                dyn_cast<const VarDecl *>(CallRec.CastedExprParent)) {
+          TSI = VD->getTypeSourceInfo();
         } else {
-          TSI = i->ExplicitCastType;
+          TSI = CallRec.ExplicitCastType;
         }
 
         SmallString<64> buf;
         llvm::raw_svector_ostream OS(buf);
 
         OS << "Result of ";
-        const FunctionDecl *Callee = i->AllocCall->getDirectCallee();
+        const FunctionDecl *Callee = CallRec.AllocCall->getDirectCallee();
         if (Callee && Callee->getIdentifier())
           OS << '\'' << Callee->getIdentifier()->getName() << '\'';
         else
@@ -232,14 +256,13 @@ public:
            << "', which is incompatible with "
            << "sizeof operand type '" << SizeofType << "'";
         SmallVector<SourceRange, 4> Ranges;
-        Ranges.push_back(i->AllocCall->getCallee()->getSourceRange());
+        Ranges.push_back(CallRec.AllocCall->getCallee()->getSourceRange());
         Ranges.push_back(SFinder.Sizeofs[0]->getSourceRange());
         if (TSI)
           Ranges.push_back(TSI->getTypeLoc().getSourceRange());
 
-        PathDiagnosticLocation L =
-            PathDiagnosticLocation::createBegin(i->AllocCall->getCallee(),
-                BR.getSourceManager(), ADC);
+        PathDiagnosticLocation L = PathDiagnosticLocation::createBegin(
+            CallRec.AllocCall->getCallee(), BR.getSourceManager(), ADC);
 
         BR.EmitBasicReport(D, this, "Allocator sizeof operand mismatch",
                            categories::UnixAPI, OS.str(), L, Ranges);

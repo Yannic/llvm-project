@@ -7,11 +7,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Analysis/DataFlowFramework.h"
-#include "llvm/Support/Debug.h"
+#include "mlir/IR/Location.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/SymbolTable.h"
+#include "mlir/IR/Value.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/iterator.h"
+#include "llvm/Config/abi-breaking.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/DebugLog.h"
+#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "dataflow"
 #if LLVM_ENABLE_ABI_BREAKING_CHECKS
-#define DATAFLOW_DEBUG(X) LLVM_DEBUG(X)
+#define DATAFLOW_DEBUG(X) X
 #else
 #define DATAFLOW_DEBUG(X)
 #endif // LLVM_ENABLE_ABI_BREAKING_CHECKS
@@ -19,16 +28,30 @@
 using namespace mlir;
 
 //===----------------------------------------------------------------------===//
-// GenericProgramPoint
+// GenericLatticeAnchor
 //===----------------------------------------------------------------------===//
 
-GenericProgramPoint::~GenericProgramPoint() = default;
+GenericLatticeAnchor::~GenericLatticeAnchor() = default;
 
 //===----------------------------------------------------------------------===//
 // AnalysisState
 //===----------------------------------------------------------------------===//
 
 AnalysisState::~AnalysisState() = default;
+
+void AnalysisState::addDependency(ProgramPoint *dependent,
+                                  DataFlowAnalysis *analysis) {
+  auto inserted = dependents.insert({dependent, analysis});
+  (void)inserted;
+  DATAFLOW_DEBUG({
+    if (inserted) {
+      LDBG() << "Creating dependency between " << debugName << " of " << anchor
+             << "\nand " << debugName << " on " << *dependent;
+    }
+  });
+}
+
+void AnalysisState::dump() const { print(llvm::errs()); }
 
 //===----------------------------------------------------------------------===//
 // ProgramPoint
@@ -39,82 +62,111 @@ void ProgramPoint::print(raw_ostream &os) const {
     os << "<NULL POINT>";
     return;
   }
-  if (auto *programPoint = dyn_cast<GenericProgramPoint *>())
-    return programPoint->print(os);
-  if (auto *op = dyn_cast<Operation *>())
-    return op->print(os);
-  if (auto value = dyn_cast<Value>())
-    return value.print(os);
-  return get<Block *>()->print(os);
+  if (!isBlockStart()) {
+    os << "<after operation>:"
+       << OpWithFlags(getPrevOp(), OpPrintingFlags().skipRegions());
+    return;
+  }
+  if (!isBlockEnd()) {
+    os << "<before operation>:"
+       << OpWithFlags(getNextOp(), OpPrintingFlags().skipRegions());
+    return;
+  }
+  os << "<beginning of empty block>";
 }
 
-Location ProgramPoint::getLoc() const {
-  if (auto *programPoint = dyn_cast<GenericProgramPoint *>())
-    return programPoint->getLoc();
-  if (auto *op = dyn_cast<Operation *>())
-    return op->getLoc();
-  if (auto value = dyn_cast<Value>())
+//===----------------------------------------------------------------------===//
+// LatticeAnchor
+//===----------------------------------------------------------------------===//
+
+void LatticeAnchor::print(raw_ostream &os) const {
+  if (isNull()) {
+    os << "<NULL POINT>";
+    return;
+  }
+  if (auto *latticeAnchor = llvm::dyn_cast<GenericLatticeAnchor *>(*this))
+    return latticeAnchor->print(os);
+  if (auto value = llvm::dyn_cast<Value>(*this)) {
+    return value.print(os, OpPrintingFlags().skipRegions());
+  }
+
+  return llvm::cast<ProgramPoint *>(*this)->print(os);
+}
+
+Location LatticeAnchor::getLoc() const {
+  if (auto *latticeAnchor = llvm::dyn_cast<GenericLatticeAnchor *>(*this))
+    return latticeAnchor->getLoc();
+  if (auto value = llvm::dyn_cast<Value>(*this))
     return value.getLoc();
-  return get<Block *>()->getParent()->getLoc();
+
+  ProgramPoint *pp = llvm::cast<ProgramPoint *>(*this);
+  if (!pp->isBlockStart())
+    return pp->getPrevOp()->getLoc();
+  return pp->getBlock()->getParent()->getLoc();
 }
 
 //===----------------------------------------------------------------------===//
 // DataFlowSolver
 //===----------------------------------------------------------------------===//
 
-LogicalResult DataFlowSolver::initializeAndRun(Operation *top) {
+LogicalResult DataFlowSolver::initializeAndRun(
+    Operation *top,
+    llvm::function_ref<bool(DataFlowAnalysis &)> analysisFilter) {
+  // Enable enqueue to the worklist.
+  isRunning = true;
+  llvm::scope_exit guard([&]() { isRunning = false; });
+
+  bool isInterprocedural = config.isInterprocedural();
+  llvm::scope_exit restoreInterprocedural(
+      [&]() { config.setInterprocedural(isInterprocedural); });
+  if (isInterprocedural && !top->hasTrait<OpTrait::SymbolTable>())
+    config.setInterprocedural(false);
+
+  auto shouldInitialize = [&](DataFlowAnalysis &analysis) {
+    return !analysisFilter || analysisFilter(analysis);
+  };
+
+  // Initialize equivalent lattice anchors.
+  for (DataFlowAnalysis &analysis : llvm::make_pointee_range(childAnalyses)) {
+    if (!shouldInitialize(analysis))
+      continue;
+    analysis.initializeEquivalentLatticeAnchor(top);
+  }
+
   // Initialize the analyses.
   for (DataFlowAnalysis &analysis : llvm::make_pointee_range(childAnalyses)) {
-    DATAFLOW_DEBUG(llvm::dbgs()
-                   << "Priming analysis: " << analysis.debugName << "\n");
+    if (!shouldInitialize(analysis))
+      continue;
+    DATAFLOW_DEBUG(LDBG() << "Priming analysis: " << analysis.debugName);
     if (failed(analysis.initialize(top)))
       return failure();
   }
 
   // Run the analysis until fixpoint.
-  do {
-    // Exhaust the worklist.
-    while (!worklist.empty()) {
-      auto [point, analysis] = worklist.front();
-      worklist.pop();
+  // Iterate until all states are in some initialized state and the worklist
+  // is exhausted.
+  while (!worklist.empty()) {
+    auto [point, analysis] = dequeue();
 
-      DATAFLOW_DEBUG(llvm::dbgs() << "Invoking '" << analysis->debugName
-                                  << "' on: " << point << "\n");
-      if (failed(analysis->visit(point)))
-        return failure();
-    }
-
-    // Iterate until all states are in some initialized state and the worklist
-    // is exhausted.
-  } while (!worklist.empty());
+    DATAFLOW_DEBUG(LDBG() << "Invoking '" << analysis->debugName
+                          << "' on: " << *point);
+    if (failed(analysis->visit(point)))
+      return failure();
+  }
 
   return success();
 }
 
 void DataFlowSolver::propagateIfChanged(AnalysisState *state,
                                         ChangeResult changed) {
+  assert(isRunning &&
+         "DataFlowSolver is not running, should not use propagateIfChanged");
   if (changed == ChangeResult::Change) {
-    DATAFLOW_DEBUG(llvm::dbgs() << "Propagating update to " << state->debugName
-                                << " of " << state->point << "\n"
-                                << "Value: " << *state << "\n");
-    for (const WorkItem &item : state->dependents)
-      enqueue(item);
+    DATAFLOW_DEBUG(LDBG() << "Propagating update to " << state->debugName
+                          << " of " << state->anchor << "\n"
+                          << "Value: " << *state);
     state->onUpdate(this);
   }
-}
-
-void DataFlowSolver::addDependency(AnalysisState *state,
-                                   DataFlowAnalysis *analysis,
-                                   ProgramPoint point) {
-  auto inserted = state->dependents.insert({point, analysis});
-  (void)inserted;
-  DATAFLOW_DEBUG({
-    if (inserted) {
-      llvm::dbgs() << "Creating dependency between " << state->debugName
-                   << " of " << state->point << "\nand " << analysis->debugName
-                   << " on " << point << "\n";
-    }
-  });
 }
 
 //===----------------------------------------------------------------------===//
@@ -125,8 +177,9 @@ DataFlowAnalysis::~DataFlowAnalysis() = default;
 
 DataFlowAnalysis::DataFlowAnalysis(DataFlowSolver &solver) : solver(solver) {}
 
-void DataFlowAnalysis::addDependency(AnalysisState *state, ProgramPoint point) {
-  solver.addDependency(state, this, point);
+void DataFlowAnalysis::addDependency(AnalysisState *state,
+                                     ProgramPoint *point) {
+  state->addDependency(point, this);
 }
 
 void DataFlowAnalysis::propagateIfChanged(AnalysisState *state,

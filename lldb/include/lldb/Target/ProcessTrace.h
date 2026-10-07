@@ -27,7 +27,8 @@ public:
 
   static llvm::StringRef GetPluginDescriptionStatic();
 
-  ProcessTrace(lldb::TargetSP target_sp, lldb::ListenerSP listener_sp);
+  ProcessTrace(lldb::TargetSP target_sp, lldb::ListenerSP listener_sp,
+               const FileSpec &core_file);
 
   ~ProcessTrace() override;
 
@@ -47,18 +48,16 @@ public:
   void RefreshStateAfterStop() override;
 
   Status WillResume() override {
-    Status error;
-    error.SetErrorStringWithFormatv(
+    return Status::FromErrorStringWithFormatv(
         "error: {0} does not support resuming processes", GetPluginName());
-    return error;
   }
 
   bool WarnBeforeDetach() const override { return false; }
 
-  size_t ReadMemory(lldb::addr_t addr, void *buf, size_t size,
+  size_t ReadMemory(const ProcessAddress &addr, void *buf, size_t size,
                     Status &error) override;
 
-  size_t DoReadMemory(lldb::addr_t addr, void *buf, size_t size,
+  size_t DoReadMemory(const ProcessAddress &addr, void *buf, size_t size,
                       Status &error) override;
 
   ArchSpec GetArchitecture();

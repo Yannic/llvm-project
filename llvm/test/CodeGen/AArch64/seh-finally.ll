@@ -38,11 +38,11 @@ entry:
 ; CHECK: add     x29, sp, #16
 ; CHECK: mov     x0, #-2
 ; CHECK: stur    x0, [x29, #16]
-; CHECK: .set .Lsimple_seh$frame_escape_0, -8
+; CHECK: .Lsimple_seh$frame_escape_0 = -8
 ; CHECK: ldur    w0, [x29, #-8]
 ; CHECK: bl      foo
 
-  %o = alloca %struct.S, align 4
+  %o = alloca %struct.S, align 8
   call void (...) @llvm.localescape(ptr %o)
   %0 = load i32, ptr %o, align 4
   invoke void @foo(i32 %0) #5
@@ -89,7 +89,7 @@ entry:
 ; CHECK: mov     x19, sp
 ; CHECK: mov     x0, #-2
 ; CHECK: stur    x0, [x29, #24]
-; CHECK: .set .Lstack_realign$frame_escape_0, 0
+; CHECK: .Lstack_realign$frame_escape_0 = 0
 ; CHECK: ldr     w0, [x19]
 ; CHECK: bl      foo
 
@@ -137,7 +137,7 @@ entry:
 ; CHECK: add     x29, sp, #32
 ; CHECK: mov     x1, #-2
 ; CHECK: stur    x1, [x29, #16]
-; CHECK: .set .Lvla_present$frame_escape_0, -4
+; CHECK: .Lvla_present$frame_escape_0 = -4
 ; CHECK: stur    w0, [x29, #-4]
 ; CHECK: ldur    w8, [x29, #-4]
 ; CHECK: mov     x9, sp
@@ -204,7 +204,7 @@ entry:
 ; CHECK: mov     x19, sp
 ; CHECK: mov     x1, #-2
 ; CHECK: stur    x1, [x29, #24]
-; CHECK: .set .Lvla_and_realign$frame_escape_0, 32
+; CHECK: .Lvla_and_realign$frame_escape_0 = 32
 ; CHECK: str     w0, [x29, #36]
 ; CHECK: ldr     w8, [x29, #36]
 ; CHECK: mov     x9, sp

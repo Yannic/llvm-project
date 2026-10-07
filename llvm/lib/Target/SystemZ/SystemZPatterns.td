@@ -39,18 +39,51 @@ multiclass ZXB<SDPatternOperator operator, RegisterOperand cls,
 // with LOAD, OPERATOR and STORE being the read, modify and write
 // respectively.  MODE is the addressing mode and IMM is the type
 // of the second operand.
-class RMWI<SDPatternOperator load, SDPatternOperator operator,
-           SDPatternOperator store, AddressingMode mode,
-           PatFrag imm, Instruction insn>
-  : Pat<(store (operator (load mode:$addr), imm:$src), mode:$addr),
-        (insn mode:$addr, (UIMM8 imm:$src))>;
+class RMWI<ValueType vt, SDPatternOperator load, SDPatternOperator op,
+           SDPatternOperator store, ComplexPattern mode, PatFrag imm,
+           Instruction insn>
+  : Pat<(store (op (vt (load mode:$addr)), imm:$src), mode:$addr),
+        (insn mode:$addr, (UIMM8 $src))>;
 
 // Record that INSN performs binary operation OPERATION on a byte
 // memory location.  IMM is the type of the second operand.
-multiclass RMWIByte<SDPatternOperator operator, AddressingMode mode,
-                    Instruction insn> {
-  def : RMWI<anyextloadi8, operator, truncstorei8, mode, imm32, insn>;
-  def : RMWI<anyextloadi8, operator, truncstorei8, mode, imm64, insn>;
+multiclass RMWIByte<SDPatternOperator operator, Instruction insn12,
+                    Instruction insn20, PatFrag imm16Leaf = imm32zx8,
+                    PatFrag imm32Leaf = imm32zx8,
+                    PatFrag imm16Leaf64 = imm64zx8,
+                    PatFrag imm32Leaf64 = imm64zx8,
+                    PatFrag imm64Leaf = imm64zx8> {
+  // 12-bit displacement variants.
+  def : RMWI<i32, z_anyextloadi8, operator, truncstorei8, bdaddr12pair,
+             imm32zx8, insn12>;
+  def : RMWI<i64, z_anyextloadi8, operator, truncstorei8, bdaddr12pair,
+             imm64zx8, insn12>;
+  def : RMWI<i32, nonvolatile_anyextloadi16, operator,
+             nonvolatile_truncstorei16, bdaddr12off1, imm16Leaf, insn12>;
+  def : RMWI<i64, nonvolatile_anyextloadi16, operator,
+             nonvolatile_truncstorei16, bdaddr12off1, imm16Leaf64, insn12>;
+  def : RMWI<i32, nonvolatile_load, operator, nonvolatile_store,
+             bdaddr12off3, imm32Leaf, insn12>;
+  def : RMWI<i64, nonvolatile_anyextloadi32, operator,
+             nonvolatile_truncstorei32, bdaddr12off3, imm32Leaf64, insn12>;
+  def : RMWI<i64, nonvolatile_load, operator, nonvolatile_store,
+             bdaddr12off7, imm64Leaf, insn12>;
+
+  // 20-bit displacement variants.
+  def : RMWI<i32, z_anyextloadi8, operator, truncstorei8, bdaddr20pair,
+             imm32zx8, insn20>;
+  def : RMWI<i64, z_anyextloadi8, operator, truncstorei8, bdaddr20pair,
+             imm64zx8, insn20>;
+  def : RMWI<i32, nonvolatile_anyextloadi16, operator,
+             nonvolatile_truncstorei16, bdaddr20off1, imm16Leaf, insn20>;
+  def : RMWI<i64, nonvolatile_anyextloadi16, operator,
+             nonvolatile_truncstorei16, bdaddr20off1, imm16Leaf64, insn20>;
+  def : RMWI<i32, nonvolatile_load, operator, nonvolatile_store,
+             bdaddr20off3, imm32Leaf, insn20>;
+  def : RMWI<i64, nonvolatile_anyextloadi32, operator,
+             nonvolatile_truncstorei32, bdaddr20off3, imm32Leaf64, insn20>;
+  def : RMWI<i64, nonvolatile_load, operator, nonvolatile_store,
+             bdaddr20off7, imm64Leaf, insn20>;
 }
 
 // Record that INSN performs insertion TYPE into a register of class CLS.
@@ -145,12 +178,11 @@ multiclass BlockLoadStore<SDPatternOperator load, ValueType vt,
 }
 
 // Record that INSN is a LOAD AND TEST that can be used to compare
-// registers in CLS against zero.  The instruction has separate R1 and R2
-// operands, but they must be the same when the instruction is used like this.
+// registers in CLS against zero.
 multiclass CompareZeroFP<Instruction insn, RegisterOperand cls> {
-  def : Pat<(z_any_fcmp cls:$reg, (fpimm0)), (insn cls:$reg, cls:$reg)>;
+  def : Pat<(z_any_fcmp cls:$reg, (fpimm0)), (insn cls:$reg)>;
   // The sign of the zero makes no difference.
-  def : Pat<(z_any_fcmp cls:$reg, (fpimmneg0)), (insn cls:$reg, cls:$reg)>;
+  def : Pat<(z_any_fcmp cls:$reg, (fpimmneg0)), (insn cls:$reg)>;
 }
 
 // Use INSN for performing binary operation OPERATION of type VT

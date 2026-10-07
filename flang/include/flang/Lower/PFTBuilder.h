@@ -28,14 +28,18 @@
 #include "flang/Semantics/symbol.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 
 namespace Fortran::lower::pft {
 
+struct CompilerDirectiveUnit;
 struct Evaluation;
-struct Program;
-struct ModuleLikeUnit;
 struct FunctionLikeUnit;
+struct ModuleLikeUnit;
+struct Program;
 
+using ContainedUnit = std::variant<CompilerDirectiveUnit, FunctionLikeUnit>;
+using ContainedUnitList = std::list<ContainedUnit>;
 using EvaluationList = std::list<Evaluation>;
 
 /// Provide a variant like container that can hold references. It can hold
@@ -73,7 +77,7 @@ public:
   }
   template <typename VISITOR>
   constexpr auto visit(VISITOR &&visitor) const {
-    return std::visit(
+    return Fortran::common::visit(
         common::visitors{[&visitor](auto ref) { return visitor(ref.get()); }},
         u);
   }
@@ -100,13 +104,14 @@ using ActionStmts = std::tuple<
     parser::EventPostStmt, parser::EventWaitStmt, parser::ExitStmt,
     parser::FailImageStmt, parser::FlushStmt, parser::FormTeamStmt,
     parser::GotoStmt, parser::IfStmt, parser::InquireStmt, parser::LockStmt,
-    parser::NullifyStmt, parser::OpenStmt, parser::PointerAssignmentStmt,
-    parser::PrintStmt, parser::ReadStmt, parser::ReturnStmt, parser::RewindStmt,
-    parser::StopStmt, parser::SyncAllStmt, parser::SyncImagesStmt,
-    parser::SyncMemoryStmt, parser::SyncTeamStmt, parser::UnlockStmt,
-    parser::WaitStmt, parser::WhereStmt, parser::WriteStmt,
-    parser::ComputedGotoStmt, parser::ForallStmt, parser::ArithmeticIfStmt,
-    parser::AssignStmt, parser::AssignedGotoStmt, parser::PauseStmt>;
+    parser::NotifyWaitStmt, parser::NullifyStmt, parser::OpenStmt,
+    parser::PointerAssignmentStmt, parser::PrintStmt, parser::ReadStmt,
+    parser::ReturnStmt, parser::RewindStmt, parser::StopStmt,
+    parser::SyncAllStmt, parser::SyncImagesStmt, parser::SyncMemoryStmt,
+    parser::SyncTeamStmt, parser::UnlockStmt, parser::WaitStmt,
+    parser::WhereStmt, parser::WriteStmt, parser::ComputedGotoStmt,
+    parser::ForallStmt, parser::ArithmeticIfStmt, parser::AssignStmt,
+    parser::AssignedGotoStmt, parser::PauseStmt>;
 
 using OtherStmts = std::tuple<parser::EntryStmt, parser::FormatStmt>;
 
@@ -135,8 +140,10 @@ using Constructs =
 
 using Directives =
     std::tuple<parser::CompilerDirective, parser::OpenACCConstruct,
+               parser::OpenACCRoutineConstruct,
                parser::OpenACCDeclarativeConstruct, parser::OpenMPConstruct,
-               parser::OpenMPDeclarativeConstruct, parser::OmpEndLoopDirective>;
+               parser::OpenMPDeclarativeConstruct,
+               parser::CUFKernelDoConstruct>;
 
 using DeclConstructs = std::tuple<parser::OpenMPDeclarativeConstruct,
                                   parser::OpenACCDeclarativeConstruct>;
@@ -176,7 +183,12 @@ static constexpr bool isNopConstructStmt{common::HasMember<
 template <typename A>
 static constexpr bool isExecutableDirective{common::HasMember<
     A, std::tuple<parser::CompilerDirective, parser::OpenACCConstruct,
-                  parser::OpenMPConstruct>>};
+                  parser::OpenMPConstruct, parser::CUFKernelDoConstruct>>};
+
+template <typename A>
+static constexpr bool isOpenMPDirective{
+    common::HasMember<A, std::tuple<parser::OpenMPConstruct,
+                                    parser::OpenMPDeclarativeConstruct>>};
 
 template <typename A>
 static constexpr bool isFunctionLike{common::HasMember<
@@ -205,7 +217,7 @@ using EvaluationTuple =
 /// from EvaluationTuple type (std::tuple<A, B, ...>).
 using EvaluationVariant = MakeReferenceVariant<EvaluationTuple>;
 
-/// Function-like units contain lists of evaluations.  These can be simple
+/// Function-like units contain lists of evaluations. These can be simple
 /// statements or constructs, where a construct contains its own evaluations.
 struct Evaluation : EvaluationVariant {
 
@@ -261,6 +273,11 @@ struct Evaluation : EvaluationVariant {
       return pft::isExecutableDirective<std::decay_t<decltype(r)>>;
     }});
   }
+  constexpr bool isOpenMPDirective() const {
+    return visit(common::visitors{[](auto &r) {
+      return pft::isOpenMPDirective<std::decay_t<decltype(r)>>;
+    }});
+  }
 
   /// Return the predicate:  "This is a non-initial, non-terminal construct
   /// statement."  For an IfConstruct, this is ElseIfStmt and ElseStmt.
@@ -306,50 +323,112 @@ struct Evaluation : EvaluationVariant {
   /// Return the FunctionLikeUnit containing this evaluation (or nullptr).
   FunctionLikeUnit *getOwningProcedure() const;
 
+  /// How this evaluation's control flow is lowered. Ordered by how much it
+  /// constrains lowering so that classification can only strengthen; see
+  /// markControlFlow.
+  enum class ControlFlow {
+    /// Lowered structurally
+    Structured,
+    /// Lowered structurally, but the body holds unstructured control flow
+    /// confined to it. Lowering folds that body -- not the construct, and not
+    /// the loop control -- into a parent region, so the structured op's
+    /// single-block region stays well formed.
+    ///
+    /// For now, this only applies to DO constructs.
+    StructuredWithUnstructuredInternals,
+    /// Lowered as unstructured blocks.
+    Unstructured,
+  };
+
+  /// Strengthen the classification to \p kind; it never weakens. This is what
+  /// makes the analysis order-independent: a construct marked Unstructured by
+  /// any one child stays Unstructured whatever its siblings contribute.
+  void markControlFlow(ControlFlow kind) {
+    controlFlow = std::max(controlFlow, kind);
+  }
+
+  void markUnstructured() { markControlFlow(ControlFlow::Unstructured); }
+
+  /// Lower the classification to \p kind. Only for an analysis that has proven
+  /// a stronger classification unnecessary; every other caller wants
+  /// markControlFlow, which never weakens.
+  void weakenControlFlow(ControlFlow kind) {
+    controlFlow = std::min(controlFlow, kind);
+  }
+
+  /// True only for fully unstructured control flow, which is lowered as raw
+  /// CFG blocks.
+  bool isUnstructured() const {
+    return controlFlow == ControlFlow::Unstructured;
+  }
+
+  bool hasUnstructuredInternals() const {
+    return controlFlow == ControlFlow::StructuredWithUnstructuredInternals;
+  }
+
+  /// True when this construct is lowered structurally, yet its body holds
+  /// unstructured control flow that has to be folded into an
+  /// scf.execute_region.
+  bool lowerBodyAsWrappedRegion() const;
+
   bool lowerAsStructured() const;
   bool lowerAsUnstructured() const;
+  bool forceAsUnstructured() const;
 
   // FIR generation looks primarily at PFT ActionStmt and ConstructStmt leaf
-  // nodes.  Members such as lexicalSuccessor and block are applicable only
-  // to these nodes, plus some directives.  The controlSuccessor member is
-  // used for nonlexical successors, such as linking to a GOTO target.  For
-  // multiway branches, it is set to the first target.  Successor and exit
-  // links always target statements or directives.  An internal Construct
-  // node has a constructExit link that applies to exits from anywhere within
-  // the construct.
+  // nodes. Members such as lexicalSuccessor and block are applicable only
+  // to these nodes, plus some directives. The controlSuccessor member is
+  // used for nonlexical successors, such as linking to a GOTO target. For
+  // multiway branches (computed GO TO, arithmetic IF), it is set to the
+  // first target and any additional targets are recorded in
+  // extraControlSuccessors so analyses that need to see every branch target
+  // (e.g. wrappability of an unstructured construct) can enumerate them all.
+  // Successor and exit links always target statements or directives. An
+  // internal Construct node has a constructExit link that applies to exits
+  // from anywhere within the construct.
   //
-  // An unstructured construct is one that contains some form of goto.  This
-  // is indicated by the isUnstructured member flag, which may be set on a
-  // statement and propagated to enclosing constructs.  This distinction allows
-  // a structured IF or DO statement to be materialized with custom structured
-  // FIR operations.  An unstructured statement is materialized as mlir
-  // operation sequences that include explicit branches.
+  // An unstructured construct is one that contains some form of goto. This
+  // is indicated by the controlFlow member, which may be set on a statement and
+  // propagated to enclosing constructs. This distinction allows a structured IF
+  // or DO statement to be materialized with custom structured FIR operations.
+  // An unstructured statement is materialized as mlir operation sequences that
+  // include explicit branches.
   //
-  // The block member is set for statements that begin a new block.  This
-  // block is the target of any branch to the statement.  Statements may have
+  // The block member is set for statements that begin a new block. This
+  // block is the target of any branch to the statement. Statements may have
   // additional (unstructured) "local" blocks, but such blocks cannot be the
-  // target of any explicit branch.  The primary example of an (unstructured)
+  // target of any explicit branch. The primary example of an (unstructured)
   // statement that may have multiple associated blocks is NonLabelDoStmt,
   // which may have a loop preheader block for loop initialization code (the
   // block member), and always has a "local" header block that is the target
-  // of the loop back edge.  If the NonLabelDoStmt is a concurrent loop, it
+  // of the loop back edge. If the NonLabelDoStmt is a concurrent loop, it
   // may be associated with an arbitrary number of nested preheader, header,
   // and mask blocks.
   //
-  // The printIndex member is only set for statements.  It is used for dumps
+  // The printIndex member is only set for statements. It is used for dumps
   // (and debugging) and does not affect FIR generation.
 
   PftNode parent;
   parser::CharBlock position{};
   std::optional<parser::Label> label{};
   std::unique_ptr<EvaluationList> evaluationList; // nested evaluations
+  // associated compiler directives
+  llvm::SmallVector<const parser::CompilerDirective *, 1> dirs;
   Evaluation *parentConstruct{nullptr};  // set for nodes below the top level
   Evaluation *lexicalSuccessor{nullptr}; // set for leaf nodes, some directives
   Evaluation *controlSuccessor{nullptr}; // set for some leaf nodes
+  // Additional branch targets for multiway branches (computed GO TO,
+  // arithmetic IF). Empty for single-target branches; the first target is in
+  // controlSuccessor and the remaining ones are stored here in source order.
+  llvm::SmallVector<Evaluation *, 0> extraControlSuccessors;
   Evaluation *constructExit{nullptr};    // set for constructs
   bool isNewBlock{false};                // evaluation begins a new basic block
-  bool isUnstructured{false};  // evaluation has unstructured control flow
+  ControlFlow controlFlow{ControlFlow::Structured};
   bool negateCondition{false}; // If[Then]Stmt condition must be negated
+  bool activeConstruct{false}; // temporarily set for some constructs
+  // The enclosing evaluation-list traversal should skip this evaluation once
+  // because directive lowering already consumed it.
+  bool skipNextLowering{false};
   mlir::Block *block{nullptr}; // isNewBlock block (ActionStmt, ConstructStmt)
   int printIndex{0}; // (ActionStmt, ConstructStmt) evaluation index for dumps
 };
@@ -358,7 +437,8 @@ using ProgramVariant =
     ReferenceVariant<parser::MainProgram, parser::FunctionSubprogram,
                      parser::SubroutineSubprogram, parser::Module,
                      parser::Submodule, parser::SeparateModuleSubprogram,
-                     parser::BlockData, parser::CompilerDirective>;
+                     parser::BlockData, parser::CompilerDirective,
+                     parser::OpenACCRoutineConstruct>;
 /// A program is a list of program units.
 /// These units can be function like, module like, or block data.
 struct ProgramUnit : ProgramVariant {
@@ -458,6 +538,9 @@ struct Variable {
     return *std::get<Nominal>(var).symbol;
   }
 
+  /// Is this variable a compiler generated global to describe derived types?
+  bool isRuntimeTypeInfoData() const;
+
   /// Return the aggregate store.
   const AggregateStore &getAggregateStore() const {
     assert(isAggregateStore());
@@ -480,7 +563,8 @@ struct Variable {
 
   /// Is this variable a global?
   bool isGlobal() const {
-    return std::visit([](const auto &x) { return x.isGlobal(); }, var);
+    return Fortran::common::visit([](const auto &x) { return x.isGlobal(); },
+                                  var);
   }
 
   /// Is this a module or submodule variable?
@@ -490,7 +574,7 @@ struct Variable {
   }
 
   const Fortran::semantics::Scope *getOwningScope() const {
-    return std::visit(
+    return Fortran::common::visit(
         common::visitors{
             [](const Nominal &x) { return &x.symbol->GetUltimate().owner(); },
             [](const AggregateStore &agg) { return &agg.getOwningScope(); }},
@@ -583,10 +667,17 @@ VariableList getScopeVariableList(const Fortran::semantics::Scope &scope);
 /// depends on. \p symbol itself will be the last variable in the list.
 VariableList getDependentVariableList(const Fortran::semantics::Symbol &);
 
+struct FunctionLikeUnit;
+/// Create an ordered list of equivalence sets and variables from host
+/// [sub]module scopes of \p funit that are referenced in \p funit. This is
+/// used by lowering of module procedures (and their internal subprograms) to
+/// only instantiate referenced host module variables rather than all of them.
+VariableList getHostModuleVariableList(const FunctionLikeUnit &funit);
+
 void dump(VariableList &, std::string s = {}); // `s` is an optional dump label
 
-/// Function-like units may contain evaluations (executable statements) and
-/// nested function-like units (internal procedures and function statements).
+/// Function-like units may contain evaluations (executable statements),
+/// directives, and internal (nested) function-like units.
 struct FunctionLikeUnit : public ProgramUnit {
   // wrapper statements for function-like syntactic structures
   using FunctionStatement =
@@ -638,6 +729,15 @@ struct FunctionLikeUnit : public ProgramUnit {
     return *symbol;
   }
 
+  /// Return a pointer to the main program symbol for named programs
+  /// Return the null pointer for anonymous programs
+  const semantics::Symbol *getMainProgramSymbol() const {
+    if (!isMainProgram()) {
+      llvm::report_fatal_error("call only on main program.");
+    }
+    return entryPointList[activeEntry].first;
+  }
+
   /// Return a pointer to the current entry point Evaluation.
   /// This is null for a primary entry point.
   Evaluation *getEntryEval() const {
@@ -669,6 +769,7 @@ struct FunctionLikeUnit : public ProgramUnit {
   /// Return the host associations for this function like unit. The list of host
   /// associations are kept in the host procedure.
   HostAssociations &getHostAssoc() { return hostAssociations; }
+  const HostAssociations &getHostAssoc() const { return hostAssociations; };
 
   LLVM_DUMP_METHOD void dump() const;
 
@@ -679,25 +780,36 @@ struct FunctionLikeUnit : public ProgramUnit {
   std::optional<FunctionStatement> beginStmt;
   FunctionStatement endStmt;
   const semantics::Scope *scope;
-  EvaluationList evaluationList;
   LabelEvalMap labelEvaluationMap;
   SymbolLabelMap assignSymbolLabelMap;
-  std::list<FunctionLikeUnit> nestedFunctions;
-  /// <Symbol, Evaluation> pairs for each entry point.  The pair at index 0
+  /// Evaluations that branch to a given evaluation. A construct transferring
+  /// control between its own statements is not a branch (F2023 11.2.1 p1), so
+  /// the control successors analyzeBranches sets for CASE, ELSE IF, ELSE,
+  /// SELECT RANK and a DO statement and its EndDoStmt are not recorded here.
+  IncomingBranchMap incomingBranches;
+  ContainedUnitList containedUnitList;
+  EvaluationList evaluationList;
+  /// <Symbol, Evaluation> pairs for each entry point. The pair at index 0
   /// is the primary entry point; remaining pairs are alternate entry points.
   /// The primary entry point symbol is Null for an anonymous program.
-  /// A named program symbol has MainProgramDetails.  Other symbols have
-  /// SubprogramDetails.  Evaluations are filled in for alternate entries.
+  /// A named program symbol has MainProgramDetails. Other symbols have
+  /// SubprogramDetails. Evaluations are filled in for alternate entries.
   llvm::SmallVector<std::pair<const semantics::Symbol *, Evaluation *>, 1>
       entryPointList{std::pair{nullptr, nullptr}};
-  /// Current index into entryPointList.  Index 0 is the primary entry point.
+  /// Current index into entryPointList. Index 0 is the primary entry point.
   int activeEntry = 0;
-  /// Primary result for function subprograms with alternate entries.  This
+  /// Primary result for function subprograms with alternate entries. This
   /// is one of the largest result values, not necessarily the first one.
   const semantics::Symbol *primaryResult{nullptr};
+  bool hasIeeeAccess{false};
+  bool mayModifyHaltingMode{false};
+  bool mayModifyRoundingMode{false};
+  bool mayModifyUnderflowMode{false};
   /// Terminal basic block (if any)
   mlir::Block *finalBlock{};
   HostAssociations hostAssociations;
+  /// Preserved USE statements for debug info generation
+  std::list<Fortran::semantics::PreservedUseStmt> preservedUseStmts;
 };
 
 /// Module-like units contain a list of function-like units.
@@ -725,8 +837,10 @@ struct ModuleLikeUnit : public ProgramUnit {
 
   ModuleStatement beginStmt;
   ModuleStatement endStmt;
-  std::list<FunctionLikeUnit> nestedFunctions;
+  ContainedUnitList containedUnitList;
   EvaluationList evaluationList;
+  /// Preserved USE statements for debug info generation
+  std::list<Fortran::semantics::PreservedUseStmt> preservedUseStmts;
 };
 
 /// Block data units contain the variables and data initializers for common
@@ -751,10 +865,20 @@ struct CompilerDirectiveUnit : public ProgramUnit {
   CompilerDirectiveUnit(const CompilerDirectiveUnit &) = delete;
 };
 
+// Top level OpenACC routine directives
+struct OpenACCDirectiveUnit : public ProgramUnit {
+  OpenACCDirectiveUnit(const parser::OpenACCRoutineConstruct &directive,
+                       const PftNode &parent)
+      : ProgramUnit{directive, parent}, routine{directive} {};
+  OpenACCDirectiveUnit(OpenACCDirectiveUnit &&) = default;
+  OpenACCDirectiveUnit(const OpenACCDirectiveUnit &) = delete;
+  const parser::OpenACCRoutineConstruct &routine;
+};
+
 /// A Program is the top-level root of the PFT.
 struct Program {
   using Units = std::variant<FunctionLikeUnit, ModuleLikeUnit, BlockDataUnit,
-                             CompilerDirectiveUnit>;
+                             CompilerDirectiveUnit, OpenACCDirectiveUnit>;
 
   Program(semantics::CommonBlockList &&commonBlocks)
       : commonBlocks{std::move(commonBlocks)} {}
@@ -782,7 +906,7 @@ private:
 /// Helper to get location from FunctionLikeUnit/ModuleLikeUnit begin/end
 /// statements.
 template <typename T>
-static parser::CharBlock stmtSourceLoc(const T &stmt) {
+parser::CharBlock stmtSourceLoc(const T &stmt) {
   return stmt.visit(common::visitors{[](const auto &x) { return x.source; }});
 }
 
@@ -814,20 +938,29 @@ void visitAllSymbols(const FunctionLikeUnit &funit,
 void visitAllSymbols(const Evaluation &eval,
                      std::function<void(const semantics::Symbol &)> callBack);
 
+/// Return true when \p eval is an unstructured DO or IF construct that can
+/// folded into a self-contained scf.execute_region. \p semaCtx is needed to
+/// determine how many loops a directive applies to.
+bool isWrappableConstruct(const Evaluation &eval,
+                          const semantics::SemanticsContext &semaCtx);
+
 } // namespace Fortran::lower::pft
 
 namespace Fortran::lower {
+class LoweringOptions;
+
 /// Create a PFT (Pre-FIR Tree) from the parse tree.
 ///
 /// A PFT is a light weight tree over the parse tree that is used to create FIR.
 /// The PFT captures pointers back into the parse tree, so the parse tree must
-/// not be changed between the construction of the PFT and its last use.  The
-/// PFT captures a structured view of a program.  A program is a list of units.
-/// A function like unit contains a list of evaluations.  An evaluation is
+/// not be changed between the construction of the PFT and its last use. The
+/// PFT captures a structured view of a program. A program is a list of units.
+/// A function like unit contains a list of evaluations. An evaluation is
 /// either a statement, or a construct with a nested list of evaluations.
 std::unique_ptr<pft::Program>
 createPFT(const parser::Program &root,
-          const Fortran::semantics::SemanticsContext &semanticsContext);
+          const Fortran::semantics::SemanticsContext &semanticsContext,
+          const LoweringOptions &loweringOptions);
 
 /// Dumper for displaying a PFT.
 void dumpPFT(llvm::raw_ostream &outputStream, const pft::Program &pft);

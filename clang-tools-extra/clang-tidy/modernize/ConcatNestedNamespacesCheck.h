@@ -1,4 +1,4 @@
-//===--- ConcatNestedNamespacesCheck.h - clang-tidy--------------*- C++ -*-===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -15,10 +15,27 @@
 
 namespace clang::tidy::modernize {
 
+using NamespaceName = SmallString<40>;
+
+class NS : public SmallVector<const NamespaceDecl *, 6> {
+public:
+  std::optional<SourceRange>
+  getCleanedNamespaceFrontRange(const SourceManager &SM,
+                                const LangOptions &LangOpts) const;
+  SourceRange getReplacedNamespaceFrontRange() const;
+  SourceRange getNamespaceBackRange(const SourceManager &SM,
+                                    const LangOptions &LangOpts) const;
+  SourceRange getDefaultNamespaceBackRange() const;
+  void appendName(NamespaceName &Str) const;
+  void appendCloseComment(NamespaceName &Str) const;
+};
+
 class ConcatNestedNamespacesCheck : public ClangTidyCheck {
 public:
   ConcatNestedNamespacesCheck(StringRef Name, ClangTidyContext *Context)
       : ClangTidyCheck(Name, Context) {}
+  bool unsupportedNamespace(const NamespaceDecl &ND, bool IsChild) const;
+  bool singleNamedNamespaceChild(const NamespaceDecl &ND) const;
   bool isLanguageVersionSupported(const LangOptions &LangOpts) const override {
     return LangOpts.CPlusPlus17;
   }
@@ -26,12 +43,9 @@ public:
   void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
 
 private:
-  using NamespaceContextVec = llvm::SmallVector<const NamespaceDecl *, 6>;
-  using NamespaceString = llvm::SmallString<40>;
+  using NamespaceContextVec = SmallVector<NS, 6>;
 
-  void reportDiagnostic(const SourceRange &FrontReplacement,
-                        const SourceRange &BackReplacement);
-  NamespaceString concatNamespaces();
+  void reportDiagnostic(const SourceManager &SM, const LangOptions &LangOpts);
   NamespaceContextVec Namespaces;
 };
 } // namespace clang::tidy::modernize

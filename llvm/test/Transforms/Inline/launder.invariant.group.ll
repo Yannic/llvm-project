@@ -7,7 +7,7 @@
 ; This test checks if value returned from the launder is considered aliasing
 ; with its argument.  Due to bug caused by handling launder in capture tracking
 ; sometimes it would be considered noalias.
-; CHECK-LABEL: define i32 @bar(ptr noalias
+; CHECK-LABEL: define {{(noundef )?}}i32 @bar(ptr noalias
 define i32 @bar(ptr noalias) {
 ; CHECK-NOT: noalias
   %2 = call ptr @llvm.launder.invariant.group.p0(ptr %0)
@@ -18,7 +18,7 @@ define i32 @bar(ptr noalias) {
   ret i32 %5
 }
 
-; CHECK-LABEL: define i32 @foo(ptr noalias
+; CHECK-LABEL: define {{(noundef )?}}i32 @foo(ptr noalias
 define i32 @foo(ptr noalias)  {
   ; CHECK-NOT: call i32 @bar(
   ; CHECK-NOT: !noalias
@@ -30,28 +30,27 @@ define i32 @foo(ptr noalias)  {
 ; This test checks if invariant group intrinsics have zero cost for inlining.
 ; CHECK-LABEL: define ptr @caller(ptr
 define ptr @caller(ptr %p) {
-; CHECK-NOT: call ptr @lot_of_launders_and_strips
-  %a1 = call ptr @lot_of_launders_and_strips(ptr %p)
-  %a2 = call ptr @lot_of_launders_and_strips(ptr %a1)
-  %a3 = call ptr @lot_of_launders_and_strips(ptr %a2)
-  %a4 = call ptr @lot_of_launders_and_strips(ptr %a3)
+; CHECK-NOT: call ptr @lot_of_launders
+  %a1 = call ptr @lot_of_launders(ptr %p)
+  %a2 = call ptr @lot_of_launders(ptr %a1)
+  %a3 = call ptr @lot_of_launders(ptr %a2)
+  %a4 = call ptr @lot_of_launders(ptr %a3)
   ret ptr %a4
 }
 
-define ptr @lot_of_launders_and_strips(ptr %p) {
+define ptr @lot_of_launders(ptr %p) {
   %a1 = call ptr @llvm.launder.invariant.group.p0(ptr %p)
   %a2 = call ptr @llvm.launder.invariant.group.p0(ptr %a1)
   %a3 = call ptr @llvm.launder.invariant.group.p0(ptr %a2)
   %a4 = call ptr @llvm.launder.invariant.group.p0(ptr %a3)
 
-  %s1 = call ptr @llvm.strip.invariant.group.p0(ptr %a4)
-  %s2 = call ptr @llvm.strip.invariant.group.p0(ptr %s1)
-  %s3 = call ptr @llvm.strip.invariant.group.p0(ptr %s2)
-  %s4 = call ptr @llvm.strip.invariant.group.p0(ptr %s3)
+  %s1 = call ptr @llvm.launder.invariant.group.p0(ptr %a4)
+  %s2 = call ptr @llvm.launder.invariant.group.p0(ptr %s1)
+  %s3 = call ptr @llvm.launder.invariant.group.p0(ptr %s2)
+  %s4 = call ptr @llvm.launder.invariant.group.p0(ptr %s3)
 
    ret ptr %s4
 }
 
 
 declare ptr @llvm.launder.invariant.group.p0(ptr)
-declare ptr @llvm.strip.invariant.group.p0(ptr)

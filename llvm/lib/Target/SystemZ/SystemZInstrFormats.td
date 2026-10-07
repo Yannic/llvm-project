@@ -18,7 +18,8 @@ class InstSystemZ<int size, dag outs, dag ins, string asmstr,
   dag InOperandList = ins;
   let Size = size;
   let Pattern = pattern;
-  let AsmString = asmstr;
+  // Convert tabs to spaces, and remove space after comma for HLASM syntax
+  let AsmString = !subst("\t", "{\t| }", !subst(", ", "{, |,}", asmstr));
 
   let hasSideEffects = 0;
   let mayLoad = 0;
@@ -98,6 +99,15 @@ class InstSystemZ<int size, dag outs, dag ins, string asmstr,
   // result against zero, but only if the 'nsw' flag is set.
   bit CCIfNoSignedWrap = 0;
 
+  // Indicates that the instruction is a helper for an .insn directive
+  // instead of an actual instruction
+  bit IsInsnDirective = 0;
+
+  // Number of trailing optional operands for the .insn directive variant.
+  // Optional operands may be omitted; the parser fills in zero defaults via
+  // addDefaultOperand() in SystemZAsmParser.cpp.
+  int NumOptionalOperands = 0;
+
   let TSFlags{0}     = SimpleBDXLoad;
   let TSFlags{1}     = SimpleBDXStore;
   let TSFlags{2}     = Has20BitOffset;
@@ -172,11 +182,9 @@ def getTwoOperandOpcode : InstrMapping {
 //   bits<4> Rn   : register input or output for operand n
 //   bits<5> Vn   : vector register input or output for operand n
 //   bits<m> In   : immediate value of width m for operand n
-//   bits<4> BDn  : address operand n, which has a base and a displacement
-//   bits<m> XBDn : address operand n, which has an index, a base and a
-//                  displacement
-//   bits<m> VBDn : address operand n, which has a vector index, a base and a
-//                  displacement
+//   bits<4> Bn   : base register for address operand n
+//   bits<m> Dn   : displacement for address operand n
+//   bits<5> Vn   : vector index for address operand n
 //   bits<4> Xn   : index register for address operand n
 //   bits<4> Mn   : mode value for operand n
 //
@@ -189,31 +197,31 @@ def getTwoOperandOpcode : InstrMapping {
 class InstE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<2, outs, ins, asmstr, pattern> {
   field bits<16> Inst;
-  field bits<16> SoftFail = 0;
+  bits<16> enc;
 
-  let Inst = op;
+  let Inst = !if(!ne(op, 0), op, enc);
 }
 
 class InstI<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<2, outs, ins, asmstr, pattern> {
   field bits<16> Inst;
-  field bits<16> SoftFail = 0;
+  bits<16> enc;
 
   bits<8> I1;
 
-  let Inst{15-8} = op;
+  let Inst{15-8} = !if(!ne(op, 0), op, enc{15-8});
   let Inst{7-0}  = I1;
 }
 
 class InstIE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> I1;
   bits<4> I2;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-8}  = 0;
   let Inst{7-4}   = I1;
   let Inst{3-0}   = I2;
@@ -222,13 +230,13 @@ class InstIE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstMII<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> M1;
   bits<12> RI2;
   bits<24> RI3;
 
-  let Inst{47-40} = op;
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
   let Inst{39-36} = M1;
   let Inst{35-24} = RI2;
   let Inst{23-0}  = RI3;
@@ -237,138 +245,139 @@ class InstMII<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRIa<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<16> I2;
 
-  let Inst{31-24} = op{11-4};
+  let Inst{31-24} = !if(!ne(op, 0), op{11-4}, enc{31-24});
   let Inst{23-20} = R1;
-  let Inst{19-16} = op{3-0};
+  let Inst{19-16} = !if(!ne(op, 0), op{3-0}, enc{19-16});
   let Inst{15-0}  = I2;
 }
 
 class InstRIb<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<16> RI2;
 
-  let Inst{31-24} = op{11-4};
+  let Inst{31-24} = !if(!ne(op, 0), op{11-4}, enc{31-24});
   let Inst{23-20} = R1;
-  let Inst{19-16} = op{3-0};
+  let Inst{19-16} = !if(!ne(op, 0), op{3-0}, enc{19-16});
   let Inst{15-0}  = RI2;
 }
 
 class InstRIc<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> M1;
   bits<16> RI2;
 
-  let Inst{31-24} = op{11-4};
+  let Inst{31-24} = !if(!ne(op, 0), op{11-4}, enc{31-24});
   let Inst{23-20} = M1;
-  let Inst{19-16} = op{3-0};
+  let Inst{19-16} = !if(!ne(op, 0), op{3-0}, enc{19-16});
   let Inst{15-0}  = RI2;
 }
 
 class InstRIEa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<16> I2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = 0;
   let Inst{31-16} = I2;
   let Inst{15-12} = M3;
   let Inst{11-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRIEb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> M3;
   bits<16> RI4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R2;
   let Inst{31-16} = RI4;
   let Inst{15-12} = M3;
   let Inst{11-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRIEc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<8> I2;
   bits<4> M3;
   bits<16> RI4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = M3;
   let Inst{31-16} = RI4;
   let Inst{15-8}  = I2;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRIEd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R3;
   bits<16> I2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R3;
   let Inst{31-16} = I2;
   let Inst{15-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRIEe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R3;
   bits<16> RI2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R3;
   let Inst{31-16} = RI2;
   let Inst{15-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
-class InstRIEf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
+class InstRIEf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
+               bits<8> I3Or = 0, bits<8> I4Or = 0>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R2;
@@ -376,101 +385,117 @@ class InstRIEf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<8> I4;
   bits<8> I5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R2;
-  let Inst{31-24} = I3;
-  let Inst{23-16} = I4;
+  let Inst{31} = !if(I3Or{7}, 1, I3{7});
+  let Inst{30} = !if(I3Or{6}, 1, I3{6});
+  let Inst{29} = !if(I3Or{5}, 1, I3{5});
+  let Inst{28} = !if(I3Or{4}, 1, I3{4});
+  let Inst{27} = !if(I3Or{3}, 1, I3{3});
+  let Inst{26} = !if(I3Or{2}, 1, I3{2});
+  let Inst{25} = !if(I3Or{1}, 1, I3{1});
+  let Inst{24} = !if(I3Or{0}, 1, I3{0});
+  let Inst{23} = !if(I4Or{7}, 1, I4{7});
+  let Inst{22} = !if(I4Or{6}, 1, I4{6});
+  let Inst{21} = !if(I4Or{5}, 1, I4{5});
+  let Inst{20} = !if(I4Or{4}, 1, I4{4});
+  let Inst{19} = !if(I4Or{3}, 1, I4{3});
+  let Inst{18} = !if(I4Or{2}, 1, I4{2});
+  let Inst{17} = !if(I4Or{1}, 1, I4{1});
+  let Inst{16} = !if(I4Or{0}, 1, I4{0});
   let Inst{15-8}  = I5;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRIEg<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> M3;
   bits<16> I2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = M3;
   let Inst{31-16} = I2;
   let Inst{15-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRILa<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<32> I2;
 
-  let Inst{47-40} = op{11-4};
+  let Inst{47-40} = !if(!ne(op, 0), op{11-4}, enc{47-40});
   let Inst{39-36} = R1;
-  let Inst{35-32} = op{3-0};
+  let Inst{35-32} = !if(!ne(op, 0), op{3-0}, enc{35-32});
   let Inst{31-0}  = I2;
 }
 
 class InstRILb<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<32> RI2;
 
-  let Inst{47-40} = op{11-4};
+  let Inst{47-40} = !if(!ne(op, 0), op{11-4}, enc{47-40});
   let Inst{39-36} = R1;
-  let Inst{35-32} = op{3-0};
+  let Inst{35-32} = !if(!ne(op, 0), op{3-0}, enc{35-32});
   let Inst{31-0}  = RI2;
 }
 
 class InstRILc<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> M1;
   bits<32> RI2;
 
-  let Inst{47-40} = op{11-4};
+  let Inst{47-40} = !if(!ne(op, 0), op{11-4}, enc{47-40});
   let Inst{39-36} = M1;
-  let Inst{35-32} = op{3-0};
+  let Inst{35-32} = !if(!ne(op, 0), op{3-0}, enc{35-32});
   let Inst{31-0}  = RI2;
 }
 
 class InstRIS<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<8> I2;
   bits<4> M3;
-  bits<16> BD4;
+  bits<4> B4;
+  bits<12> D4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = M3;
-  let Inst{31-16} = BD4;
+  let Inst{31-28} = B4;
+  let Inst{27-16} = D4;
   let Inst{15-8}  = I2;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRR<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<2, outs, ins, asmstr, pattern> {
   field bits<16> Inst;
-  field bits<16> SoftFail = 0;
+  bits<16> enc;
 
   bits<4> R1;
   bits<4> R2;
 
-  let Inst{15-8} = op;
+  let Inst{15-8} = !if(!ne(op, 0), op, enc{15-8});
   let Inst{7-4}  = R1;
   let Inst{3-0}  = R2;
 }
@@ -478,13 +503,13 @@ class InstRR<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRD<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R3;
   bits<4> R2;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-12} = R1;
   let Inst{11-8}  = 0;
   let Inst{7-4}   = R3;
@@ -494,12 +519,12 @@ class InstRRD<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R2;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-8}  = 0;
   let Inst{7-4}   = R1;
   let Inst{3-0}   = R2;
@@ -508,14 +533,14 @@ class InstRRE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRFa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> R3;
   bits<4> M4;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-12} = R3;
   let Inst{11-8}  = M4;
   let Inst{7-4}   = R1;
@@ -525,14 +550,14 @@ class InstRRFa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRFb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> R3;
   bits<4> M4;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-12} = R3;
   let Inst{11-8}  = M4;
   let Inst{7-4}   = R1;
@@ -542,13 +567,13 @@ class InstRRFb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRFc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> M3;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-12} = M3;
   let Inst{11-8}  = 0;
   let Inst{7-4}   = R1;
@@ -558,13 +583,13 @@ class InstRRFc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRFd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> M4;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-12} = 0;
   let Inst{11-8}  = M4;
   let Inst{7-4}   = R1;
@@ -574,14 +599,14 @@ class InstRRFd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRFe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> M3;
   bits<4> M4;
 
-  let Inst{31-16} = op;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
   let Inst{15-12} = M3;
   let Inst{11-8}  = M4;
   let Inst{7-4}   = R1;
@@ -591,33 +616,39 @@ class InstRRFe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRRS<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R2;
   bits<4> M3;
-  bits<16> BD4;
+  bits<4> B4;
+  bits<12> D4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R2;
-  let Inst{31-16} = BD4;
+  let Inst{31-28} = B4;
+  let Inst{27-16} = D4;
   let Inst{15-12} = M3;
   let Inst{11-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRXa<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
-  bits<20> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{31-24} = op;
+  let Inst{31-24} = !if(!ne(op, 0), op, enc{31-24});
   let Inst{23-20} = R1;
-  let Inst{19-0}  = XBD2;
+  let Inst{19-16} = X2;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 
   let HasIndex = 1;
 }
@@ -625,14 +656,18 @@ class InstRXa<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRXb<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> M1;
-  bits<20> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{31-24} = op;
+  let Inst{31-24} = !if(!ne(op, 0), op, enc{31-24});
   let Inst{23-20} = M1;
-  let Inst{19-0}  = XBD2;
+  let Inst{19-16} = X2;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 
   let HasIndex = 1;
 }
@@ -640,18 +675,22 @@ class InstRXb<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRXE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
-  bits<20> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
-  let Inst{35-16} = XBD2;
+  let Inst{35-32} = X2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = M3;
   let Inst{11-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let HasIndex = 1;
 }
@@ -659,18 +698,22 @@ class InstRXE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRXF<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R3;
-  bits<20> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R3;
-  let Inst{35-16} = XBD2;
+  let Inst{35-32} = X2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = R1;
   let Inst{11-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let HasIndex = 1;
 }
@@ -678,15 +721,20 @@ class InstRXF<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRXYa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
-  bits<28> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<20> D2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
-  let Inst{35-8}  = XBD2;
-  let Inst{7-0}   = op{7-0};
+  let Inst{35-32} = X2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2{11-0};
+  let Inst{15-8}  = D2{19-12};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let Has20BitOffset = 1;
   let HasIndex = 1;
@@ -695,15 +743,20 @@ class InstRXYa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRXYb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> M1;
-  bits<28> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<20> D2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = M1;
-  let Inst{35-8}  = XBD2;
-  let Inst{7-0}   = op{7-0};
+  let Inst{35-32} = X2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2{11-0};
+  let Inst{15-8}  = D2{19-12};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let Has20BitOffset = 1;
   let HasIndex = 1;
@@ -712,43 +765,66 @@ class InstRXYb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRSa<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R3;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{31-24} = op;
+  let Inst{31-24} = !if(!ne(op, 0), op, enc{31-24});
   let Inst{23-20} = R1;
   let Inst{19-16} = R3;
-  let Inst{15-0}  = BD2;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstRSb<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> M3;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{31-24} = op;
+  let Inst{31-24} = !if(!ne(op, 0), op, enc{31-24});
   let Inst{23-20} = R1;
   let Inst{19-16} = M3;
-  let Inst{15-0}  = BD2;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
+}
+
+class InstRSE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
+  : InstSystemZ<6, outs, ins, asmstr, pattern> {
+  field bits<48> Inst;
+  bits<48> enc;
+
+  bits<4> R1;
+  bits<4> R3;
+  bits<4> B2;
+  bits<12> D2;
+
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
+  let Inst{39-36} = R1;
+  let Inst{35-32} = R3;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
+  let Inst{15-8}  = 0;
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRSI<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
   bits<4> R1;
   bits<4> R3;
   bits<16> RI2;
 
-  let Inst{31-24} = op;
+  let Inst{31-24} = !if(!ne(op, 0), op, enc{31-24});
   let Inst{23-20} = R1;
   let Inst{19-16} = R3;
   let Inst{15-0}  = RI2;
@@ -757,48 +833,58 @@ class InstRSI<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRSLa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<20> BDL1;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> L1;
 
-  let Inst{47-40} = op{15-8};
-  let Inst{39-36} = BDL1{19-16};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
+  let Inst{39-36} = L1;
   let Inst{35-32} = 0;
-  let Inst{31-16} = BDL1{15-0};
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
   let Inst{15-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRSLb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
-  bits<24> BDL2;
+  bits<4> B2;
+  bits<12> D2;
+  bits<8> L2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
-  let Inst{39-16} = BDL2;
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
+  let Inst{39-32} = L2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = R1;
   let Inst{11-8}  = M3;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstRSYa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> R3;
-  bits<24> BD2;
+  bits<4> B2;
+  bits<20> D2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R3;
-  let Inst{31-8}  = BD2;
-  let Inst{7-0}   = op{7-0};
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2{11-0};
+  let Inst{15-8}  = D2{19-12};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let Has20BitOffset = 1;
 }
@@ -806,17 +892,20 @@ class InstRSYa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstRSYb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<4> M3;
-  bits<24> BD2;
+  bits<4> B2;
+  bits<20> D2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = M3;
-  let Inst{31-8}  = BD2;
-  let Inst{7-0}   = op{7-0};
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2{11-0};
+  let Inst{15-8}  = D2{19-12};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let Has20BitOffset = 1;
 }
@@ -824,41 +913,48 @@ class InstRSYb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstSI<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
-  bits<16> BD1;
+  bits<4> B1;
+  bits<12> D1;
   bits<8> I2;
 
-  let Inst{31-24} = op;
+  let Inst{31-24} = !if(!ne(op, 0), op, enc{31-24});
   let Inst{23-16} = I2;
-  let Inst{15-0}  = BD1;
+  let Inst{15-12} = B1;
+  let Inst{11-0}  = D1;
 }
 
 class InstSIL<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<16> BD1;
+  bits<4> B1;
+  bits<12> D1;
   bits<16> I2;
 
-  let Inst{47-32} = op;
-  let Inst{31-16} = BD1;
+  let Inst{47-32} = !if(!ne(op, 0), op, enc{47-32});
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
   let Inst{15-0}  = I2;
 }
 
 class InstSIY<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<24> BD1;
+  bits<4> B1;
+  bits<20> D1;
   bits<8> I2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-32} = I2;
-  let Inst{31-8}  = BD1;
-  let Inst{7-0}   = op{7-0};
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1{11-0};
+  let Inst{15-8}  = D1{19-12};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 
   let Has20BitOffset = 1;
 }
@@ -866,180 +962,223 @@ class InstSIY<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
 class InstSMI<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> M1;
   bits<16> RI2;
-  bits<16> BD3;
+  bits<4> B3;
+  bits<12> D3;
 
-  let Inst{47-40} = op;
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
   let Inst{39-36} = M1;
   let Inst{35-32} = 0;
-  let Inst{31-16} = BD3;
+  let Inst{31-28} = B3;
+  let Inst{27-16} = D3;
   let Inst{15-0}  = RI2;
 }
 
 class InstSSa<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<24> BDL1;
-  bits<16> BD2;
+  bits<4> B1;
+  bits<12> D1;
+  bits<8> L1;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{47-40} = op;
-  let Inst{39-16} = BDL1;
-  let Inst{15-0}  = BD2;
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
+  let Inst{39-32} = L1;
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstSSb<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<20> BDL1;
-  bits<20> BDL2;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> L1;
+  bits<4> B2;
+  bits<12> D2;
+  bits<4> L2;
 
-  let Inst{47-40} = op;
-  let Inst{39-36} = BDL1{19-16};
-  let Inst{35-32} = BDL2{19-16};
-  let Inst{31-16} = BDL1{15-0};
-  let Inst{15-0}  = BDL2{15-0};
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
+  let Inst{39-36} = L1;
+  let Inst{35-32} = L2;
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0} = D2;
 }
 
 class InstSSc<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<20> BDL1;
-  bits<16> BD2;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> L1;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> I3;
 
-  let Inst{47-40} = op;
-  let Inst{39-36} = BDL1{19-16};
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
+  let Inst{39-36} = L1;
   let Inst{35-32} = I3;
-  let Inst{31-16} = BDL1{15-0};
-  let Inst{15-0}  = BD2;
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstSSd<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<20> RBD1;
-  bits<16> BD2;
+  bits<4> R1;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> R3;
 
-  let Inst{47-40} = op;
-  let Inst{39-36} = RBD1{19-16};
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
+  let Inst{39-36} = R1;
   let Inst{35-32} = R3;
-  let Inst{31-16} = RBD1{15-0};
-  let Inst{15-0}  = BD2;
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstSSe<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> R3;
-  bits<16> BD4;
+  bits<4> B4;
+  bits<12> D4;
 
-  let Inst{47-40} = op;
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = R3;
-  let Inst{31-16} = BD2;
-  let Inst{15-0}  = BD4;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
+  let Inst{15-12} = B4;
+  let Inst{11-0}  = D4;
 }
 
 class InstSSf<bits<8> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<16> BD1;
-  bits<24> BDL2;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> B2;
+  bits<12> D2;
+  bits<8> L2;
 
-  let Inst{47-40} = op;
-  let Inst{39-32} = BDL2{23-16};
-  let Inst{31-16} = BD1;
-  let Inst{15-0}  = BDL2{15-0};
+  let Inst{47-40} = !if(!ne(op, 0), op, enc{47-40});
+  let Inst{39-32} = L2;
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstSSE<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<16> BD1;
-  bits<16> BD2;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{47-32} = op;
-  let Inst{31-16} = BD1;
-  let Inst{15-0}  = BD2;
+  let Inst{47-32} = !if(!ne(op, 0), op, enc{47-32});
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstSSF<bits<12> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
-  bits<16> BD1;
-  bits<16> BD2;
+  bits<4> B1;
+  bits<12> D1;
+  bits<4> B2;
+  bits<12> D2;
   bits<4>  R3;
 
-  let Inst{47-40} = op{11-4};
+  let Inst{47-40} = !if(!ne(op, 0), op{11-4}, enc{47-40});
   let Inst{39-36} = R3;
-  let Inst{35-32} = op{3-0};
-  let Inst{31-16} = BD1;
-  let Inst{15-0}  = BD2;
+  let Inst{35-32} = !if(!ne(op, 0), op{3-0}, enc{35-32});
+  let Inst{31-28} = B1;
+  let Inst{27-16} = D1;
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstS<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<4, outs, ins, asmstr, pattern> {
   field bits<32> Inst;
-  field bits<32> SoftFail = 0;
+  bits<32> enc;
 
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
 
-  let Inst{31-16} = op;
-  let Inst{15-0}  = BD2;
+  let Inst{31-16} = !if(!ne(op, 0), op, enc{31-16});
+  let Inst{15-12} = B2;
+  let Inst{11-0}  = D2;
 }
 
 class InstVRIa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<16> I2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = 0;
   let Inst{31-16} = I2;
   let Inst{15-12} = M3;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<8> I2;
   bits<8> I3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = 0;
   let Inst{31-24} = I2;
@@ -1047,20 +1186,20 @@ class InstVRIb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{15-12} = M4;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V3;
   bits<16> I2;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V3{3-0};
   let Inst{31-16} = I2;
@@ -1068,13 +1207,13 @@ class InstVRIc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{11}    = V1{4};
   let Inst{10}    = V3{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRId<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1082,7 +1221,7 @@ class InstVRId<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<8> I4;
   bits<4> M5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1093,13 +1232,13 @@ class InstVRId<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1107,7 +1246,7 @@ class InstVRIe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<4> M4;
   bits<4> M5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-20} = I3;
@@ -1116,13 +1255,13 @@ class InstVRIe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{11}    = V1{4};
   let Inst{10}    = V2{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1130,7 +1269,7 @@ class InstVRIf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<8> I4;
   bits<4> M5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1141,13 +1280,13 @@ class InstVRIf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIg<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1155,7 +1294,7 @@ class InstVRIg<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<8> I4;
   bits<4> M5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-24} = I4;
@@ -1164,39 +1303,39 @@ class InstVRIg<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{11}    = V1{4};
   let Inst{10}    = V2{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIh<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<16> I2;
   bits<4> I3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = 0;
   let Inst{31-16} = I2;
   let Inst{15-12} = I3;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRIi<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<4> R2;
   bits<8> I3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = R2;
   let Inst{31-24} = 0;
@@ -1204,7 +1343,75 @@ class InstVRIi<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{19-12} = I3;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
+}
+
+class InstVRIj<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
+  : InstSystemZ<6, outs, ins, asmstr, pattern> {
+  field bits<48> Inst;
+  bits<48> enc;
+
+  bits<5> V1;
+  bits<5> V2;
+  bits<8> I3;
+  bits<4> M4;
+
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
+  let Inst{39-36} = V1{3-0};
+  let Inst{35-32} = V2{3-0};
+  let Inst{31-24} = 0;
+  let Inst{23-20} = M4;
+  let Inst{19-12} = I3;
+  let Inst{11}    = V1{4};
+  let Inst{10}    = V2{4};
+  let Inst{9-8}   = 0;
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
+}
+
+class InstVRIk<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
+  : InstSystemZ<6, outs, ins, asmstr, pattern> {
+  field bits<48> Inst;
+  bits<48> enc;
+
+  bits<5> V1;
+  bits<5> V2;
+  bits<5> V3;
+  bits<5> V4;
+  bits<8> I5;
+
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
+  let Inst{39-36} = V1{3-0};
+  let Inst{35-32} = V2{3-0};
+  let Inst{31-28} = V3{3-0};
+  let Inst{27-24} = 0;
+  let Inst{23-16} = I5;
+  let Inst{15-12} = V4{3-0};
+  let Inst{11}    = V1{4};
+  let Inst{10}    = V2{4};
+  let Inst{9}     = V3{4};
+  let Inst{8}     = V4{4};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
+}
+
+class InstVRIl<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
+  : InstSystemZ<6, outs, ins, asmstr, pattern> {
+  field bits<48> Inst;
+  bits<48> enc;
+
+  bits<5> V1;
+  bits<5> V2;
+  bits<16> I3;
+
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
+  let Inst{39-36} = 0;
+  let Inst{35-32} = V1{3-0};
+  let Inst{31-28} = V2{3-0};
+  let Inst{27-12} = I3;
+  let Inst{11}    = 0;
+  let Inst{10}    = V1{4};
+  let Inst{9}     = V2{4};
+  let Inst{8}     = 0;
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 // Depending on the instruction mnemonic, certain bits may be or-ed into
@@ -1213,7 +1420,7 @@ class InstVRRa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
                bits<4> m4or = 0>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1221,7 +1428,7 @@ class InstVRRa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
   bits<4> M4;
   bits<4> M5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-24} = 0;
@@ -1234,7 +1441,7 @@ class InstVRRa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
   let Inst{11}    = V1{4};
   let Inst{10}    = V2{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 // Depending on the instruction mnemonic, certain bits may be or-ed into
@@ -1243,7 +1450,7 @@ class InstVRRb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
                bits<4> m5or = 0>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1251,7 +1458,7 @@ class InstVRRb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
   bits<4> M4;
   bits<4> M5;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1266,13 +1473,13 @@ class InstVRRb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1281,7 +1488,7 @@ class InstVRRc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<4> M5;
   bits<4> M6;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1293,7 +1500,7 @@ class InstVRRc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 // Depending on the instruction mnemonic, certain bits may be or-ed into
@@ -1302,7 +1509,7 @@ class InstVRRd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
                bits<4> m6or = 0>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1311,7 +1518,7 @@ class InstVRRd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
   bits<4> M5;
   bits<4> M6;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1326,13 +1533,13 @@ class InstVRRd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern,
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = V4{4};
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
@@ -1341,7 +1548,7 @@ class InstVRRe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   bits<4> M5;
   bits<4> M6;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1353,55 +1560,57 @@ class InstVRRe<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = V4{4};
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRf<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<4> R2;
   bits<4> R3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = R2;
   let Inst{31-28} = R3;
   let Inst{27-12} = 0;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRg<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
+  bits<16> I2;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = 0;
   let Inst{35-32} = V1{3-0};
-  let Inst{31-12} = 0;
+  let Inst{31-28} = 0;
+  let Inst{27-12} = I2;
   let Inst{11}    = 0;
   let Inst{10}    = V1{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRh<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = 0;
   let Inst{35-32} = V1{3-0};
   let Inst{31-28} = V2{3-0};
@@ -1412,20 +1621,20 @@ class InstVRRh<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V1{4};
   let Inst{9}     = V2{4};
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRi<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
   bits<5> V2;
   bits<4> M3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = V2{3-0};
   let Inst{31-24} = 0;
@@ -1435,20 +1644,20 @@ class InstVRRi<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{11}    = 0;
   let Inst{10}    = V2{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRj<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
   bits<5> V3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = V3{3-0};
@@ -1460,19 +1669,19 @@ class InstVRRj<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V2{4};
   let Inst{9}     = V3{4};
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRRk<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
   bits<5> V2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V2{3-0};
   let Inst{31-28} = 0;
@@ -1484,383 +1693,162 @@ class InstVRRk<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   let Inst{10}    = V2{4};
   let Inst{9}     = 0;
   let Inst{8}     = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRSa<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
   bits<5> V3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = V3{3-0};
-  let Inst{31-16} = BD2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = M4;
   let Inst{11}    = V1{4};
   let Inst{10}    = V3{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRSb<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> R3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
   let Inst{35-32} = R3;
-  let Inst{31-16} = BD2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = M4;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRSc<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<4> R1;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
   bits<5> V3;
   bits<4> M4;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = R1;
   let Inst{35-32} = V3{3-0};
-  let Inst{31-16} = BD2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = M4;
   let Inst{11}    = 0;
   let Inst{10}    = V3{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRSd<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> R3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = 0;
   let Inst{35-32} = R3;
-  let Inst{31-16} = BD2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = V1{3-0};
   let Inst{11-9}  = 0;
   let Inst{8}     = V1{4};
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRV<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
-  bits<21> VBD2;
+  bits<5> V2;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
-  let Inst{35-16} = VBD2{19-0};
+  let Inst{35-32} = V2{3-0};
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = M3;
   let Inst{11}    = V1{4};
-  let Inst{10}    = VBD2{20};
+  let Inst{10}    = V2{4};
   let Inst{9-8}   = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVRX<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
-  bits<20> XBD2;
+  bits<4> X2;
+  bits<4> B2;
+  bits<12> D2;
   bits<4> M3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-36} = V1{3-0};
-  let Inst{35-16} = XBD2;
+  let Inst{35-32} = X2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = M3;
   let Inst{11}    = V1{4};
   let Inst{10-8}  = 0;
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
 
 class InstVSI<bits<16> op, dag outs, dag ins, string asmstr, list<dag> pattern>
   : InstSystemZ<6, outs, ins, asmstr, pattern> {
   field bits<48> Inst;
-  field bits<48> SoftFail = 0;
+  bits<48> enc;
 
   bits<5> V1;
-  bits<16> BD2;
+  bits<4> B2;
+  bits<12> D2;
   bits<8> I3;
 
-  let Inst{47-40} = op{15-8};
+  let Inst{47-40} = !if(!ne(op, 0), op{15-8}, enc{47-40});
   let Inst{39-32} = I3;
-  let Inst{31-16} = BD2;
+  let Inst{31-28} = B2;
+  let Inst{27-16} = D2;
   let Inst{15-12} = V1{3-0};
   let Inst{11-9}  = 0;
   let Inst{8}     = V1{4};
-  let Inst{7-0}   = op{7-0};
+  let Inst{7-0}   = !if(!ne(op, 0), op{7-0}, enc{7-0});
 }
-
-//===----------------------------------------------------------------------===//
-// Instruction classes for .insn directives
-//===----------------------------------------------------------------------===//
-
-class DirectiveInsnE<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstE<0, outs, ins, asmstr, pattern> {
-  bits<16> enc;
-
-  let Inst = enc;
-}
-
-class DirectiveInsnRI<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRIa<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-24} = enc{31-24};
-  let Inst{19-16} = enc{19-16};
-}
-
-class DirectiveInsnRIE<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRIEd<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRIL<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRILa<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-  string type;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{35-32} = enc{35-32};
-}
-
-class DirectiveInsnRIS<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRIS<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRR<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRR<0, outs, ins, asmstr, pattern> {
-  bits<16> enc;
-
-  let Inst{15-8} = enc{15-8};
-}
-
-class DirectiveInsnRRE<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRRE<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-16} = enc{31-16};
-}
-
-class DirectiveInsnRRF<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRRFa<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-16} = enc{31-16};
-}
-
-class DirectiveInsnRRS<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRRS<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRS<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRSa<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-24} = enc{31-24};
-}
-
-// RSE is like RSY except with a 12 bit displacement (instead of 20).
-class DirectiveInsnRSE<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRSYa<6, outs, ins, asmstr, pattern> {
-  bits <48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{31-16} = BD2{15-0};
-  let Inst{15-8}  = 0;
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRSI<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRSI<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-24} = enc{31-24};
-}
-
-class DirectiveInsnRSY<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRSYa<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRX<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRXa<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-24} = enc{31-24};
-}
-
-class DirectiveInsnRXE<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRXE<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let M3 = 0;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRXF<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRXF<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnRXY<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstRXYa<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnS<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstS<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-16} = enc{31-16};
-}
-
-class DirectiveInsnSI<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstSI<0, outs, ins, asmstr, pattern> {
-  bits<32> enc;
-
-  let Inst{31-24} = enc{31-24};
-}
-
-class DirectiveInsnSIY<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstSIY<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnSIL<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstSIL<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-32} = enc{47-32};
-}
-
-class DirectiveInsnSS<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstSSd<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-}
-
-class DirectiveInsnSSE<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstSSE<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-32} = enc{47-32};
-}
-
-class DirectiveInsnSSF<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstSSF<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{35-32} = enc{35-32};
-}
-
-class DirectiveInsnVRI<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstVRIe<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnVRR<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstVRRc<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnVRS<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstVRSc<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnVRV<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstVRV<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnVRX<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstVRX<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
-class DirectiveInsnVSI<dag outs, dag ins, string asmstr, list<dag> pattern>
-  : InstVSI<0, outs, ins, asmstr, pattern> {
-  bits<48> enc;
-
-  let Inst{47-40} = enc{47-40};
-  let Inst{7-0}   = enc{7-0};
-}
-
 
 //===----------------------------------------------------------------------===//
 // Variants of instructions with condition mask
@@ -1906,7 +1894,7 @@ class CondVariant<bits<4> ccmaskin, string suffixin, bit alternatein,
   bit alternate = alternatein;
 
   // Whether this needs be to restricted to a specific dialect.
-  // Valid values are "att" and "hlasm", which when passed in
+  // Valid values are "gnu" and "hlasm", which when passed in
   // will set AsmVariantName.
   string asmvariant = asmvariantin;
 }
@@ -1919,20 +1907,20 @@ def CondAlways : CondVariant<15, "", 0>;
 def CondVariantO   : CondVariant<1,  "o",   0>;
 def CondVariantH   : CondVariant<2,  "h",   0>;
 def CondVariantP   : CondVariant<2,  "p",   1>;
-def CondVariantNLE : CondVariant<3,  "nle", 0, "att">;
+def CondVariantNLE : CondVariant<3,  "nle", 0, "gnu">;
 def CondVariantL   : CondVariant<4,  "l",   0>;
 def CondVariantM   : CondVariant<4,  "m",   1>;
-def CondVariantNHE : CondVariant<5,  "nhe", 0, "att">;
-def CondVariantLH  : CondVariant<6,  "lh",  0, "att">;
+def CondVariantNHE : CondVariant<5,  "nhe", 0, "gnu">;
+def CondVariantLH  : CondVariant<6,  "lh",  0, "gnu">;
 def CondVariantNE  : CondVariant<7,  "ne",  0>;
 def CondVariantNZ  : CondVariant<7,  "nz",  1>;
 def CondVariantE   : CondVariant<8,  "e",   0>;
 def CondVariantZ   : CondVariant<8,  "z",   1>;
-def CondVariantNLH : CondVariant<9,  "nlh", 0, "att">;
-def CondVariantHE  : CondVariant<10, "he",  0, "att">;
+def CondVariantNLH : CondVariant<9,  "nlh", 0, "gnu">;
+def CondVariantHE  : CondVariant<10, "he",  0, "gnu">;
 def CondVariantNL  : CondVariant<11, "nl",  0>;
 def CondVariantNM  : CondVariant<11, "nm",  1>;
-def CondVariantLE  : CondVariant<12, "le",  0, "att">;
+def CondVariantLE  : CondVariant<12, "le",  0, "gnu">;
 def CondVariantNH  : CondVariant<13, "nh",  0>;
 def CondVariantNP  : CondVariant<13, "np",  1>;
 def CondVariantNO  : CondVariant<14, "no",  0>;
@@ -1949,16 +1937,16 @@ class CV<string name>
 // and that the low bit of the mask is therefore always 0.  This means
 // that each condition has two names.  Conditions "o" and "no" are not used.
 def IntCondVariantH   : CondVariant<2,  "h",   0>;
-def IntCondVariantNLE : CondVariant<2,  "nle", 1, "att">;
+def IntCondVariantNLE : CondVariant<2,  "nle", 1, "gnu">;
 def IntCondVariantL   : CondVariant<4,  "l",   0>;
-def IntCondVariantNHE : CondVariant<4,  "nhe", 1, "att">;
-def IntCondVariantLH  : CondVariant<6,  "lh",  0, "att">;
+def IntCondVariantNHE : CondVariant<4,  "nhe", 1, "gnu">;
+def IntCondVariantLH  : CondVariant<6,  "lh",  0, "gnu">;
 def IntCondVariantNE  : CondVariant<6,  "ne",  1>;
 def IntCondVariantE   : CondVariant<8,  "e",   0>;
-def IntCondVariantNLH : CondVariant<8,  "nlh", 1, "att">;
-def IntCondVariantHE  : CondVariant<10, "he",  0, "att">;
+def IntCondVariantNLH : CondVariant<8,  "nlh", 1, "gnu">;
+def IntCondVariantHE  : CondVariant<10, "he",  0, "gnu">;
 def IntCondVariantNL  : CondVariant<10, "nl",  1>;
-def IntCondVariantLE  : CondVariant<12, "le",  0, "att">;
+def IntCondVariantLE  : CondVariant<12, "le",  0, "gnu">;
 def IntCondVariantNH  : CondVariant<12, "nh",  1>;
 
 // A helper class to look up one of the above by name.
@@ -2041,6 +2029,9 @@ multiclass MnemonicCondBranchAlias<CondVariant V, string from, string to,
 //
 //   LoadAddress:
 //     One register output operand and one address operand.
+//
+//   LoadIndexedAddress:
+//     One register output operand and one indexed address operand.
 //
 //   SideEffectAddress:
 //     One address operand.  No output operands, but causes some side effect.
@@ -2131,7 +2122,7 @@ class InherentVRIa<string mnemonic, bits<16> opcode, bits<16> value>
 
 class StoreInherentS<string mnemonic, bits<16> opcode,
                      SDPatternOperator operator, bits<5> bytes>
-  : InstS<opcode, (outs), (ins bdaddr12only:$BD2),
+  : InstS<opcode, (outs), (ins (bdaddr12only $B2, $D2):$BD2),
           mnemonic#"\t$BD2", [(operator bdaddr12only:$BD2)]> {
   let mayStore = 1;
   let AccessBytes = bytes;
@@ -2143,7 +2134,8 @@ class SideEffectInherentE<string mnemonic, bits<16>opcode>
 class SideEffectInherentS<string mnemonic, bits<16> opcode,
                           SDPatternOperator operator>
   : InstS<opcode, (outs), (ins), mnemonic, [(operator)]> {
-  let BD2 = 0;
+  let B2 = 0;
+  let D2 = 0;
 }
 
 class SideEffectInherentRRE<string mnemonic, bits<16> opcode>
@@ -2167,7 +2159,7 @@ class CallRR<string mnemonic, bits<8> opcode>
            mnemonic#"\t$R1, $R2", []>;
 
 class CallRX<string mnemonic, bits<8> opcode>
-  : InstRXa<opcode, (outs), (ins GR64:$R1, bdxaddr12only:$XBD2),
+  : InstRXa<opcode, (outs), (ins GR64:$R1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2", []>;
 
 class CondBranchRI<string mnemonic, bits<12> opcode,
@@ -2181,6 +2173,12 @@ class CondBranchRI<string mnemonic, bits<12> opcode,
 class AsmCondBranchRI<string mnemonic, bits<12> opcode>
   : InstRIc<opcode, (outs), (ins imm32zx4:$M1, brtarget16:$RI2),
             mnemonic#"\t$M1, $RI2", []>;
+
+class NeverCondBranchRI<string mnemonic, bits<12> opcode>
+  : InstRIc<opcode, (outs), (ins brtarget16:$RI2),
+            mnemonic#"\t$RI2", []> {
+  let M1 = 0;
+}
 
 class FixedCondBranchRI<CondVariant V, string mnemonic, bits<12> opcode,
                         SDPatternOperator operator = null_frag>
@@ -2201,6 +2199,12 @@ class AsmCondBranchRIL<string mnemonic, bits<12> opcode>
   : InstRILc<opcode, (outs), (ins imm32zx4:$M1, brtarget32:$RI2),
              mnemonic#"\t$M1, $RI2", []>;
 
+class NeverCondBranchRIL<string mnemonic, bits<12> opcode>
+  : InstRILc<opcode, (outs), (ins brtarget32:$RI2),
+             mnemonic#"\t$RI2", []> {
+  let M1 = 0;
+}
+
 class FixedCondBranchRIL<CondVariant V, string mnemonic, bits<12> opcode>
   : InstRILc<opcode, (outs), (ins brtarget32:$RI2),
              !subst("#", V.suffix, mnemonic)#"\t$RI2", []> {
@@ -2219,6 +2223,18 @@ class AsmCondBranchRR<string mnemonic, bits<8> opcode>
   : InstRR<opcode, (outs), (ins imm32zx4:$R1, GR64:$R2),
            mnemonic#"\t$R1, $R2", []>;
 
+multiclass NeverCondBranchRR<string mnemonic, bits<8> opcode> {
+  // For the no-op (always false) branch, the target is optional.
+  def "" : InstRR<opcode, (outs), (ins GR64:$R2),
+                  mnemonic#"\t$R2", []> {
+             let R1 = 0;
+           }
+  def Opt : InstRR<opcode, (outs), (ins), mnemonic, []> {
+              let R1 = 0;
+              let R2 = 0;
+            }
+}
+
 class FixedCondBranchRR<CondVariant V, string mnemonic, bits<8> opcode,
                       SDPatternOperator operator = null_frag>
   : InstRR<opcode, (outs), (ins ADDR64:$R2),
@@ -2229,17 +2245,34 @@ class FixedCondBranchRR<CondVariant V, string mnemonic, bits<8> opcode,
 }
 
 class CondBranchRX<string mnemonic, bits<8> opcode>
-  : InstRXb<opcode, (outs), (ins cond4:$valid, cond4:$M1, bdxaddr12only:$XBD2),
+  : InstRXb<opcode, (outs),
+            (ins cond4:$valid, cond4:$M1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             !subst("#", "${M1}", mnemonic)#"\t$XBD2", []> {
   let CCMaskFirst = 1;
 }
 
 class AsmCondBranchRX<string mnemonic, bits<8> opcode>
-  : InstRXb<opcode, (outs), (ins imm32zx4:$M1, bdxaddr12only:$XBD2),
+  : InstRXb<opcode, (outs),
+            (ins imm32zx4:$M1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$M1, $XBD2", []>;
 
+multiclass NeverCondBranchRX<string mnemonic, bits<8> opcode> {
+  // For the no-op (always false) branch, the target is optional.
+  def "" : InstRXb<opcode, (outs),
+                  (ins (bdxaddr12only $B2, $D2, $X2):$XBD2),
+                  mnemonic#"\t$XBD2", []> {
+             let M1 = 0;
+           }
+  def Opt : InstRXb<opcode, (outs), (ins), mnemonic, []> {
+              let M1 = 0;
+              let B2 = 0;
+              let D2 = 0;
+              let X2 = 0;
+            }
+}
+
 class FixedCondBranchRX<CondVariant V, string mnemonic, bits<8> opcode>
-  : InstRXb<opcode, (outs), (ins bdxaddr12only:$XBD2),
+  : InstRXb<opcode, (outs), (ins (bdxaddr12only $B2, $D2, $X2):$XBD2),
             !subst("#", V.suffix, mnemonic)#"\t$XBD2", []> {
   let isAsmParserOnly = V.alternate;
   let AsmVariantName = V.asmvariant;
@@ -2247,21 +2280,23 @@ class FixedCondBranchRX<CondVariant V, string mnemonic, bits<8> opcode>
 }
 
 class CondBranchRXY<string mnemonic, bits<16> opcode>
-  : InstRXYb<opcode, (outs), (ins cond4:$valid, cond4:$M1, bdxaddr20only:$XBD2),
+  : InstRXYb<opcode, (outs), (ins cond4:$valid, cond4:$M1,
+             (bdxaddr20only $B2, $D2, $X2):$XBD2),
              !subst("#", "${M1}", mnemonic)#"\t$XBD2", []> {
   let CCMaskFirst = 1;
   let mayLoad = 1;
 }
 
 class AsmCondBranchRXY<string mnemonic, bits<16> opcode>
-  : InstRXYb<opcode, (outs), (ins imm32zx4:$M1, bdxaddr20only:$XBD2),
+  : InstRXYb<opcode, (outs),
+             (ins imm32zx4:$M1, (bdxaddr20only $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$M1, $XBD2", []> {
   let mayLoad = 1;
 }
 
 class FixedCondBranchRXY<CondVariant V, string mnemonic, bits<16> opcode,
                          SDPatternOperator operator = null_frag>
-  : InstRXYb<opcode, (outs), (ins bdxaddr20only:$XBD2),
+  : InstRXYb<opcode, (outs), (ins (bdxaddr20only $B2, $D2, $X2):$XBD2),
              !subst("#", V.suffix, mnemonic)#"\t$XBD2",
              [(operator (load bdxaddr20only:$XBD2))]> {
   let isAsmParserOnly = V.alternate;
@@ -2381,18 +2416,19 @@ class FixedCmpBranchRRFc<CondVariant V, string mnemonic, bits<16> opcode,
 class CmpBranchRRS<string mnemonic, bits<16> opcode,
                    RegisterOperand cls>
   : InstRRS<opcode, (outs),
-            (ins cls:$R1, cls:$R2, cond4:$M3, bdaddr12only:$BD4),
+            (ins cls:$R1, cls:$R2, cond4:$M3, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#"$M3\t$R1, $R2, $BD4", []>;
 
 class AsmCmpBranchRRS<string mnemonic, bits<16> opcode,
                       RegisterOperand cls>
   : InstRRS<opcode, (outs),
-            (ins cls:$R1, cls:$R2, imm32zx4:$M3, bdaddr12only:$BD4),
+            (ins cls:$R1, cls:$R2, imm32zx4:$M3, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#"\t$R1, $R2, $M3, $BD4", []>;
 
 class FixedCmpBranchRRS<CondVariant V, string mnemonic, bits<16> opcode,
                         RegisterOperand cls>
-  : InstRRS<opcode, (outs), (ins cls:$R1, cls:$R2, bdaddr12only:$BD4),
+  : InstRRS<opcode, (outs),
+            (ins cls:$R1, cls:$R2, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#V.suffix#"\t$R1, $R2, $BD4", []> {
   let isAsmParserOnly = V.alternate;
   let AsmVariantName = V.asmvariant;
@@ -2409,18 +2445,19 @@ multiclass CmpBranchRRSPair<string mnemonic, bits<16> opcode,
 class CmpBranchRIS<string mnemonic, bits<16> opcode,
                    RegisterOperand cls, ImmOpWithPattern imm>
   : InstRIS<opcode, (outs),
-            (ins cls:$R1, imm:$I2, cond4:$M3, bdaddr12only:$BD4),
+            (ins cls:$R1, imm:$I2, cond4:$M3, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#"$M3\t$R1, $I2, $BD4", []>;
 
 class AsmCmpBranchRIS<string mnemonic, bits<16> opcode,
                       RegisterOperand cls, ImmOpWithPattern imm>
   : InstRIS<opcode, (outs),
-            (ins cls:$R1, imm:$I2, imm32zx4:$M3, bdaddr12only:$BD4),
+            (ins cls:$R1, imm:$I2, imm32zx4:$M3, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#"\t$R1, $I2, $M3, $BD4", []>;
 
 class FixedCmpBranchRIS<CondVariant V, string mnemonic, bits<16> opcode,
                         RegisterOperand cls, ImmOpWithPattern imm>
-  : InstRIS<opcode, (outs), (ins cls:$R1, imm:$I2, bdaddr12only:$BD4),
+  : InstRIS<opcode, (outs),
+            (ins cls:$R1, imm:$I2, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#V.suffix#"\t$R1, $I2, $BD4", []> {
   let isAsmParserOnly = V.alternate;
   let AsmVariantName = V.asmvariant;
@@ -2436,12 +2473,14 @@ multiclass CmpBranchRISPair<string mnemonic, bits<16> opcode,
 
 class CmpBranchRSYb<string mnemonic, bits<16> opcode,
                     RegisterOperand cls>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, bdaddr20only:$BD2, cond4:$M3),
+  : InstRSYb<opcode, (outs),
+             (ins cls:$R1, (bdaddr20only $B2, $D2):$BD2, cond4:$M3),
              mnemonic#"$M3\t$R1, $BD2", []>;
 
 class AsmCmpBranchRSYb<string mnemonic, bits<16> opcode,
                        RegisterOperand cls>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, bdaddr20only:$BD2, imm32zx4:$M3),
+  : InstRSYb<opcode, (outs),
+             (ins cls:$R1, (bdaddr20only $B2, $D2):$BD2, imm32zx4:$M3),
              mnemonic#"\t$R1, $M3, $BD2", []>;
 
 multiclass CmpBranchRSYbPair<string mnemonic, bits<16> opcode,
@@ -2453,7 +2492,7 @@ multiclass CmpBranchRSYbPair<string mnemonic, bits<16> opcode,
 
 class FixedCmpBranchRSYb<CondVariant V, string mnemonic, bits<16> opcode,
                           RegisterOperand cls>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, bdaddr20only:$BD2),
+  : InstRSYb<opcode, (outs), (ins cls:$R1, (bdaddr20only $B2, $D2):$BD2),
              mnemonic#V.suffix#"\t$R1, $BD2", []> {
   let isAsmParserOnly = V.alternate;
   let AsmVariantName = V.asmvariant;
@@ -2464,49 +2503,44 @@ class BranchUnaryRI<string mnemonic, bits<12> opcode, RegisterOperand cls>
   : InstRIb<opcode, (outs cls:$R1), (ins cls:$R1src, brtarget16:$RI2),
             mnemonic#"\t$R1, $RI2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchUnaryRIL<string mnemonic, bits<12> opcode, RegisterOperand cls>
   : InstRILb<opcode, (outs cls:$R1), (ins cls:$R1src, brtarget32:$RI2),
              mnemonic#"\t$R1, $RI2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchUnaryRR<string mnemonic, bits<8> opcode, RegisterOperand cls>
   : InstRR<opcode, (outs cls:$R1), (ins cls:$R1src, GR64:$R2),
            mnemonic#"\t$R1, $R2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchUnaryRRE<string mnemonic, bits<16> opcode, RegisterOperand cls>
   : InstRRE<opcode, (outs cls:$R1), (ins cls:$R1src, GR64:$R2),
             mnemonic#"\t$R1, $R2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchUnaryRX<string mnemonic, bits<8> opcode, RegisterOperand cls>
-  : InstRXa<opcode, (outs cls:$R1), (ins cls:$R1src, bdxaddr12only:$XBD2),
+  : InstRXa<opcode, (outs cls:$R1),
+            (ins cls:$R1src, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchUnaryRXY<string mnemonic, bits<16> opcode, RegisterOperand cls>
-  : InstRXYa<opcode, (outs cls:$R1), (ins cls:$R1src, bdxaddr20only:$XBD2),
+  : InstRXYa<opcode, (outs cls:$R1),
+             (ins cls:$R1src, (bdxaddr20only $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchBinaryRSI<string mnemonic, bits<8> opcode, RegisterOperand cls>
   : InstRSI<opcode, (outs cls:$R1), (ins cls:$R1src, cls:$R3, brtarget16:$RI2),
             mnemonic#"\t$R1, $R3, $RI2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchBinaryRIEe<string mnemonic, bits<16> opcode, RegisterOperand cls>
@@ -2514,35 +2548,33 @@ class BranchBinaryRIEe<string mnemonic, bits<16> opcode, RegisterOperand cls>
              (ins cls:$R1src, cls:$R3, brtarget16:$RI2),
              mnemonic#"\t$R1, $R3, $RI2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchBinaryRS<string mnemonic, bits<8> opcode, RegisterOperand cls>
   : InstRSa<opcode, (outs cls:$R1),
-            (ins cls:$R1src, cls:$R3, bdaddr12only:$BD2),
+            (ins cls:$R1src, cls:$R3, (bdaddr12only $B2, $D2):$BD2),
             mnemonic#"\t$R1, $R3, $BD2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BranchBinaryRSY<string mnemonic, bits<16> opcode, RegisterOperand cls>
   : InstRSYa<opcode,
-             (outs cls:$R1), (ins cls:$R1src, cls:$R3, bdaddr20only:$BD2),
+             (outs cls:$R1),
+             (ins cls:$R1src, cls:$R3, (bdaddr20only $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class LoadMultipleRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
                      AddressingMode mode = bdaddr12only>
-  : InstRSa<opcode, (outs cls:$R1, cls:$R3), (ins mode:$BD2),
+  : InstRSa<opcode, (outs cls:$R1, cls:$R3), (ins (mode $B2, $D2):$BD2),
             mnemonic#"\t$R1, $R3, $BD2", []> {
   let mayLoad = 1;
 }
 
 class LoadMultipleRSY<string mnemonic, bits<16> opcode, RegisterOperand cls,
                       AddressingMode mode = bdaddr20only>
-  : InstRSYa<opcode, (outs cls:$R1, cls:$R3), (ins mode:$BD2),
+  : InstRSYa<opcode, (outs cls:$R1, cls:$R3), (ins (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2", []> {
   let mayLoad = 1;
 }
@@ -2559,7 +2591,7 @@ multiclass LoadMultipleRSPair<string mnemonic, bits<8> rsOpcode,
 
 class LoadMultipleSSe<string mnemonic, bits<8> opcode, RegisterOperand cls>
   : InstSSe<opcode, (outs cls:$R1, cls:$R3),
-            (ins bdaddr12only:$BD2, bdaddr12only:$BD4),
+            (ins (bdaddr12only $B2, $D2):$BD2, (bdaddr12only $B4, $D4):$BD4),
             mnemonic#"\t$R1, $R3, $BD2, $BD4", []> {
   let mayLoad = 1;
 }
@@ -2567,11 +2599,11 @@ class LoadMultipleSSe<string mnemonic, bits<8> opcode, RegisterOperand cls>
 multiclass LoadMultipleVRSaAlign<string mnemonic, bits<16> opcode> {
   let mayLoad = 1 in {
     def Align : InstVRSa<opcode, (outs VR128:$V1, VR128:$V3),
-                        (ins bdaddr12only:$BD2, imm32zx4:$M4),
+                        (ins (bdaddr12only $B2, $D2):$BD2, imm32zx4:$M4),
                         mnemonic#"\t$V1, $V3, $BD2, $M4", []>;
     let M4 = 0 in
       def "" : InstVRSa<opcode, (outs VR128:$V1, VR128:$V3),
-                        (ins bdaddr12only:$BD2),
+                        (ins (bdaddr12only $B2, $D2):$BD2),
                         mnemonic#"\t$V1, $V3, $BD2", []>;
   }
 }
@@ -2591,7 +2623,7 @@ class StoreRILPC<string mnemonic, bits<12> opcode, SDPatternOperator operator,
 class StoreRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
               RegisterOperand cls, bits<5> bytes,
               AddressingMode mode = bdxaddr12only>
-  : InstRXa<opcode, (outs), (ins cls:$R1, mode:$XBD2),
+  : InstRXa<opcode, (outs), (ins cls:$R1, (mode $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(operator cls:$R1, mode:$XBD2)]> {
   let OpKey = mnemonic#"r"#cls;
@@ -2603,7 +2635,7 @@ class StoreRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
 class StoreRXY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                RegisterOperand cls, bits<5> bytes,
                AddressingMode mode = bdxaddr20only>
-  : InstRXYa<opcode, (outs), (ins cls:$R1, mode:$XBD2),
+  : InstRXYa<opcode, (outs), (ins cls:$R1, (mode $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2",
              [(operator cls:$R1, mode:$XBD2)]> {
   let OpKey = mnemonic#"r"#cls;
@@ -2626,7 +2658,8 @@ multiclass StoreRXPair<string mnemonic, bits<8> rxOpcode, bits<16> rxyOpcode,
 
 class StoreVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                TypedReg tr, bits<5> bytes, bits<4> type = 0>
-  : InstVRX<opcode, (outs), (ins tr.op:$V1, bdxaddr12only:$XBD2),
+  : InstVRX<opcode, (outs),
+            (ins tr.op:$V1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$V1, $XBD2",
             [(operator (tr.vt tr.op:$V1), bdxaddr12only:$XBD2)]> {
   let M3 = type;
@@ -2635,7 +2668,8 @@ class StoreVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 }
 
 class StoreVRXGeneric<string mnemonic, bits<16> opcode>
-  : InstVRX<opcode, (outs), (ins VR128:$V1, bdxaddr12only:$XBD2, imm32zx4:$M3),
+  : InstVRX<opcode, (outs),
+            (ins VR128:$V1, (bdxaddr12only $B2, $D2, $X2):$XBD2, imm32zx4:$M3),
             mnemonic#"\t$V1, $XBD2, $M3", []> {
   let mayStore = 1;
 }
@@ -2643,17 +2677,20 @@ class StoreVRXGeneric<string mnemonic, bits<16> opcode>
 multiclass StoreVRXAlign<string mnemonic, bits<16> opcode> {
   let mayStore = 1, AccessBytes = 16 in {
     def Align : InstVRX<opcode, (outs),
-                        (ins VR128:$V1, bdxaddr12only:$XBD2, imm32zx4:$M3),
+                        (ins VR128:$V1, (bdxaddr12only $B2, $D2, $X2):$XBD2,
+                             imm32zx4:$M3),
                         mnemonic#"\t$V1, $XBD2, $M3", []>;
     let M3 = 0 in
-      def "" : InstVRX<opcode, (outs), (ins VR128:$V1, bdxaddr12only:$XBD2),
+      def "" : InstVRX<opcode, (outs),
+                       (ins VR128:$V1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
                        mnemonic#"\t$V1, $XBD2", []>;
   }
 }
 
 class StoreLengthVRSb<string mnemonic, bits<16> opcode,
                       SDPatternOperator operator, bits<5> bytes>
-  : InstVRSb<opcode, (outs), (ins VR128:$V1, GR32:$R3, bdaddr12only:$BD2),
+  : InstVRSb<opcode, (outs),
+             (ins VR128:$V1, GR32:$R3, (bdaddr12only $B2, $D2):$BD2),
              mnemonic#"\t$V1, $R3, $BD2",
              [(operator VR128:$V1, GR32:$R3, bdaddr12only:$BD2)]> {
   let M4 = 0;
@@ -2663,7 +2700,8 @@ class StoreLengthVRSb<string mnemonic, bits<16> opcode,
 
 class StoreLengthVRSd<string mnemonic, bits<16> opcode,
                       SDPatternOperator operator, bits<5> bytes>
-  : InstVRSd<opcode, (outs), (ins VR128:$V1, GR32:$R3, bdaddr12only:$BD2),
+  : InstVRSd<opcode, (outs),
+             (ins VR128:$V1, GR32:$R3, (bdaddr12only $B2, $D2):$BD2),
              mnemonic#"\t$V1, $R3, $BD2",
              [(operator VR128:$V1, GR32:$R3, bdaddr12only:$BD2)]> {
   let mayStore = 1;
@@ -2672,7 +2710,8 @@ class StoreLengthVRSd<string mnemonic, bits<16> opcode,
 
 class StoreLengthVSI<string mnemonic, bits<16> opcode,
                      SDPatternOperator operator, bits<5> bytes>
-  : InstVSI<opcode, (outs), (ins VR128:$V1, bdaddr12only:$BD2, imm32zx8:$I3),
+  : InstVSI<opcode, (outs),
+            (ins VR128:$V1, (bdaddr12only $B2, $D2):$BD2, imm32zx8:$I3),
             mnemonic#"\t$V1, $BD2, $I3",
             [(operator VR128:$V1, imm32zx8:$I3, bdaddr12only:$BD2)]> {
   let mayStore = 1;
@@ -2681,14 +2720,14 @@ class StoreLengthVSI<string mnemonic, bits<16> opcode,
 
 class StoreMultipleRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
                       AddressingMode mode = bdaddr12only>
-  : InstRSa<opcode, (outs), (ins cls:$R1, cls:$R3, mode:$BD2),
+  : InstRSa<opcode, (outs), (ins cls:$R1, cls:$R3, (mode $B2, $D2):$BD2),
             mnemonic#"\t$R1, $R3, $BD2", []> {
   let mayStore = 1;
 }
 
 class StoreMultipleRSY<string mnemonic, bits<16> opcode, RegisterOperand cls,
                        AddressingMode mode = bdaddr20only>
-  : InstRSYa<opcode, (outs), (ins cls:$R1, cls:$R3, mode:$BD2),
+  : InstRSYa<opcode, (outs), (ins cls:$R1, cls:$R3, (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2", []> {
   let mayStore = 1;
 }
@@ -2706,11 +2745,12 @@ multiclass StoreMultipleRSPair<string mnemonic, bits<8> rsOpcode,
 multiclass StoreMultipleVRSaAlign<string mnemonic, bits<16> opcode> {
   let mayStore = 1 in {
     def Align : InstVRSa<opcode, (outs), (ins VR128:$V1, VR128:$V3,
-                                              bdaddr12only:$BD2, imm32zx4:$M4),
+                                              (bdaddr12only $B2, $D2):$BD2,
+                                              imm32zx4:$M4),
                          mnemonic#"\t$V1, $V3, $BD2, $M4", []>;
     let M4 = 0 in
       def "" : InstVRSa<opcode, (outs), (ins VR128:$V1, VR128:$V3,
-                                             bdaddr12only:$BD2),
+                                             (bdaddr12only $B2, $D2):$BD2),
                         mnemonic#"\t$V1, $V3, $BD2", []>;
   }
 }
@@ -2723,7 +2763,7 @@ multiclass StoreMultipleVRSaAlign<string mnemonic, bits<16> opcode> {
 // only use the StoreSI* instruction if the matched address is suitable.
 class StoreSI<string mnemonic, bits<8> opcode, SDPatternOperator operator,
               ImmOpWithPattern imm>
-  : InstSI<opcode, (outs), (ins mviaddr12pair:$BD1, imm:$I2),
+  : InstSI<opcode, (outs), (ins (mviaddr12pair $B1, $D1):$BD1, imm:$I2),
            mnemonic#"\t$BD1, $I2",
            [(operator imm:$I2, mviaddr12pair:$BD1)]> {
   let mayStore = 1;
@@ -2731,7 +2771,7 @@ class StoreSI<string mnemonic, bits<8> opcode, SDPatternOperator operator,
 
 class StoreSIY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                ImmOpWithPattern imm>
-  : InstSIY<opcode, (outs), (ins mviaddr20pair:$BD1, imm:$I2),
+  : InstSIY<opcode, (outs), (ins (mviaddr20pair $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2",
             [(operator imm:$I2, mviaddr20pair:$BD1)]> {
   let mayStore = 1;
@@ -2739,7 +2779,7 @@ class StoreSIY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class StoreSIL<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                ImmOpWithPattern imm>
-  : InstSIL<opcode, (outs), (ins mviaddr12pair:$BD1, imm:$I2),
+  : InstSIL<opcode, (outs), (ins (mviaddr12pair $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2",
             [(operator imm:$I2, mviaddr12pair:$BD1)]> {
   let mayStore = 1;
@@ -2756,7 +2796,8 @@ multiclass StoreSIPair<string mnemonic, bits<8> siOpcode, bits<16> siyOpcode,
 }
 
 class StoreSSE<string mnemonic, bits<16> opcode>
-  : InstSSE<opcode, (outs), (ins bdaddr12only:$BD1, bdaddr12only:$BD2),
+  : InstSSE<opcode, (outs),
+            (ins (bdaddr12only $B1, $D1):$BD1, (bdaddr12only $B2, $D2):$BD2),
             mnemonic#"\t$BD1, $BD2", []> {
   let mayStore = 1;
 }
@@ -2764,8 +2805,9 @@ class StoreSSE<string mnemonic, bits<16> opcode>
 class CondStoreRSY<string mnemonic, bits<16> opcode,
                    RegisterOperand cls, bits<5> bytes,
                    AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, mode:$BD2, cond4:$valid, cond4:$M3),
-            mnemonic#"$M3\t$R1, $BD2", []> {
+  : InstRSYb<opcode, (outs),
+             (ins cls:$R1, (mode $B2, $D2):$BD2, cond4:$valid, cond4:$M3),
+             mnemonic#"$M3\t$R1, $BD2", []> {
   let mayStore = 1;
   let AccessBytes = bytes;
   let CCMaskLast = 1;
@@ -2776,7 +2818,7 @@ class CondStoreRSY<string mnemonic, bits<16> opcode,
 class AsmCondStoreRSY<string mnemonic, bits<16> opcode,
                       RegisterOperand cls, bits<5> bytes,
                       AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, mode:$BD2, imm32zx4:$M3),
+  : InstRSYb<opcode, (outs), (ins cls:$R1, (mode $B2, $D2):$BD2, imm32zx4:$M3),
              mnemonic#"\t$R1, $BD2, $M3", []> {
   let mayStore = 1;
   let AccessBytes = bytes;
@@ -2786,7 +2828,7 @@ class AsmCondStoreRSY<string mnemonic, bits<16> opcode,
 class FixedCondStoreRSY<CondVariant V, string mnemonic, bits<16> opcode,
                         RegisterOperand cls, bits<5> bytes,
                         AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, mode:$BD2),
+  : InstRSYb<opcode, (outs), (ins cls:$R1, (mode $B2, $D2):$BD2),
              mnemonic#V.suffix#"\t$R1, $BD2", []> {
   let mayStore = 1;
   let AccessBytes = bytes;
@@ -2823,7 +2865,7 @@ class SideEffectUnaryRRE<string mnemonic, bits<16> opcode, RegisterOperand cls,
 class SideEffectUnaryS<string mnemonic, bits<16> opcode,
                        SDPatternOperator operator, bits<5> bytes,
                        AddressingMode mode = bdaddr12only>
-  : InstS<opcode, (outs), (ins mode:$BD2),
+  : InstS<opcode, (outs), (ins (mode $B2, $D2):$BD2),
           mnemonic#"\t$BD2", [(operator mode:$BD2)]> {
   let mayLoad = 1;
   let AccessBytes = bytes;
@@ -2832,7 +2874,7 @@ class SideEffectUnaryS<string mnemonic, bits<16> opcode,
 class SideEffectUnarySIY<string mnemonic, bits<16> opcode,
                          bits<5> bytes,
                          AddressingMode mode = bdaddr20only>
-  : InstSIY<opcode, (outs), (ins mode:$BD1),
+  : InstSIY<opcode, (outs), (ins (mode $B1, $D1):$BD1),
             mnemonic#"\t$BD1", []> {
   let mayLoad = 1;
   let AccessBytes = bytes;
@@ -2842,18 +2884,18 @@ class SideEffectUnarySIY<string mnemonic, bits<16> opcode,
 class SideEffectAddressS<string mnemonic, bits<16> opcode,
                         SDPatternOperator operator,
                         AddressingMode mode = bdaddr12only>
-  : InstS<opcode, (outs), (ins mode:$BD2),
+  : InstS<opcode, (outs), (ins (mode $B2, $D2):$BD2),
           mnemonic#"\t$BD2", [(operator mode:$BD2)]>;
 
 class LoadAddressRX<string mnemonic, bits<8> opcode,
                     SDPatternOperator operator, AddressingMode mode>
-  : InstRXa<opcode, (outs GR64:$R1), (ins mode:$XBD2),
+  : InstRXa<opcode, (outs GR64:$R1), (ins (mode $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set GR64:$R1, (operator mode:$XBD2))]>;
 
 class LoadAddressRXY<string mnemonic, bits<16> opcode,
                      SDPatternOperator operator, AddressingMode mode>
-  : InstRXYa<opcode, (outs GR64:$R1), (ins mode:$XBD2),
+  : InstRXYa<opcode, (outs GR64:$R1), (ins (mode $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2",
              [(set GR64:$R1, (operator mode:$XBD2))]>;
 
@@ -2872,6 +2914,32 @@ class LoadAddressRIL<string mnemonic, bits<12> opcode,
   : InstRILb<opcode, (outs GR64:$R1), (ins pcrel32:$RI2),
              mnemonic#"\t$R1, $RI2",
              [(set GR64:$R1, (operator pcrel32:$RI2))]>;
+
+multiclass LoadIndexedAddressRXY<string mnemonic, bits<16> opcode,
+                                 SDPatternOperator ext,
+                                 SDPatternOperator shift = bitconvert> {
+  def "" : InstRXYa<opcode, (outs GR64:$R1),
+                            (ins (lxaaddr20only $B2, $D2, $X2):$XBD2),
+                    mnemonic#"\t$R1, $XBD2", []>;
+
+  // Patterns matching LXA with displacement.
+  def : Pat<(add ADDR64:$base,
+                 (shift (i64 (ext (add ADDR32:$index, disp20imm32:$disp))))),
+            (!cast<Instruction>(NAME) ADDR64:$base, imm32:$disp, ADDR32:$index)>;
+  def : Pat<(shift (i64 (ext (add ADDR32:$index, disp20imm32:$disp)))),
+            (!cast<Instruction>(NAME) zero_reg, imm32:$disp, ADDR32:$index)>;
+
+  // Patterns matching LXA without displacement.  These are only beneficial
+  // if we have a non-trivial shift.  Also, we need to add some complexity
+  // to account for the fact that the regular shift patterns have rather
+  // high complexity values due to allowing base + displacement.
+  if !ne(shift, bitconvert) then let AddedComplexity = 2 in {
+    def : Pat<(add ADDR64:$base, (shift (i64 (ext ADDR32:$index)))),
+              (!cast<Instruction>(NAME) ADDR64:$base, 0, ADDR32:$index)>;
+    def : Pat<(shift (i64 (ext ADDR32:$index))),
+              (!cast<Instruction>(NAME) zero_reg, 0, ADDR32:$index)>;
+  }
+}
 
 class UnaryRR<string mnemonic, bits<8> opcode, SDPatternOperator operator,
               RegisterOperand cls1, RegisterOperand cls2>
@@ -2895,7 +2963,6 @@ class UnaryTiedRRE<string mnemonic, bits<16> opcode, RegisterOperand cls>
   : InstRRE<opcode, (outs cls:$R1), (ins cls:$R1src),
             mnemonic#"\t$R1", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let R2 = 0;
 }
 
@@ -2904,7 +2971,6 @@ class UnaryMemRRFc<string mnemonic, bits<16> opcode,
   : InstRRFc<opcode, (outs cls2:$R2, cls1:$R1), (ins cls1:$R1src),
             mnemonic#"\t$R1, $R2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let M3 = 0;
 }
 
@@ -2936,13 +3002,12 @@ class CondUnaryRSY<string mnemonic, bits<16> opcode,
                    SDPatternOperator operator, RegisterOperand cls,
                    bits<5> bytes, AddressingMode mode = bdaddr20only>
   : InstRSYb<opcode, (outs cls:$R1),
-             (ins cls:$R1src, mode:$BD2, cond4:$valid, cond4:$M3),
+             (ins cls:$R1src, (mode $B2, $D2):$BD2, cond4:$valid, cond4:$M3),
              mnemonic#"$M3\t$R1, $BD2",
              [(set cls:$R1,
                    (z_select_ccmask (operator bdaddr20only:$BD2), cls:$R1src,
                                     cond4:$valid, cond4:$M3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
   let CCMaskLast = 1;
@@ -2957,22 +3022,21 @@ class CondUnaryRSY<string mnemonic, bits<16> opcode,
 class AsmCondUnaryRSY<string mnemonic, bits<16> opcode,
                       RegisterOperand cls, bits<5> bytes,
                       AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs cls:$R1), (ins cls:$R1src, mode:$BD2, imm32zx4:$M3),
+  : InstRSYb<opcode, (outs cls:$R1),
+             (ins cls:$R1src, (mode $B2, $D2):$BD2, imm32zx4:$M3),
              mnemonic#"\t$R1, $BD2, $M3", []> {
   let mayLoad = 1;
   let AccessBytes = bytes;
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 // Like CondUnaryRSY, but with a fixed CC mask.
 class FixedCondUnaryRSY<CondVariant V, string mnemonic, bits<16> opcode,
                         RegisterOperand cls, bits<5> bytes,
                         AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs cls:$R1), (ins cls:$R1src, mode:$BD2),
+  : InstRSYb<opcode, (outs cls:$R1), (ins cls:$R1src, (mode $B2, $D2):$BD2),
              mnemonic#V.suffix#"\t$R1, $BD2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
   let isAsmParserOnly = V.alternate;
@@ -2992,7 +3056,7 @@ multiclass CondUnaryRSYPair<string mnemonic, bits<16> opcode,
 class UnaryRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
               RegisterOperand cls, bits<5> bytes,
               AddressingMode mode = bdxaddr12only>
-  : InstRXa<opcode, (outs cls:$R1), (ins mode:$XBD2),
+  : InstRXa<opcode, (outs cls:$R1), (ins (mode $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set cls:$R1, (operator mode:$XBD2))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -3003,7 +3067,7 @@ class UnaryRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
 
 class UnaryRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                RegisterOperand cls, bits<5> bytes>
-  : InstRXE<opcode, (outs cls:$R1), (ins bdxaddr12only:$XBD2),
+  : InstRXE<opcode, (outs cls:$R1), (ins (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set cls:$R1, (operator bdxaddr12only:$XBD2))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -3016,7 +3080,7 @@ class UnaryRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 class UnaryRXY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                RegisterOperand cls, bits<5> bytes,
                AddressingMode mode = bdxaddr20only>
-  : InstRXYa<opcode, (outs cls:$R1), (ins mode:$XBD2),
+  : InstRXYa<opcode, (outs cls:$R1), (ins (mode $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2",
              [(set cls:$R1, (operator mode:$XBD2))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -3110,7 +3174,7 @@ multiclass UnaryExtraVRRaSPairGeneric<string mnemonic, bits<16> opcode> {
 
 class UnaryVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                TypedReg tr, bits<5> bytes, bits<4> type = 0>
-  : InstVRX<opcode, (outs tr.op:$V1), (ins bdxaddr12only:$XBD2),
+  : InstVRX<opcode, (outs tr.op:$V1), (ins (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$V1, $XBD2",
             [(set (tr.vt tr.op:$V1), (operator bdxaddr12only:$XBD2))]> {
   let M3 = type;
@@ -3119,7 +3183,8 @@ class UnaryVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 }
 
 class UnaryVRXGeneric<string mnemonic, bits<16> opcode>
-  : InstVRX<opcode, (outs VR128:$V1), (ins bdxaddr12only:$XBD2, imm32zx4:$M3),
+  : InstVRX<opcode, (outs VR128:$V1),
+            (ins (bdxaddr12only $B2, $D2, $X2):$XBD2, imm32zx4:$M3),
             mnemonic#"\t$V1, $XBD2, $M3", []> {
   let mayLoad = 1;
 }
@@ -3127,22 +3192,23 @@ class UnaryVRXGeneric<string mnemonic, bits<16> opcode>
 multiclass UnaryVRXAlign<string mnemonic, bits<16> opcode> {
   let mayLoad = 1, AccessBytes = 16 in {
     def Align : InstVRX<opcode, (outs VR128:$V1),
-                        (ins bdxaddr12only:$XBD2, imm32zx4:$M3),
+                        (ins (bdxaddr12only $B2, $D2, $X2):$XBD2, imm32zx4:$M3),
                         mnemonic#"\t$V1, $XBD2, $M3", []>;
     let M3 = 0 in
-      def "" : InstVRX<opcode, (outs VR128:$V1), (ins bdxaddr12only:$XBD2),
+      def "" : InstVRX<opcode, (outs VR128:$V1),
+                       (ins (bdxaddr12only $B2, $D2, $X2):$XBD2),
                        mnemonic#"\t$V1, $XBD2", []>;
   }
 }
 
 class SideEffectBinaryRX<string mnemonic, bits<8> opcode,
                          RegisterOperand cls>
-  : InstRXa<opcode, (outs), (ins cls:$R1, bdxaddr12only:$XBD2),
+  : InstRXa<opcode, (outs), (ins cls:$R1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2", []>;
 
 class SideEffectBinaryRXY<string mnemonic, bits<16> opcode,
                           RegisterOperand cls>
-  : InstRXYa<opcode, (outs), (ins cls:$R1, bdxaddr20only:$XBD2),
+  : InstRXYa<opcode, (outs), (ins cls:$R1, (bdxaddr20only $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2", []>;
 
 class SideEffectBinaryRILPC<string mnemonic, bits<12> opcode,
@@ -3181,29 +3247,33 @@ class SideEffectBinaryIE<string mnemonic, bits<16> opcode,
            mnemonic#"\t$I1, $I2", []>;
 
 class SideEffectBinarySI<string mnemonic, bits<8> opcode, Operand imm>
-  : InstSI<opcode, (outs), (ins bdaddr12only:$BD1, imm:$I2),
+  : InstSI<opcode, (outs), (ins (bdaddr12only $B1, $D1):$BD1, imm:$I2),
            mnemonic#"\t$BD1, $I2", []>;
 
 class SideEffectBinarySIL<string mnemonic, bits<16> opcode,
                           SDPatternOperator operator, ImmOpWithPattern imm>
-  : InstSIL<opcode, (outs), (ins bdaddr12only:$BD1, imm:$I2),
+  : InstSIL<opcode, (outs), (ins (bdaddr12only $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2", [(operator bdaddr12only:$BD1, imm:$I2)]>;
 
 class SideEffectBinarySSa<string mnemonic, bits<8> opcode>
-  : InstSSa<opcode, (outs), (ins bdladdr12onlylen8:$BDL1, bdaddr12only:$BD2),
+  : InstSSa<opcode, (outs), (ins (bdladdr12onlylen8 $B1, $D1, $L1):$BDL1,
+                                 (bdaddr12only $B2, $D2):$BD2),
             mnemonic#"\t$BDL1, $BD2", []>;
 
 class SideEffectBinarySSb<string mnemonic, bits<8> opcode>
   : InstSSb<opcode,
-            (outs), (ins bdladdr12onlylen4:$BDL1, bdladdr12onlylen4:$BDL2),
+            (outs), (ins (bdladdr12onlylen4 $B1, $D1, $L1):$BDL1,
+                         (bdladdr12onlylen4 $B2, $D2, $L2):$BDL2),
             mnemonic#"\t$BDL1, $BDL2", []>;
 
 class SideEffectBinarySSf<string mnemonic, bits<8> opcode>
-  : InstSSf<opcode, (outs), (ins bdaddr12only:$BD1, bdladdr12onlylen8:$BDL2),
+  : InstSSf<opcode, (outs), (ins (bdaddr12only $B1, $D1):$BD1,
+                                 (bdladdr12onlylen8 $B2, $D2, $L2):$BDL2),
             mnemonic#"\t$BD1, $BDL2", []>;
 
 class SideEffectBinarySSE<string mnemonic, bits<16> opcode>
-  : InstSSE<opcode, (outs), (ins bdaddr12only:$BD1, bdaddr12only:$BD2),
+  : InstSSE<opcode, (outs),
+            (ins (bdaddr12only $B1, $D1):$BD1, (bdaddr12only $B2, $D2):$BD2),
             mnemonic#"\t$BD1, $BD2", []>;
 
 class SideEffectBinaryMemMemRR<string mnemonic, bits<8> opcode,
@@ -3211,7 +3281,6 @@ class SideEffectBinaryMemMemRR<string mnemonic, bits<8> opcode,
   : InstRR<opcode, (outs cls1:$R1, cls2:$R2), (ins cls1:$R1src, cls2:$R2src),
            mnemonic#"\t$R1, $R2", []> {
     let Constraints = "$R1 = $R1src, $R2 = $R2src";
-    let DisableEncoding = "$R1src, $R2src";
 }
 
 class SideEffectBinaryMemRRE<string mnemonic, bits<16> opcode,
@@ -3219,7 +3288,6 @@ class SideEffectBinaryMemRRE<string mnemonic, bits<16> opcode,
   : InstRRE<opcode, (outs cls2:$R2), (ins cls1:$R1, cls2:$R2src),
             mnemonic#"\t$R1, $R2", []> {
   let Constraints = "$R2 = $R2src";
-  let DisableEncoding = "$R2src";
 }
 
 class SideEffectBinaryMemMemRRE<string mnemonic, bits<16> opcode,
@@ -3227,7 +3295,6 @@ class SideEffectBinaryMemMemRRE<string mnemonic, bits<16> opcode,
   : InstRRE<opcode, (outs cls1:$R1, cls2:$R2), (ins cls1:$R1src, cls2:$R2src),
             mnemonic#"\t$R1, $R2", []> {
     let Constraints = "$R1 = $R1src, $R2 = $R2src";
-    let DisableEncoding = "$R1src, $R2src";
 }
 
 class SideEffectBinaryMemMemRRFc<string mnemonic, bits<16> opcode,
@@ -3235,7 +3302,6 @@ class SideEffectBinaryMemMemRRFc<string mnemonic, bits<16> opcode,
   : InstRRFc<opcode, (outs cls1:$R1, cls2:$R2), (ins cls1:$R1src, cls2:$R2src),
              mnemonic#"\t$R1, $R2", []> {
   let Constraints = "$R1 = $R1src, $R2 = $R2src";
-  let DisableEncoding = "$R1src, $R2src";
   let M3 = 0;
 }
 
@@ -3247,7 +3313,6 @@ class BinaryRR<string mnemonic, bits<8> opcode, SDPatternOperator operator,
   let OpKey = mnemonic#cls1;
   let OpType = "reg";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BinaryRRE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
@@ -3258,7 +3323,6 @@ class BinaryRRE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
   let OpKey = mnemonic#cls1;
   let OpType = "reg";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BinaryRRD<string mnemonic, bits<16> opcode, SDPatternOperator operator,
@@ -3280,6 +3344,19 @@ class BinaryRRFa<string mnemonic, bits<16> opcode, SDPatternOperator operator,
   let OpKey = mnemonic#cls1;
   let OpType = "reg";
 }
+
+
+class UnaryRRFa<string mnemonic, bits<16> opcode, SDPatternOperator operator,
+                 RegisterOperand cls1, RegisterOperand cls2>
+  : InstRRFa<opcode, (outs cls1:$R1), (ins cls2:$R2, cls2:$R3),
+             mnemonic#"\t$R1, $R2",
+             [(set cls1:$R1, (operator cls2:$R2, cls2:$R3))]> {
+  let R3 = R2;
+  let M4 = 0;
+  let OpKey = mnemonic#cls1;
+  let OpType = "reg";
+}
+
 
 multiclass BinaryRRAndK<string mnemonic, bits<8> opcode1, bits<16> opcode2,
                         SDPatternOperator operator, RegisterOperand cls1,
@@ -3324,7 +3401,6 @@ class BinaryMemRRFc<string mnemonic, bits<16> opcode,
   : InstRRFc<opcode, (outs cls2:$R2, cls1:$R1), (ins cls1:$R1src, imm:$M3),
             mnemonic#"\t$R1, $R2, $M3", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 multiclass BinaryMemRRFcOpt<string mnemonic, bits<16> opcode,
@@ -3353,7 +3429,6 @@ class CondBinaryRRF<string mnemonic, bits<16> opcode, RegisterOperand cls1,
              [(set cls1:$R1, (z_select_ccmask cls2:$R2, cls1:$R1src,
                                               cond4:$valid, cond4:$M3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let CCMaskLast = 1;
   let NumOpsKey = !subst("loc", "sel", mnemonic);
   let NumOpsValue = "2";
@@ -3369,7 +3444,6 @@ class AsmCondBinaryRRF<string mnemonic, bits<16> opcode, RegisterOperand cls1,
              (ins cls1:$R1src, cls2:$R2, imm32zx4:$M3),
              mnemonic#"\t$R1, $R2, $M3", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 // Like CondBinaryRRF, but with a fixed CC mask.
@@ -3378,7 +3452,6 @@ class FixedCondBinaryRRF<CondVariant V, string mnemonic, bits<16> opcode,
   : InstRRFc<opcode, (outs cls1:$R1), (ins cls1:$R1src, cls2:$R2),
              mnemonic#V.suffix#"\t$R1, $R2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let isAsmParserOnly = V.alternate;
   let AsmVariantName = V.asmvariant;
   let M3 = V.ccmask;
@@ -3437,7 +3510,6 @@ class BinaryRI<string mnemonic, bits<12> opcode, SDPatternOperator operator,
             mnemonic#"\t$R1, $I2",
             [(set cls:$R1, (operator cls:$R1src, imm:$I2))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BinaryRIE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
@@ -3466,7 +3538,6 @@ class CondBinaryRIE<string mnemonic, bits<16> opcode, RegisterOperand cls,
              [(set cls:$R1, (z_select_ccmask imm:$I2, cls:$R1src,
                                              cond4:$valid, cond4:$M3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let CCMaskLast = 1;
 }
 
@@ -3478,7 +3549,6 @@ class AsmCondBinaryRIE<string mnemonic, bits<16> opcode, RegisterOperand cls,
              (ins cls:$R1src, imm:$I2, imm32zx4:$M3),
              mnemonic#"\t$R1, $I2, $M3", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 // Like CondBinaryRIE, but with a fixed CC mask.
@@ -3487,7 +3557,6 @@ class FixedCondBinaryRIE<CondVariant V, string mnemonic, bits<16> opcode,
   : InstRIEg<opcode, (outs cls:$R1), (ins cls:$R1src, imm:$I2),
              mnemonic#V.suffix#"\t$R1, $I2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let isAsmParserOnly = V.alternate;
   let AsmVariantName = V.asmvariant;
   let M3 = V.ccmask;
@@ -3506,22 +3575,21 @@ class BinaryRIL<string mnemonic, bits<12> opcode, SDPatternOperator operator,
              mnemonic#"\t$R1, $I2",
              [(set cls:$R1, (operator cls:$R1src, imm:$I2))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BinaryRS<string mnemonic, bits<8> opcode, SDPatternOperator operator,
                RegisterOperand cls>
-  : InstRSa<opcode, (outs cls:$R1), (ins cls:$R1src, shift12only:$BD2),
+  : InstRSa<opcode, (outs cls:$R1),
+            (ins cls:$R1src, (shift12only $B2, $D2):$BD2),
             mnemonic#"\t$R1, $BD2",
             [(set cls:$R1, (operator cls:$R1src, shift12only:$BD2))]> {
   let R3 = 0;
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class BinaryRSY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                 RegisterOperand cls>
-  : InstRSYa<opcode, (outs cls:$R1), (ins cls:$R3, shift20only:$BD2),
+  : InstRSYa<opcode, (outs cls:$R1), (ins cls:$R3, (shift20only $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2",
              [(set cls:$R1, (operator cls:$R3, shift20only:$BD2))]>;
 
@@ -3538,7 +3606,7 @@ multiclass BinaryRSAndK<string mnemonic, bits<8> opcode1, bits<16> opcode2,
 
 class BinaryRSL<string mnemonic, bits<16> opcode, RegisterOperand cls>
   : InstRSLb<opcode, (outs cls:$R1),
-             (ins bdladdr12onlylen8:$BDL2, imm32zx4:$M3),
+             (ins (bdladdr12onlylen8 $B2, $D2, $L2):$BDL2, imm32zx4:$M3),
              mnemonic#"\t$R1, $BDL2, $M3", []> {
   let mayLoad = 1;
 }
@@ -3546,27 +3614,26 @@ class BinaryRSL<string mnemonic, bits<16> opcode, RegisterOperand cls>
 class BinaryRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
                RegisterOperand cls, SDPatternOperator load, bits<5> bytes,
                AddressingMode mode = bdxaddr12only>
-  : InstRXa<opcode, (outs cls:$R1), (ins cls:$R1src, mode:$XBD2),
+  : InstRXa<opcode, (outs cls:$R1), (ins cls:$R1src, (mode $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set cls:$R1, (operator cls:$R1src, (load mode:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
   let OpType = "mem";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
 
 class BinaryRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                   RegisterOperand cls, SDPatternOperator load, bits<5> bytes>
-  : InstRXE<opcode, (outs cls:$R1), (ins cls:$R1src, bdxaddr12only:$XBD2),
+  : InstRXE<opcode, (outs cls:$R1),
+            (ins cls:$R1src, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set cls:$R1, (operator cls:$R1src,
                                      (load bdxaddr12only:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
   let OpType = "mem";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
   let M3 = 0;
@@ -3575,7 +3642,8 @@ class BinaryRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 class BinaryRXF<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                 RegisterOperand cls1, RegisterOperand cls2,
                 SDPatternOperator load, bits<5> bytes>
-  : InstRXF<opcode, (outs cls1:$R1), (ins cls2:$R3, bdxaddr12only:$XBD2),
+  : InstRXF<opcode, (outs cls1:$R1),
+            (ins cls2:$R3, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $R3, $XBD2",
             [(set cls1:$R1, (operator cls2:$R3, (load bdxaddr12only:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -3587,13 +3655,13 @@ class BinaryRXF<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 class BinaryRXY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                 RegisterOperand cls, SDPatternOperator load, bits<5> bytes,
                 AddressingMode mode = bdxaddr20only>
-  : InstRXYa<opcode, (outs cls:$R1), (ins cls:$R1src, mode:$XBD2),
+  : InstRXYa<opcode, (outs cls:$R1),
+             (ins cls:$R1src, (mode $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2",
              [(set cls:$R1, (operator cls:$R1src, (load mode:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
   let OpType = "mem";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
@@ -3613,18 +3681,18 @@ multiclass BinaryRXPair<string mnemonic, bits<8> rxOpcode, bits<16> rxyOpcode,
 
 class BinarySI<string mnemonic, bits<8> opcode, SDPatternOperator operator,
                Operand imm, AddressingMode mode = bdaddr12only>
-  : InstSI<opcode, (outs), (ins mode:$BD1, imm:$I2),
+  : InstSI<opcode, (outs), (ins (mode $B1, $D1):$BD1, imm:$I2),
            mnemonic#"\t$BD1, $I2",
-           [(store (operator (load mode:$BD1), imm:$I2), mode:$BD1)]> {
+           [(store (operator (z_load mode:$BD1), imm:$I2), mode:$BD1)]> {
   let mayLoad = 1;
   let mayStore = 1;
 }
 
 class BinarySIY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                 Operand imm, AddressingMode mode = bdaddr20only>
-  : InstSIY<opcode, (outs), (ins mode:$BD1, imm:$I2),
+  : InstSIY<opcode, (outs), (ins (mode $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2",
-            [(store (operator (load mode:$BD1), imm:$I2), mode:$BD1)]> {
+            [(store (operator (z_load mode:$BD1), imm:$I2), mode:$BD1)]> {
   let mayLoad = 1;
   let mayStore = 1;
 }
@@ -3641,7 +3709,8 @@ multiclass BinarySIPair<string mnemonic, bits<8> siOpcode,
 }
 
 class BinarySSF<string mnemonic, bits<12> opcode, RegisterOperand cls>
-  : InstSSF<opcode, (outs cls:$R3), (ins bdaddr12pair:$BD1, bdaddr12pair:$BD2),
+  : InstSSF<opcode, (outs cls:$R3),
+            (ins (bdaddr12pair $B1, $D1):$BD1, (bdaddr12pair $B2, $D2):$BD2),
             mnemonic#"\t$R3, $BD1, $BD2", []> {
   let mayLoad = 1;
 }
@@ -3849,7 +3918,8 @@ class BinaryVRRk<string mnemonic, bits<16> opcode>
 
 class BinaryVRSa<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  TypedReg tr1, TypedReg tr2, bits<4> type>
-  : InstVRSa<opcode, (outs tr1.op:$V1), (ins tr2.op:$V3, shift12only:$BD2),
+  : InstVRSa<opcode, (outs tr1.op:$V1),
+             (ins tr2.op:$V3, (shift12only $B2, $D2):$BD2),
              mnemonic#"\t$V1, $V3, $BD2",
              [(set (tr1.vt tr1.op:$V1), (operator (tr2.vt tr2.op:$V3),
                                                   shift12only:$BD2))]> {
@@ -3858,12 +3928,13 @@ class BinaryVRSa<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class BinaryVRSaGeneric<string mnemonic, bits<16> opcode>
   : InstVRSa<opcode, (outs VR128:$V1),
-             (ins VR128:$V3, shift12only:$BD2, imm32zx4:$M4),
+             (ins VR128:$V3, (shift12only $B2, $D2):$BD2, imm32zx4:$M4),
              mnemonic#"\t$V1, $V3, $BD2, $M4", []>;
 
 class BinaryVRSb<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  bits<5> bytes>
-  : InstVRSb<opcode, (outs VR128:$V1), (ins GR32:$R3, bdaddr12only:$BD2),
+  : InstVRSb<opcode, (outs VR128:$V1),
+             (ins GR32:$R3, (bdaddr12only $B2, $D2):$BD2),
              mnemonic#"\t$V1, $R3, $BD2",
              [(set VR128:$V1, (operator GR32:$R3, bdaddr12only:$BD2))]> {
   let M4 = 0;
@@ -3873,20 +3944,22 @@ class BinaryVRSb<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class BinaryVRSc<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  TypedReg tr, bits<4> type>
-  : InstVRSc<opcode, (outs GR64:$R1), (ins tr.op:$V3, shift12only:$BD2),
-           mnemonic#"\t$R1, $V3, $BD2",
-           [(set GR64:$R1, (operator (tr.vt tr.op:$V3), shift12only:$BD2))]> {
+  : InstVRSc<opcode, (outs GR64:$R1),
+             (ins tr.op:$V3, (shift12only $B2, $D2):$BD2),
+             mnemonic#"\t$R1, $V3, $BD2",
+             [(set GR64:$R1, (operator (tr.vt tr.op:$V3), shift12only:$BD2))]> {
   let M4 = type;
 }
 
 class BinaryVRScGeneric<string mnemonic, bits<16> opcode>
   : InstVRSc<opcode, (outs GR64:$R1),
-             (ins VR128:$V3, shift12only:$BD2, imm32zx4: $M4),
+             (ins VR128:$V3, (shift12only $B2, $D2):$BD2, imm32zx4: $M4),
              mnemonic#"\t$R1, $V3, $BD2, $M4", []>;
 
 class BinaryVRSd<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  bits<5> bytes>
-  : InstVRSd<opcode, (outs VR128:$V1), (ins GR32:$R3, bdaddr12only:$BD2),
+  : InstVRSd<opcode, (outs VR128:$V1),
+             (ins GR32:$R3, (bdaddr12only $B2, $D2):$BD2),
              mnemonic#"\t$V1, $R3, $BD2",
              [(set VR128:$V1, (operator GR32:$R3, bdaddr12only:$BD2))]> {
   let mayLoad = 1;
@@ -3895,7 +3968,8 @@ class BinaryVRSd<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class BinaryVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                 TypedReg tr, bits<5> bytes>
-  : InstVRX<opcode, (outs VR128:$V1), (ins bdxaddr12only:$XBD2, imm32zx4:$M3),
+  : InstVRX<opcode, (outs VR128:$V1),
+            (ins (bdxaddr12only $B2, $D2, $X2):$XBD2, imm32zx4:$M3),
             mnemonic#"\t$V1, $XBD2, $M3",
             [(set (tr.vt tr.op:$V1), (operator bdxaddr12only:$XBD2,
                                                imm32zx4_timm:$M3))]> {
@@ -3905,7 +3979,7 @@ class BinaryVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class StoreBinaryRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
                     bits<5> bytes, AddressingMode mode = bdaddr12only>
-  : InstRSb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, mode:$BD2),
+  : InstRSb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, (mode $B2, $D2):$BD2),
             mnemonic#"\t$R1, $M3, $BD2", []> {
   let mayStore = 1;
   let AccessBytes = bytes;
@@ -3913,7 +3987,7 @@ class StoreBinaryRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
 
 class StoreBinaryRSY<string mnemonic, bits<16> opcode, RegisterOperand cls,
                      bits<5> bytes, AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, mode:$BD2),
+  : InstRSYb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $M3, $BD2", []> {
   let mayStore = 1;
   let AccessBytes = bytes;
@@ -3933,14 +4007,16 @@ multiclass StoreBinaryRSPair<string mnemonic, bits<8> rsOpcode,
 
 class StoreBinaryRSL<string mnemonic, bits<16> opcode, RegisterOperand cls>
   : InstRSLb<opcode, (outs),
-             (ins cls:$R1, bdladdr12onlylen8:$BDL2, imm32zx4:$M3),
+             (ins cls:$R1, (bdladdr12onlylen8 $B2, $D2, $L2):$BDL2,
+                  imm32zx4:$M3),
              mnemonic#"\t$R1, $BDL2, $M3", []> {
   let mayStore = 1;
 }
 
 class BinaryVSI<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                 bits<5> bytes>
-  : InstVSI<opcode, (outs VR128:$V1), (ins bdaddr12only:$BD2, imm32zx8:$I3),
+  : InstVSI<opcode, (outs VR128:$V1),
+            (ins (bdaddr12only $B2, $D2):$BD2, imm32zx8:$I3),
             mnemonic#"\t$V1, $BD2, $I3",
             [(set VR128:$V1, (operator imm32zx8:$I3, bdaddr12only:$BD2))]> {
   let mayLoad = 1;
@@ -3949,7 +4025,8 @@ class BinaryVSI<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class StoreBinaryVRV<string mnemonic, bits<16> opcode, bits<5> bytes,
                      ImmOpWithPattern index>
-  : InstVRV<opcode, (outs), (ins VR128:$V1, bdvaddr12only:$VBD2, index:$M3),
+  : InstVRV<opcode, (outs),
+            (ins VR128:$V1, (bdvaddr12only $B2, $D2, $V2):$VBD2, index:$M3),
             mnemonic#"\t$V1, $VBD2, $M3", []> {
   let mayStore = 1;
   let AccessBytes = bytes;
@@ -3958,7 +4035,8 @@ class StoreBinaryVRV<string mnemonic, bits<16> opcode, bits<5> bytes,
 class StoreBinaryVRX<string mnemonic, bits<16> opcode,
                      SDPatternOperator operator, TypedReg tr, bits<5> bytes,
                      ImmOpWithPattern index>
-  : InstVRX<opcode, (outs), (ins tr.op:$V1, bdxaddr12only:$XBD2, index:$M3),
+  : InstVRX<opcode, (outs),
+            (ins tr.op:$V1, (bdxaddr12only $B2, $D2, $X2):$XBD2, index:$M3),
             mnemonic#"\t$V1, $XBD2, $M3",
             [(operator (tr.vt tr.op:$V1), bdxaddr12only:$XBD2, index:$M3)]> {
   let mayStore = 1;
@@ -3968,7 +4046,8 @@ class StoreBinaryVRX<string mnemonic, bits<16> opcode,
 class MemoryBinarySSd<string mnemonic, bits<8> opcode,
                       RegisterOperand cls>
   : InstSSd<opcode, (outs),
-            (ins bdraddr12only:$RBD1, bdaddr12only:$BD2, cls:$R3),
+            (ins (bdraddr12only $B1, $D1, $R1):$RBD1,
+                 (bdaddr12only $B2, $D2):$BD2, cls:$R3),
             mnemonic#"\t$RBD1, $BD2, $R3", []>;
 
 class CompareRR<string mnemonic, bits<8> opcode, SDPatternOperator operator,
@@ -4023,7 +4102,7 @@ class CompareRILPC<string mnemonic, bits<12> opcode, SDPatternOperator operator,
 class CompareRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
                 RegisterOperand cls, SDPatternOperator load, bits<5> bytes,
                 AddressingMode mode = bdxaddr12only>
-  : InstRXa<opcode, (outs), (ins cls:$R1, mode:$XBD2),
+  : InstRXa<opcode, (outs), (ins cls:$R1, (mode $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set CC, (operator cls:$R1, (load mode:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -4035,7 +4114,7 @@ class CompareRX<string mnemonic, bits<8> opcode, SDPatternOperator operator,
 
 class CompareRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  RegisterOperand cls, SDPatternOperator load, bits<5> bytes>
-  : InstRXE<opcode, (outs), (ins cls:$R1, bdxaddr12only:$XBD2),
+  : InstRXE<opcode, (outs), (ins cls:$R1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set CC, (operator cls:$R1, (load bdxaddr12only:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -4049,7 +4128,7 @@ class CompareRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 class CompareRXY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  RegisterOperand cls, SDPatternOperator load, bits<5> bytes,
                  AddressingMode mode = bdxaddr20only>
-  : InstRXYa<opcode, (outs), (ins cls:$R1, mode:$XBD2),
+  : InstRXYa<opcode, (outs), (ins cls:$R1, (mode $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$R1, $XBD2",
              [(set CC, (operator cls:$R1, (load mode:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
@@ -4074,7 +4153,7 @@ multiclass CompareRXPair<string mnemonic, bits<8> rxOpcode, bits<16> rxyOpcode,
 
 class CompareRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
                 bits<5> bytes, AddressingMode mode = bdaddr12only>
-  : InstRSb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, mode:$BD2),
+  : InstRSb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, (mode $B2, $D2):$BD2),
             mnemonic#"\t$R1, $M3, $BD2", []> {
   let mayLoad = 1;
   let AccessBytes = bytes;
@@ -4082,7 +4161,7 @@ class CompareRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
 
 class CompareRSY<string mnemonic, bits<16> opcode, RegisterOperand cls,
                  bits<5> bytes, AddressingMode mode = bdaddr20only>
-  : InstRSYb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, mode:$BD2),
+  : InstRSYb<opcode, (outs), (ins cls:$R1, imm32zx4:$M3, (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $M3, $BD2", []> {
   let mayLoad = 1;
   let AccessBytes = bytes;
@@ -4100,7 +4179,8 @@ multiclass CompareRSPair<string mnemonic, bits<8> rsOpcode, bits<16> rsyOpcode,
 
 class CompareSSb<string mnemonic, bits<8> opcode>
   : InstSSb<opcode,
-            (outs), (ins bdladdr12onlylen4:$BDL1, bdladdr12onlylen4:$BDL2),
+            (outs), (ins (bdladdr12onlylen4 $B1, $D1, $L1):$BDL1,
+                         (bdladdr12onlylen4 $B2, $D2, $L2):$BDL2),
             mnemonic#"\t$BDL1, $BDL2", []> {
   let isCompare = 1;
   let mayLoad = 1;
@@ -4109,7 +4189,7 @@ class CompareSSb<string mnemonic, bits<8> opcode>
 class CompareSI<string mnemonic, bits<8> opcode, SDPatternOperator operator,
                 SDPatternOperator load, ImmOpWithPattern imm,
                 AddressingMode mode = bdaddr12only>
-  : InstSI<opcode, (outs), (ins mode:$BD1, imm:$I2),
+  : InstSI<opcode, (outs), (ins (mode $B1, $D1):$BD1, imm:$I2),
            mnemonic#"\t$BD1, $I2",
            [(set CC, (operator (load mode:$BD1), imm:$I2))]> {
   let isCompare = 1;
@@ -4118,7 +4198,7 @@ class CompareSI<string mnemonic, bits<8> opcode, SDPatternOperator operator,
 
 class CompareSIL<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  SDPatternOperator load, ImmOpWithPattern imm>
-  : InstSIL<opcode, (outs), (ins bdaddr12only:$BD1, imm:$I2),
+  : InstSIL<opcode, (outs), (ins (bdaddr12only $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2",
             [(set CC, (operator (load bdaddr12only:$BD1), imm:$I2))]> {
   let isCompare = 1;
@@ -4128,7 +4208,7 @@ class CompareSIL<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 class CompareSIY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  SDPatternOperator load, ImmOpWithPattern imm,
                  AddressingMode mode = bdaddr20only>
-  : InstSIY<opcode, (outs), (ins mode:$BD1, imm:$I2),
+  : InstSIY<opcode, (outs), (ins (mode $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2",
             [(set CC, (operator (load mode:$BD1), imm:$I2))]> {
   let isCompare = 1;
@@ -4185,12 +4265,13 @@ class CompareVRRh<string mnemonic, bits<16> opcode>
 class TestInherentS<string mnemonic, bits<16> opcode,
                     SDPatternOperator operator>
   : InstS<opcode, (outs), (ins), mnemonic, [(set CC, (operator))]> {
-  let BD2 = 0;
+  let B2 = 0;
+  let D2 = 0;
 }
 
 class TestRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
               RegisterOperand cls>
-  : InstRXE<opcode, (outs), (ins cls:$R1, bdxaddr12only:$XBD2),
+  : InstRXE<opcode, (outs), (ins cls:$R1, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $XBD2",
             [(set CC, (operator cls:$R1, bdxaddr12only:$XBD2))]> {
   let M3 = 0;
@@ -4198,23 +4279,33 @@ class TestRXE<string mnemonic, bits<16> opcode, SDPatternOperator operator,
 
 class TestBinarySIL<string mnemonic, bits<16> opcode,
                     SDPatternOperator operator, ImmOpWithPattern imm>
-  : InstSIL<opcode, (outs), (ins bdaddr12only:$BD1, imm:$I2),
+  : InstSIL<opcode, (outs), (ins (bdaddr12only $B1, $D1):$BD1, imm:$I2),
             mnemonic#"\t$BD1, $I2",
             [(set CC, (operator bdaddr12only:$BD1, imm:$I2))]>;
 
 class TestRSL<string mnemonic, bits<16> opcode>
-  : InstRSLa<opcode, (outs), (ins bdladdr12onlylen4:$BDL1),
+  : InstRSLa<opcode, (outs), (ins (bdladdr12onlylen4 $B1, $D1, $L1):$BDL1),
              mnemonic#"\t$BDL1", []> {
   let mayLoad = 1;
 }
 
 class TestVRRg<string mnemonic, bits<16> opcode>
   : InstVRRg<opcode, (outs), (ins VR128:$V1),
-             mnemonic#"\t$V1", []>;
+             mnemonic#"\t$V1", []> {
+  let I2 = 0;
+}
+
+class TestExtraVRRg<string mnemonic, bits<16> opcode>
+  : InstVRRg<opcode, (outs), (ins VR128:$V1, imm32zx16:$I2),
+             mnemonic#"\t$V1, $I2", []>;
+
+class TestExtraVRIl<string mnemonic, bits<16> opcode>
+  : InstVRIl<opcode, (outs), (ins VR128:$V1, VR128:$V2, imm32zx16:$I3),
+             mnemonic#"\t$V1, $V2, $I3", []>;
 
 class SideEffectTernarySSc<string mnemonic, bits<8> opcode>
-  : InstSSc<opcode, (outs), (ins bdladdr12onlylen4:$BDL1,
-                                 shift12only:$BD2, imm32zx4:$I3),
+  : InstSSc<opcode, (outs), (ins (bdladdr12onlylen4 $B1, $D1, $L1):$BDL1,
+                                 (shift12only $B2, $D2):$BD2, imm32zx4:$I3),
             mnemonic#"\t$BDL1, $BD2, $I3", []>;
 
 class SideEffectTernaryRRFa<string mnemonic, bits<16> opcode,
@@ -4232,7 +4323,6 @@ class SideEffectTernaryMemMemRRFa<string mnemonic, bits<16> opcode,
              (ins cls1:$R1src, cls2:$R2src, cls3:$R3),
              mnemonic#"\t$R1, $R2, $R3", []> {
   let Constraints = "$R1 = $R1src, $R2 = $R2src";
-  let DisableEncoding = "$R1src, $R2src";
   let M4 = 0;
 }
 
@@ -4252,7 +4342,6 @@ class SideEffectTernaryMemMemMemRRFb<string mnemonic, bits<16> opcode,
              (ins cls1:$R1src, cls2:$R2src, cls3:$R3src),
              mnemonic#"\t$R1, $R3, $R2", []> {
   let Constraints = "$R1 = $R1src, $R2 = $R2src, $R3 = $R3src";
-  let DisableEncoding = "$R1src, $R2src, $R3src";
   let M4 = 0;
 }
 
@@ -4276,7 +4365,6 @@ class SideEffectTernaryMemMemRRFc<string mnemonic, bits<16> opcode,
              (ins cls1:$R1src, cls2:$R2src, imm:$M3),
              mnemonic#"\t$R1, $R2, $M3", []> {
   let Constraints = "$R1 = $R1src, $R2 = $R2src";
-  let DisableEncoding = "$R1src, $R2src";
 }
 
 multiclass SideEffectTernaryMemMemRRFcOpt<string mnemonic, bits<16> opcode,
@@ -4289,7 +4377,8 @@ multiclass SideEffectTernaryMemMemRRFcOpt<string mnemonic, bits<16> opcode,
 class SideEffectTernarySSF<string mnemonic, bits<12> opcode,
                            RegisterOperand cls>
   : InstSSF<opcode, (outs),
-            (ins bdaddr12only:$BD1, bdaddr12only:$BD2, cls:$R3),
+            (ins (bdaddr12only $B1, $D1):$BD1,
+                 (bdaddr12only $B2, $D2):$BD2, cls:$R3),
             mnemonic#"\t$BD1, $BD2, $R3", []>;
 
 class TernaryRRFa<string mnemonic, bits<16> opcode,
@@ -4305,7 +4394,6 @@ class TernaryRRFb<string mnemonic, bits<16> opcode,
              (ins cls1:$R1src, cls2:$R2, imm32zx4:$M4),
              mnemonic#"\t$R1, $R3, $R2, $M4", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class TernaryRRFe<string mnemonic, bits<16> opcode, RegisterOperand cls1,
@@ -4322,17 +4410,15 @@ class TernaryRRD<string mnemonic, bits<16> opcode, SDPatternOperator operator,
   let OpKey = mnemonic#cls;
   let OpType = "reg";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 class TernaryRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
                 bits<5> bytes, AddressingMode mode = bdaddr12only>
   : InstRSb<opcode, (outs cls:$R1),
-            (ins cls:$R1src, imm32zx4:$M3, mode:$BD2),
+            (ins cls:$R1src, imm32zx4:$M3, (mode $B2, $D2):$BD2),
             mnemonic#"\t$R1, $M3, $BD2", []> {
 
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
@@ -4340,11 +4426,10 @@ class TernaryRS<string mnemonic, bits<8> opcode, RegisterOperand cls,
 class TernaryRSY<string mnemonic, bits<16> opcode, RegisterOperand cls,
                 bits<5> bytes, AddressingMode mode = bdaddr20only>
   : InstRSYb<opcode, (outs cls:$R1),
-             (ins cls:$R1src, imm32zx4:$M3, mode:$BD2),
+             (ins cls:$R1src, imm32zx4:$M3, (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $M3, $BD2", []> {
 
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
@@ -4362,45 +4447,42 @@ multiclass TernaryRSPair<string mnemonic, bits<8> rsOpcode, bits<16> rsyOpcode,
 class SideEffectTernaryRS<string mnemonic, bits<8> opcode,
                           RegisterOperand cls1, RegisterOperand cls2>
   : InstRSa<opcode, (outs),
-            (ins cls1:$R1, cls2:$R3, bdaddr12only:$BD2),
+            (ins cls1:$R1, cls2:$R3, (bdaddr12only $B2, $D2):$BD2),
             mnemonic#"\t$R1, $R3, $BD2", []>;
 
 class SideEffectTernaryRSY<string mnemonic, bits<16> opcode,
                            RegisterOperand cls1, RegisterOperand cls2>
   : InstRSYa<opcode, (outs),
-             (ins cls1:$R1, cls2:$R3, bdaddr20only:$BD2),
+             (ins cls1:$R1, cls2:$R3, (bdaddr20only $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2", []>;
 
 class SideEffectTernaryMemMemRS<string mnemonic, bits<8> opcode,
                                 RegisterOperand cls1, RegisterOperand cls2>
   : InstRSa<opcode, (outs cls1:$R1, cls2:$R3),
-            (ins cls1:$R1src, cls2:$R3src, shift12only:$BD2),
+            (ins cls1:$R1src, cls2:$R3src, (shift12only $B2, $D2):$BD2),
             mnemonic#"\t$R1, $R3, $BD2", []> {
     let Constraints = "$R1 = $R1src, $R3 = $R3src";
-    let DisableEncoding = "$R1src, $R3src";
 }
 
 class SideEffectTernaryMemMemRSY<string mnemonic, bits<16> opcode,
                                  RegisterOperand cls1, RegisterOperand cls2>
   : InstRSYa<opcode, (outs cls1:$R1, cls2:$R3),
-             (ins cls1:$R1src, cls2:$R3src, shift20only:$BD2),
+             (ins cls1:$R1src, cls2:$R3src, (shift20only $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2", []> {
     let Constraints = "$R1 = $R1src, $R3 = $R3src";
-    let DisableEncoding = "$R1src, $R3src";
 }
 
 class TernaryRXF<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  RegisterOperand cls1, RegisterOperand cls2,
                  SDPatternOperator load, bits<5> bytes>
   : InstRXF<opcode, (outs cls1:$R1),
-            (ins cls2:$R1src, cls2:$R3, bdxaddr12only:$XBD2),
+            (ins cls2:$R1src, cls2:$R3, (bdxaddr12only $B2, $D2, $X2):$XBD2),
             mnemonic#"\t$R1, $R3, $XBD2",
             [(set cls1:$R1, (operator cls2:$R1src, cls2:$R3,
                                       (load bdxaddr12only:$XBD2)))]> {
   let OpKey = mnemonic#"r"#cls;
   let OpType = "mem";
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
@@ -4412,7 +4494,6 @@ class TernaryVRIa<string mnemonic, bits<16> opcode, SDPatternOperator operator,
              [(set (tr1.vt tr1.op:$V1), (operator (tr2.vt tr2.op:$V1src),
                                                   imm:$I2, index:$M3))]> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
 }
 
 class TernaryVRId<string mnemonic, bits<16> opcode, SDPatternOperator operator,
@@ -4430,6 +4511,11 @@ class TernaryVRIi<string mnemonic, bits<16> opcode, RegisterOperand cls>
   : InstVRIi<opcode, (outs VR128:$V1),
              (ins cls:$R2, imm32zx8:$I3, imm32zx4:$M4),
              mnemonic#"\t$V1, $R2, $I3, $M4", []>;
+
+class TernaryVRIj<string mnemonic, bits<16> opcode>
+  : InstVRIj<opcode, (outs VR128:$V1),
+             (ins VR128:$V2, imm32zx8:$I3, imm32zx4:$M4),
+             mnemonic#"\t$V1, $V2, $I3, $M4", []>;
 
 class TernaryVRRa<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                   TypedReg tr1, TypedReg tr2, bits<4> type, bits<4> m4or>
@@ -4501,6 +4587,26 @@ class TernaryVRRc<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                                                   (tr2.vt tr2.op:$V3),
                                                   imm32zx4_timm:$M4))]> {
   let M5 = 0;
+  let M6 = 0;
+}
+
+class TernaryVRRcInt<string mnemonic, bits<16> opcode,
+                     SDPatternOperator operator, TypedReg tr1, TypedReg tr2,
+                     bits<4> type = 0>
+  : InstVRRc<opcode, (outs tr1.op:$V1),
+             (ins tr2.op:$V2, tr2.op:$V3, imm32zx4:$M5),
+             mnemonic#"\t$V1, $V2, $V3, $M5",
+             [(set (tr1.vt tr1.op:$V1), (operator (tr2.vt tr2.op:$V2),
+                                                  (tr2.vt tr2.op:$V3),
+                                                  imm32zx4_timm:$M5))]> {
+  let M4 = type;
+  let M6 = 0;
+}
+
+class TernaryVRRcIntGeneric<string mnemonic, bits<16> opcode>
+  : InstVRRc<opcode, (outs VR128:$V1),
+             (ins VR128:$V2, VR128:$V3, imm32zx4:$M4, imm32zx4:$M5),
+             mnemonic#"\t$V1, $V2, $V3, $M4, $M5", []> {
   let M6 = 0;
 }
 
@@ -4593,13 +4699,12 @@ class TernaryVRReFloatGeneric<string mnemonic, bits<16> opcode>
 class TernaryVRSb<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                   TypedReg tr1, TypedReg tr2, RegisterOperand cls, bits<4> type>
   : InstVRSb<opcode, (outs tr1.op:$V1),
-             (ins tr2.op:$V1src, cls:$R3, shift12only:$BD2),
+             (ins tr2.op:$V1src, cls:$R3, (shift12only $B2, $D2):$BD2),
              mnemonic#"\t$V1, $R3, $BD2",
              [(set (tr1.vt tr1.op:$V1), (operator (tr2.vt tr2.op:$V1src),
                                                   cls:$R3,
                                                   shift12only:$BD2))]> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
   let M4 = type;
 }
 
@@ -4615,19 +4720,18 @@ class TernaryVRRj<string mnemonic, bits<16> opcode>
 
 class TernaryVRSbGeneric<string mnemonic, bits<16> opcode>
   : InstVRSb<opcode, (outs VR128:$V1),
-             (ins VR128:$V1src, GR64:$R3, shift12only:$BD2, imm32zx4:$M4),
+             (ins VR128:$V1src, GR64:$R3, (shift12only $B2, $D2):$BD2,
+                  imm32zx4:$M4),
              mnemonic#"\t$V1, $R3, $BD2, $M4", []> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
 }
 
 class TernaryVRV<string mnemonic, bits<16> opcode, bits<5> bytes,
                  ImmOpWithPattern index>
   : InstVRV<opcode, (outs VR128:$V1),
-           (ins VR128:$V1src, bdvaddr12only:$VBD2, index:$M3),
+           (ins VR128:$V1src, (bdvaddr12only $B2, $D2, $V2):$VBD2, index:$M3),
            mnemonic#"\t$V1, $VBD2, $M3", []> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
@@ -4635,13 +4739,12 @@ class TernaryVRV<string mnemonic, bits<16> opcode, bits<5> bytes,
 class TernaryVRX<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  TypedReg tr1, TypedReg tr2, bits<5> bytes, ImmOpWithPattern index>
   : InstVRX<opcode, (outs tr1.op:$V1),
-           (ins tr2.op:$V1src, bdxaddr12only:$XBD2, index:$M3),
+           (ins tr2.op:$V1src, (bdxaddr12only $B2, $D2, $X2):$XBD2, index:$M3),
            mnemonic#"\t$V1, $XBD2, $M3",
            [(set (tr1.vt tr1.op:$V1), (operator (tr2.vt tr2.op:$V1src),
                                                 bdxaddr12only:$XBD2,
                                                 index:$M3))]> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
 }
@@ -4656,7 +4759,6 @@ class QuaternaryVRId<string mnemonic, bits<16> opcode, SDPatternOperator operato
                                                   (tr2.vt tr2.op:$V3),
                                                   imm32zx8_timm:$I4))]> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
   let M5 = type;
 }
 
@@ -4666,7 +4768,6 @@ class QuaternaryVRIdGeneric<string mnemonic, bits<16> opcode>
                   imm32zx8:$I4, imm32zx4:$M5),
              mnemonic#"\t$V1, $V2, $V3, $I4, $M5", []> {
   let Constraints = "$V1 = $V1src";
-  let DisableEncoding = "$V1src";
 }
 
 class QuaternaryVRIf<string mnemonic, bits<16> opcode>
@@ -4680,6 +4781,16 @@ class QuaternaryVRIg<string mnemonic, bits<16> opcode>
              (ins VR128:$V2, imm32zx8:$I3,
                   imm32zx8:$I4, imm32zx4:$M5),
              mnemonic#"\t$V1, $V2, $I3, $I4, $M5", []>;
+
+class QuaternaryVRIk<string mnemonic, bits<16> opcode,
+                     SDPatternOperator operator, TypedReg tr>
+  : InstVRIk<opcode, (outs VR128:$V1),
+             (ins VR128:$V2, VR128:$V3, VR128:$V4, imm32zx8:$I5),
+             mnemonic#"\t$V1, $V2, $V3, $V4, $I5",
+             [(set (tr.vt tr.op:$V1), (operator (tr.vt tr.op:$V2),
+                                                (tr.vt tr.op:$V3),
+                                                (tr.vt tr.op:$V4),
+                                                imm32zx8_timm:$I5))]>;
 
 class QuaternaryVRRd<string mnemonic, bits<16> opcode,
                      SDPatternOperator operator, TypedReg tr1, TypedReg tr2,
@@ -4764,12 +4875,13 @@ multiclass SideEffectQuaternaryRRFbOpt<string mnemonic, bits<16> opcode,
 class SideEffectQuaternarySSe<string mnemonic, bits<8> opcode,
                               RegisterOperand cls>
   : InstSSe<opcode, (outs),
-            (ins cls:$R1, bdaddr12only:$BD2, cls:$R3, bdaddr12only:$BD4),
+            (ins cls:$R1, (bdaddr12only $B2, $D2):$BD2, cls:$R3,
+                 (bdaddr12only $B4, $D4):$BD4),
             mnemonic#"\t$R1, $BD2, $R3, $BD4", []>;
 
 class LoadAndOpRSY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                   RegisterOperand cls, AddressingMode mode = bdaddr20only>
-  : InstRSYa<opcode, (outs cls:$R1), (ins cls:$R3, mode:$BD2),
+  : InstRSYa<opcode, (outs cls:$R1), (ins cls:$R3, (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2",
              [(set cls:$R1, (operator mode:$BD2, cls:$R3))]> {
   let mayLoad = 1;
@@ -4781,29 +4893,28 @@ class CmpSwapRRE<string mnemonic, bits<16> opcode,
   : InstRRE<opcode, (outs cls1:$R1), (ins cls1:$R1src, cls2:$R2),
             mnemonic#"\t$R1, $R2", []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let mayStore = 1;
 }
 
 class CmpSwapRS<string mnemonic, bits<8> opcode, SDPatternOperator operator,
                 RegisterOperand cls, AddressingMode mode = bdaddr12only>
-  : InstRSa<opcode, (outs cls:$R1), (ins cls:$R1src, cls:$R3, mode:$BD2),
+  : InstRSa<opcode, (outs cls:$R1),
+            (ins cls:$R1src, cls:$R3, (mode $B2, $D2):$BD2),
             mnemonic#"\t$R1, $R3, $BD2",
             [(set cls:$R1, (operator mode:$BD2, cls:$R1src, cls:$R3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let mayStore = 1;
 }
 
 class CmpSwapRSY<string mnemonic, bits<16> opcode, SDPatternOperator operator,
                  RegisterOperand cls, AddressingMode mode = bdaddr20only>
-  : InstRSYa<opcode, (outs cls:$R1), (ins cls:$R1src, cls:$R3, mode:$BD2),
+  : InstRSYa<opcode, (outs cls:$R1),
+             (ins cls:$R1src, cls:$R3, (mode $B2, $D2):$BD2),
              mnemonic#"\t$R1, $R3, $BD2",
              [(set cls:$R1, (operator mode:$BD2, cls:$R1src, cls:$R3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let mayStore = 1;
 }
@@ -4818,18 +4929,23 @@ multiclass CmpSwapRSPair<string mnemonic, bits<8> rsOpcode, bits<16> rsyOpcode,
   }
 }
 
-class RotateSelectRIEf<string mnemonic, bits<16> opcode, RegisterOperand cls1,
-                       RegisterOperand cls2>
-  : InstRIEf<opcode, (outs cls1:$R1),
+multiclass RotateSelectRIEf<string mnemonic, bits<16> opcode, RegisterOperand cls1,
+                       RegisterOperand cls2, bits<8> I3Or = 0, bits<8> I4Or = 0> {
+  let Constraints = "$R1 = $R1src" in {
+  def "" : InstRIEf<opcode, (outs cls1:$R1),
              (ins cls1:$R1src, cls2:$R2, imm32zx8:$I3, imm32zx8:$I4,
-                  imm32zx6:$I5),
-             mnemonic#"\t$R1, $R2, $I3, $I4, $I5", []> {
-  let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
+                  imm32zx8:$I5),
+             mnemonic#"\t$R1, $R2, $I3, $I4, $I5", [], I3Or, I4Or>;
+  let I5 = 0 in
+    def Opt : InstRIEf<opcode, (outs cls1:$R1),
+               (ins cls1:$R1src, cls2:$R2, imm32zx8:$I3, imm32zx8:$I4),
+               mnemonic#"\t$R1, $R2, $I3, $I4", [], I3Or, I4Or>;
+  }
 }
 
 class PrefetchRXY<string mnemonic, bits<16> opcode, SDPatternOperator operator>
-  : InstRXYb<opcode, (outs), (ins imm32zx4:$M1, bdxaddr20only:$XBD2),
+  : InstRXYb<opcode, (outs),
+             (ins imm32zx4:$M1, (bdxaddr20only $B2, $D2, $X2):$XBD2),
              mnemonic#"\t$M1, $XBD2",
              [(operator imm32zx4_timm:$M1, bdxaddr20only:$XBD2)]>;
 
@@ -4846,25 +4962,14 @@ class PrefetchRILPC<string mnemonic, bits<12> opcode,
 
 class BranchPreloadSMI<string mnemonic, bits<8> opcode>
   : InstSMI<opcode, (outs),
-            (ins imm32zx4:$M1, brtarget16bpp:$RI2, bdxaddr12only:$BD3),
+            (ins imm32zx4:$M1, brtarget16bpp:$RI2,
+                 (bdaddr12only $B3, $D3):$BD3),
             mnemonic#"\t$M1, $RI2, $BD3", []>;
 
 class BranchPreloadMII<string mnemonic, bits<8> opcode>
   : InstMII<opcode, (outs),
             (ins imm32zx4:$M1, brtarget12bpp:$RI2, brtarget24bpp:$RI3),
             mnemonic#"\t$M1, $RI2, $RI3", []>;
-
-// A floating-point load-and test operation.  Create both a normal unary
-// operation and one that acts as a comparison against zero.
-// Note that the comparison against zero operation is not available if we
-// have vector support, since load-and-test instructions will partially
-// clobber the target (vector) register.
-multiclass LoadAndTestRRE<string mnemonic, bits<16> opcode,
-                          RegisterOperand cls> {
-  def "" : UnaryRRE<mnemonic, opcode, null_frag, cls, cls>;
-  let isCodeGenOnly = 1, Predicates = [FeatureNoVector] in
-    def Compare : CompareRRE<mnemonic, opcode, null_frag, cls, cls>;
-}
 
 //===----------------------------------------------------------------------===//
 // Pseudo instructions
@@ -4892,7 +4997,7 @@ class UnaryRIPseudo<SDPatternOperator operator, RegisterOperand cls,
 class UnaryRXYPseudo<string key, SDPatternOperator operator,
                      RegisterOperand cls, bits<5> bytes,
                      AddressingMode mode = bdxaddr20only>
-  : Pseudo<(outs cls:$R1), (ins mode:$XBD2),
+  : Pseudo<(outs cls:$R1), (ins (mode $B2, $D2, $X2):$XBD2),
            [(set cls:$R1, (operator mode:$XBD2))]> {
   let OpKey = key#"r"#cls;
   let OpType = "mem";
@@ -4944,7 +5049,7 @@ multiclass BinaryRIAndKPseudo<string key, SDPatternOperator operator,
 // Mapping:  <INSN>R  ->  MemFoldPseudo  ->  <INSN>
 class MemFoldPseudo<string mnemonic, RegisterOperand cls, bits<5> bytes,
                     AddressingMode mode>
-  : Pseudo<(outs cls:$R1), (ins cls:$R2, mode:$XBD2), []> {
+  : Pseudo<(outs cls:$R1), (ins cls:$R2, (mode $B2, $D2, $X2):$XBD2), []> {
     let OpKey = !subst("mscrk", "msrkc",
                 !subst("msgcrk", "msgrkc",
                 mnemonic#"rk"#cls));
@@ -4966,7 +5071,8 @@ class MemFoldPseudo_FP<string mnemonic, RegisterOperand cls, bits<5> bytes,
 
 class MemFoldPseudo_FPTern<string mnemonic, RegisterOperand cls, bits<5> bytes,
                            AddressingMode mode>
-  : Pseudo<(outs cls:$R1), (ins cls:$R2, cls:$R3, mode:$XBD2), []> {
+  : Pseudo<(outs cls:$R1),
+           (ins cls:$R2, cls:$R3, (mode $B2, $D2, $X2):$XBD2), []> {
     let OpKey = mnemonic#"r"#"MemFold"#cls;
     let OpType = "mem";
     let MemKey = mnemonic#cls;
@@ -4981,7 +5087,7 @@ class MemFoldPseudo_FPTern<string mnemonic, RegisterOperand cls, bits<5> bytes,
 class MemFoldPseudo_CondMove<string mnemonic, RegisterOperand cls, bits<5> bytes,
                              AddressingMode mode>
   : Pseudo<(outs cls:$R1),
-           (ins cls:$R2, mode:$XBD2, cond4:$valid, cond4:$M3), []> {
+           (ins cls:$R2, (mode $B2, $D2):$BD2, cond4:$valid, cond4:$M3), []> {
     let OpKey = !subst("loc", "sel", mnemonic)#"r"#cls;
     let OpType = "mem";
     let MemKey = mnemonic#cls;
@@ -5003,7 +5109,7 @@ class CompareRIPseudo<SDPatternOperator operator, RegisterOperand cls,
 class CompareRXYPseudo<SDPatternOperator operator, RegisterOperand cls,
                        SDPatternOperator load, bits<5> bytes,
                        AddressingMode mode = bdxaddr20only>
-  : Pseudo<(outs), (ins cls:$R1, mode:$XBD2),
+  : Pseudo<(outs), (ins cls:$R1, (mode $B2, $D2, $X2):$XBD2),
            [(set CC, (operator cls:$R1, (load mode:$XBD2)))]> {
   let mayLoad = 1;
   let Has20BitOffset = 1;
@@ -5013,7 +5119,7 @@ class CompareRXYPseudo<SDPatternOperator operator, RegisterOperand cls,
 
 // Like TestBinarySIL, but expanded later.
 class TestBinarySILPseudo<SDPatternOperator operator, ImmOpWithPattern imm>
-  : Pseudo<(outs), (ins bdaddr12only:$BD1, imm:$I2),
+  : Pseudo<(outs), (ins (bdaddr12only $B1, $D1):$BD1, imm:$I2),
            [(set CC, (operator bdaddr12only:$BD1, imm:$I2))]>;
 
 // Like CondBinaryRRF, but expanded after RA depending on the choice of
@@ -5025,7 +5131,6 @@ class CondBinaryRRFPseudo<string mnemonic, RegisterOperand cls1,
            [(set cls1:$R1, (z_select_ccmask cls2:$R2, cls1:$R1src,
                                             cond4:$valid, cond4:$M3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let CCMaskLast = 1;
   let NumOpsKey = !subst("loc", "sel", mnemonic);
   let NumOpsValue = "2";
@@ -5056,7 +5161,6 @@ class CondBinaryRIEPseudo<RegisterOperand cls, ImmOpWithPattern imm>
            [(set cls:$R1, (z_select_ccmask imm:$I2, cls:$R1src,
                                            cond4:$valid, cond4:$M3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let CCMaskLast = 1;
 }
 
@@ -5066,12 +5170,11 @@ class CondUnaryRSYPseudo<string mnemonic, SDPatternOperator operator,
                          RegisterOperand cls, bits<5> bytes,
                          AddressingMode mode = bdaddr20only>
   : Pseudo<(outs cls:$R1),
-           (ins cls:$R1src, mode:$BD2, cond4:$valid, cond4:$R3),
+           (ins cls:$R1src, (mode $B2, $D2):$BD2, cond4:$valid, cond4:$R3),
            [(set cls:$R1,
                  (z_select_ccmask (operator mode:$BD2), cls:$R1src,
                                   cond4:$valid, cond4:$R3))]> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
   let mayLoad = 1;
   let AccessBytes = bytes;
   let CCMaskLast = 1;
@@ -5085,7 +5188,8 @@ class CondUnaryRSYPseudo<string mnemonic, SDPatternOperator operator,
 // register.
 class CondStoreRSYPseudo<RegisterOperand cls, bits<5> bytes,
                          AddressingMode mode = bdaddr20only>
-  : Pseudo<(outs), (ins cls:$R1, mode:$BD2, cond4:$valid, cond4:$R3), []> {
+  : Pseudo<(outs),
+           (ins cls:$R1, (mode $B2, $D2):$BD2, cond4:$valid, cond4:$R3), []> {
   let mayStore = 1;
   let AccessBytes = bytes;
   let CCMaskLast = 1;
@@ -5094,7 +5198,7 @@ class CondStoreRSYPseudo<RegisterOperand cls, bits<5> bytes,
 // Like StoreRXY, but expanded after RA depending on the choice of register.
 class StoreRXYPseudo<SDPatternOperator operator, RegisterOperand cls,
                      bits<5> bytes, AddressingMode mode = bdxaddr20only>
-  : Pseudo<(outs), (ins cls:$R1, mode:$XBD2),
+  : Pseudo<(outs), (ins cls:$R1, (mode $B2, $D2, $X2):$XBD2),
            [(operator cls:$R1, mode:$XBD2)]> {
   let mayStore = 1;
   let Has20BitOffset = 1;
@@ -5107,10 +5211,9 @@ class StoreRXYPseudo<SDPatternOperator operator, RegisterOperand cls,
 class RotateSelectRIEfPseudo<RegisterOperand cls1, RegisterOperand cls2>
   : Pseudo<(outs cls1:$R1),
            (ins cls1:$R1src, cls2:$R2, imm32zx8:$I3, imm32zx8:$I4,
-                imm32zx6:$I5),
+                imm32zx8:$I5),
            []> {
   let Constraints = "$R1 = $R1src";
-  let DisableEncoding = "$R1src";
 }
 
 // Implements "$dst = $cc & (8 >> CC) ? $src1 : $src2", where CC is
@@ -5142,30 +5245,6 @@ multiclass CondStores<RegisterOperand cls, SDPatternOperator store,
                               mode:$addr)]>;
   }
 }
-
-// OPERATOR is ATOMIC_SWAP or an ATOMIC_LOAD_* operation.  PAT and OPERAND
-// describe the second (non-memory) operand.
-class AtomicLoadBinary<SDPatternOperator operator, RegisterOperand cls,
-                       dag pat, DAGOperand operand>
-  : Pseudo<(outs cls:$dst), (ins bdaddr20only:$ptr, operand:$src2),
-           [(set cls:$dst, (operator bdaddr20only:$ptr, pat))]> {
-  let Defs = [CC];
-  let Has20BitOffset = 1;
-  let mayLoad = 1;
-  let mayStore = 1;
-  let usesCustomInserter = 1;
-  let hasNoSchedulingInfo = 1;
-}
-
-// Specializations of AtomicLoadWBinary.
-class AtomicLoadBinaryReg32<SDPatternOperator operator>
-  : AtomicLoadBinary<operator, GR32, (i32 GR32:$src2), GR32>;
-class AtomicLoadBinaryImm32<SDPatternOperator operator, ImmOpWithPattern imm>
-  : AtomicLoadBinary<operator, GR32, (i32 imm:$src2), imm>;
-class AtomicLoadBinaryReg64<SDPatternOperator operator>
-  : AtomicLoadBinary<operator, GR64, (i64 GR64:$src2), GR64>;
-class AtomicLoadBinaryImm64<SDPatternOperator operator, ImmOpWithPattern imm>
-  : AtomicLoadBinary<operator, GR64, (i64 imm:$src2), imm>;
 
 // OPERATOR is ATOMIC_SWAPW or an ATOMIC_LOADW_* operation.  PAT and OPERAND
 // describe the second (non-memory) operand.
@@ -5211,13 +5290,13 @@ class UnaryAliasVRR<SDPatternOperator operator, TypedReg tr1, TypedReg tr2>
 // An alias of a UnaryVRX, but with different register sizes.
 class UnaryAliasVRX<SDPatternOperator operator, TypedReg tr,
                     AddressingMode mode = bdxaddr12only>
-  : Alias<6, (outs tr.op:$V1), (ins mode:$XBD2),
+  : Alias<6, (outs tr.op:$V1), (ins (mode $B2, $D2, $X2):$XBD2),
           [(set (tr.vt tr.op:$V1), (operator mode:$XBD2))]>;
 
 // An alias of a StoreVRX, but with different register sizes.
 class StoreAliasVRX<SDPatternOperator operator, TypedReg tr,
                     AddressingMode mode = bdxaddr12only>
-  : Alias<6, (outs), (ins tr.op:$V1, mode:$XBD2),
+  : Alias<6, (outs), (ins tr.op:$V1, (mode $B2, $D2, $X2):$XBD2),
           [(operator (tr.vt tr.op:$V1), mode:$XBD2)]>;
 
 // An alias of a BinaryRI, but with different register sizes.
@@ -5249,11 +5328,14 @@ class CompareAliasRI<SDPatternOperator operator, RegisterOperand cls,
 }
 
 // An alias of a RotateSelectRIEf, but with different register sizes.
-class RotateSelectAliasRIEf<RegisterOperand cls1, RegisterOperand cls2>
-  : Alias<6, (outs cls1:$R1),
-          (ins cls1:$R1src, cls2:$R2, imm32zx8:$I3, imm32zx8:$I4,
-               imm32zx6:$I5), []> {
-  let Constraints = "$R1 = $R1src";
+multiclass RotateSelectAliasRIEf<RegisterOperand cls1, RegisterOperand cls2> {
+  let Constraints = "$R1 = $R1src" in {
+    def "" : Alias<6, (outs cls1:$R1),
+            (ins cls1:$R1src, cls2:$R2, imm32zx8:$I3, imm32zx8:$I4,
+                imm32zx8:$I5), []>;
+    def Opt : Alias<6, (outs cls1:$R1),
+            (ins cls1:$R1src, cls2:$R2, imm32zx8:$I3, imm32zx8:$I4), []>;
+  }
 }
 
 class MemsetPseudo<DAGOperand lenop, DAGOperand byteop>

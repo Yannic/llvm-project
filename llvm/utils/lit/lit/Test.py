@@ -1,3 +1,4 @@
+import abc
 import itertools
 import os
 from json import JSONEncoder
@@ -7,7 +8,8 @@ from lit.TestTimes import read_test_times
 
 # Test result codes.
 
-class ResultCode(object):
+
+class ResultCode:
     """Test result codes."""
 
     # All result codes (including user-defined ones) in declaration order
@@ -24,7 +26,7 @@ class ResultCode(object):
     def __new__(cls, name, label, isFailure):
         res = cls._instances.get(name)
         if res is None:
-            cls._instances[name] = res = super(ResultCode, cls).__new__(cls)
+            cls._instances[name] = res = super().__new__(cls)
         return res
 
     def __getnewargs__(self):
@@ -37,27 +39,29 @@ class ResultCode(object):
         ResultCode._all_codes.append(self)
 
     def __repr__(self):
-        return '%s%r' % (self.__class__.__name__,
-                         (self.name, self.isFailure))
+        return "%s%r" % (self.__class__.__name__, (self.name, self.isFailure))
 
 
 # Successes
-EXCLUDED    = ResultCode('EXCLUDED',    'Excluded', False)
-SKIPPED     = ResultCode('SKIPPED',     'Skipped', False)
-UNSUPPORTED = ResultCode('UNSUPPORTED', 'Unsupported', False)
-PASS        = ResultCode('PASS',        'Passed', False)
-FLAKYPASS   = ResultCode('FLAKYPASS',   'Passed With Retry', False)
-XFAIL       = ResultCode('XFAIL',       'Expectedly Failed', False)
+EXCLUDED = ResultCode("EXCLUDED", "Excluded", False)
+SKIPPED = ResultCode("SKIPPED", "Skipped", False)
+UNSUPPORTED = ResultCode("UNSUPPORTED", "Unsupported", False)
+PASS = ResultCode("PASS", "Passed", False)
+FLAKYPASS = ResultCode("FLAKYPASS", "Passed With Retry", False)
+FIXED = ResultCode("FIXED", "Passed After Update", False)
+XFAIL = ResultCode("XFAIL", "Expectedly Failed", False)
 # Failures
-UNRESOLVED  = ResultCode('UNRESOLVED',  'Unresolved', True)
-TIMEOUT     = ResultCode('TIMEOUT',     'Timed Out', True)
-FAIL        = ResultCode('FAIL',        'Failed', True)
-XPASS       = ResultCode('XPASS',       'Unexpectedly Passed', True)
+UNRESOLVED = ResultCode("UNRESOLVED", "Unresolved", True)
+TIMEOUT = ResultCode("TIMEOUT", "Timed Out", True)
+FAIL = ResultCode("FAIL", "Failed", True)
+XPASS = ResultCode("XPASS", "Unexpectedly Passed", True)
 
 
 # Test metric values.
 
-class MetricValue(object):
+
+class MetricValue(abc.ABC):
+    @abc.abstractmethod
     def format(self):
         """
         format() -> str
@@ -65,8 +69,8 @@ class MetricValue(object):
         Convert this metric to a string suitable for displaying as part of the
         console output.
         """
-        raise RuntimeError("abstract method")
 
+    @abc.abstractmethod
     def todata(self):
         """
         todata() -> json-serializable data
@@ -74,7 +78,7 @@ class MetricValue(object):
         Convert this metric to content suitable for serializing in the JSON test
         output.
         """
-        raise RuntimeError("abstract method")
+
 
 class IntMetricValue(MetricValue):
     def __init__(self, value):
@@ -86,21 +90,24 @@ class IntMetricValue(MetricValue):
     def todata(self):
         return self.value
 
+
 class RealMetricValue(MetricValue):
     def __init__(self, value):
         self.value = value
 
     def format(self):
-        return '%.4f' % self.value
+        return "%.4f" % self.value
 
     def todata(self):
         return self.value
 
+
 class JSONMetricValue(MetricValue):
     """
-        JSONMetricValue is used for types that are representable in the output
-        but that are otherwise uninterpreted.
+    JSONMetricValue is used for types that are representable in the output
+    but that are otherwise uninterpreted.
     """
+
     def __init__(self, value):
         # Ensure the value is a serializable by trying to encode it.
         # WARNING: The value may change before it is encoded again, and may
@@ -118,6 +125,7 @@ class JSONMetricValue(MetricValue):
 
     def todata(self):
         return self.value
+
 
 def toMetricValue(value):
     if isinstance(value, MetricValue):
@@ -141,10 +149,19 @@ def toMetricValue(value):
 
 # Test results.
 
-class Result(object):
+
+class Result:
     """Wrapper for the results of executing an individual test."""
 
-    def __init__(self, code, output='', elapsed=None):
+    def __init__(
+        self,
+        code,
+        output="",
+        elapsed=None,
+        attempts=1,
+        max_allowed_attempts=None,
+        test_updater_outputs=[],
+    ):
         # The result code.
         self.code = code
         # The test output.
@@ -157,6 +174,12 @@ class Result(object):
         self.metrics = {}
         # The micro-test results reported by this test.
         self.microResults = {}
+        # How often was the test run?
+        self.attempts = attempts
+        # How many attempts were allowed for this test
+        self.max_allowed_attempts = max_allowed_attempts
+        # Outputs from test updaters. One entry per attempt, or empty if disabled.
+        self.test_updater_outputs = test_updater_outputs
 
     def addMetric(self, name, value):
         """
@@ -169,8 +192,7 @@ class Result(object):
         Each value must be an instance of a MetricValue subclass.
         """
         if name in self.metrics:
-            raise ValueError("result already includes metrics for %r" % (
-                    name,))
+            raise ValueError("result already includes metrics for %r" % (name,))
         if not isinstance(value, MetricValue):
             raise TypeError("unexpected metric value: %r" % (value,))
         self.metrics[name] = value
@@ -186,8 +208,7 @@ class Result(object):
         Each micro-test result must be an instance of the Result class.
         """
         if name in self.microResults:
-            raise ValueError("Result already includes microResult for %r" % (
-                   name,))
+            raise ValueError("Result already includes microResult for %r" % (name,))
         if not isinstance(microResult, Result):
             raise TypeError("unexpected MicroResult value %r" % (microResult,))
         self.microResults[name] = microResult
@@ -195,20 +216,21 @@ class Result(object):
 
 # Test classes.
 
+
 class TestSuite:
     """TestSuite - Information on a group of tests.
 
     A test suite groups together a set of logically related tests.
     """
 
-    def __init__(self, name, source_root, exec_root, config):
+    def __init__(self, name, source_root, exec_root, config, lit_config=None):
         self.name = name
         self.source_root = source_root
         self.exec_root = exec_root
         # The test suite configuration.
         self.config = config
 
-        self.test_times = read_test_times(self)
+        self.test_times = read_test_times(self, lit_config)
 
     def getSourcePath(self, components):
         return os.path.join(self.source_root, *components)
@@ -216,10 +238,13 @@ class TestSuite:
     def getExecPath(self, components):
         return os.path.join(self.exec_root, *components)
 
+
 class Test:
     """Test - Information on a single test instance."""
 
-    def __init__(self, suite, path_in_suite, config, file_path = None, gtest_json_file = None):
+    def __init__(
+        self, suite, path_in_suite, config, file_path=None, gtest_json_file=None
+    ):
         self.suite = suite
         self.path_in_suite = path_in_suite
         self.config = config
@@ -232,8 +257,14 @@ class Test:
         # and will be honored when the test result is supplied.
         self.xfails = []
 
+        # Exclude this test if it's xfail.
+        self.exclude_xfail = False
+
         # If true, ignore all items in self.xfails.
         self.xfail_not = False
+
+        # If true, ignore all items in self.unsupported.
+        self.unsupported_not = False
 
         # A list of conditions that must be satisfied before running the test.
         # Each condition is a boolean expression of features. All of them
@@ -247,7 +278,7 @@ class Test:
 
         # An optional number of retries allowed before the test finally succeeds.
         # The test is run at most once plus the number of retries specified here.
-        self.allowed_retries = getattr(config, 'test_retry_attempts', 0)
+        self.allowed_retries = getattr(config, "test_retry_attempts", 0)
 
         # The test result, once complete.
         self.result = None
@@ -258,11 +289,10 @@ class Test:
         # The previous test elapsed time, if applicable.
         self.previous_elapsed = 0.0
 
-        if suite.test_times and '/'.join(path_in_suite) in suite.test_times:
-            time = suite.test_times['/'.join(path_in_suite)]
+        if suite.test_times and "/".join(path_in_suite) in suite.test_times:
+            time = suite.test_times["/".join(path_in_suite)]
             self.previous_elapsed = abs(time)
             self.previous_failure = time < 0
-
 
     def setResult(self, result):
         assert self.result is None, "result already set"
@@ -288,7 +318,12 @@ class Test:
         return self.result.code.isFailure
 
     def getFullName(self):
-        return self.suite.config.name + ' :: ' + '/'.join(self.path_in_suite)
+        return self.suite.config.name + " :: " + "/".join(self.path_in_suite)
+
+    def getSummaryName(self, printPathRelativeCWD):
+        if printPathRelativeCWD:
+            return os.path.relpath(self.getFilePath())
+        return self.getFullName()
 
     def getFilePath(self):
         if self.file_path:
@@ -313,14 +348,14 @@ class Test:
         """
 
         if self.xfail_not:
-          return False
+            return False
 
         features = self.config.available_features
 
         # Check if any of the xfails match an available feature.
         for item in self.xfails:
             # If this is the wildcard, it always fails.
-            if item == '*':
+            if item == "*":
                 return True
 
             # If this is a True expression of features, it fails.
@@ -328,7 +363,7 @@ class Test:
                 if BooleanExpression.evaluate(item, features):
                     return True
             except ValueError as e:
-                raise ValueError('Error in XFAIL list:\n%s' % str(e))
+                raise ValueError("Error in XFAIL list:\n%s" % str(e))
 
         return False
 
@@ -352,8 +387,11 @@ class Test:
             return False
 
         # Check the requirements after removing the limiting features (#2)
-        featuresMinusLimits = [f for f in self.config.available_features
-                               if not f in self.config.limit_to_features]
+        featuresMinusLimits = [
+            f
+            for f in self.config.available_features
+            if not f in self.config.limit_to_features
+        ]
         if not self.getMissingRequiredFeaturesFromList(featuresMinusLimits):
             return False
 
@@ -361,10 +399,13 @@ class Test:
 
     def getMissingRequiredFeaturesFromList(self, features):
         try:
-            return [item for item in self.requires
-                    if not BooleanExpression.evaluate(item, features)]
+            return [
+                item
+                for item in self.requires
+                if not BooleanExpression.evaluate(item, features)
+            ]
         except ValueError as e:
-            raise ValueError('Error in REQUIRES list:\n%s' % str(e))
+            raise ValueError("Error in REQUIRES list:\n%s" % str(e))
 
     def getMissingRequiredFeatures(self):
         """
@@ -386,13 +427,19 @@ class Test:
         Throws ValueError if an UNSUPPORTED line has a syntax error.
         """
 
+        if self.unsupported_not:
+            return []
+
         features = self.config.available_features
 
         try:
-            return [item for item in self.unsupported
-                    if BooleanExpression.evaluate(item, features)]
+            return [
+                item
+                for item in self.unsupported
+                if BooleanExpression.evaluate(item, features)
+            ]
         except ValueError as e:
-            raise ValueError('Error in UNSUPPORTED list:\n%s' % str(e))
+            raise ValueError("Error in UNSUPPORTED list:\n%s" % str(e))
 
     def getUsedFeatures(self):
         """
@@ -402,14 +449,18 @@ class Test:
         REQUIRES annotations for this test.
         """
         import lit.TestRunner
-        parsed = lit.TestRunner._parseKeywords(self.getSourcePath(), require_script=False)
-        feature_keywords = ('UNSUPPORTED:', 'REQUIRES:', 'XFAIL:')
+
+        parsed = lit.TestRunner._parseKeywords(
+            self.getSourcePath(), require_script=False
+        )
+        feature_keywords = ("UNSUPPORTED:", "REQUIRES:", "XFAIL:")
         boolean_expressions = itertools.chain.from_iterable(
             parsed[k] or [] for k in feature_keywords
         )
         tokens = itertools.chain.from_iterable(
-            BooleanExpression.tokenize(expr) for expr in
-                boolean_expressions if expr != '*'
+            BooleanExpression.tokenize(expr)
+            for expr in boolean_expressions
+            if expr != "*"
         )
         matchExpressions = set(filter(BooleanExpression.isMatchExpression, tokens))
         return matchExpressions

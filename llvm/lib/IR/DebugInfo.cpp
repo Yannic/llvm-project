@@ -13,6 +13,7 @@
 
 #include "llvm-c/DebugInfo.h"
 #include "LLVMContextImpl.h"
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -25,6 +26,7 @@
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DebugProgramInstruction.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/Instruction.h"
@@ -34,99 +36,116 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/TimeProfiler.h"
 #include <algorithm>
 #include <cassert>
 #include <optional>
-#include <utility>
 
 using namespace llvm;
 using namespace llvm::at;
 using namespace llvm::dwarf;
 
-/// Finds all intrinsics declaring local variables as living in the memory that
-/// 'V' points to. This may include a mix of dbg.declare and
-/// dbg.addr intrinsics.
-TinyPtrVector<DbgVariableIntrinsic *> llvm::FindDbgAddrUses(Value *V) {
+TinyPtrVector<DbgVariableRecord *> llvm::findDVRDeclares(Value *V) {
   // This function is hot. Check whether the value has any metadata to avoid a
-  // DenseMap lookup.
+  // DenseMap lookup. This check is a bitfield datamember lookup.
   if (!V->isUsedByMetadata())
     return {};
-  auto *L = LocalAsMetadata::getIfExists(V);
+  auto *L = ValueAsMetadata::getIfExists(V);
   if (!L)
     return {};
-  auto *MDV = MetadataAsValue::getIfExists(V->getContext(), L);
-  if (!MDV)
-    return {};
 
-  TinyPtrVector<DbgVariableIntrinsic *> Declares;
-  for (User *U : MDV->users()) {
-    if (auto *DII = dyn_cast<DbgVariableIntrinsic>(U))
-      if (DII->isAddressOfVariable())
-        Declares.push_back(DII);
-  }
+  TinyPtrVector<DbgVariableRecord *> Declares;
+  for (DbgVariableRecord *DVR : L->getAllDbgVariableRecordUsers())
+    if (DVR->getType() == DbgVariableRecord::LocationType::Declare)
+      Declares.push_back(DVR);
 
   return Declares;
 }
 
-TinyPtrVector<DbgDeclareInst *> llvm::FindDbgDeclareUses(Value *V) {
-  TinyPtrVector<DbgDeclareInst *> DDIs;
-  for (DbgVariableIntrinsic *DVI : FindDbgAddrUses(V))
-    if (auto *DDI = dyn_cast<DbgDeclareInst>(DVI))
-      DDIs.push_back(DDI);
-  return DDIs;
+TinyPtrVector<DbgVariableRecord *> llvm::findDVRDeclareValues(Value *V) {
+  // This function is hot. Check whether the value has any metadata to avoid a
+  // DenseMap lookup. This check is a bitfield datamember lookup.
+  if (!V->isUsedByMetadata())
+    return {};
+  auto *L = ValueAsMetadata::getIfExists(V);
+  if (!L)
+    return {};
+
+  TinyPtrVector<DbgVariableRecord *> DEclareValues;
+  for (DbgVariableRecord *DVR : L->getAllDbgVariableRecordUsers())
+    if (DVR->getType() == DbgVariableRecord::LocationType::DeclareValue)
+      DEclareValues.push_back(DVR);
+
+  return DEclareValues;
 }
 
-void llvm::findDbgValues(SmallVectorImpl<DbgValueInst *> &DbgValues, Value *V) {
+TinyPtrVector<DbgVariableRecord *> llvm::findDVRValues(Value *V) {
+  // This function is hot. Check whether the value has any metadata to avoid a
+  // DenseMap lookup. This check is a bitfield datamember lookup.
+  if (!V->isUsedByMetadata())
+    return {};
+  auto *L = ValueAsMetadata::getIfExists(V);
+  if (!L)
+    return {};
+
+  TinyPtrVector<DbgVariableRecord *> Values;
+  for (DbgVariableRecord *DVR : L->getAllDbgVariableRecordUsers())
+    if (DVR->isValueOfVariable())
+      Values.push_back(DVR);
+
+  return Values;
+}
+
+template <bool DbgAssignAndValuesOnly>
+static void
+findDbgIntrinsics(Value *V,
+                  SmallVectorImpl<DbgVariableRecord *> &DbgVariableRecords) {
   // This function is hot. Check whether the value has any metadata to avoid a
   // DenseMap lookup.
   if (!V->isUsedByMetadata())
     return;
+
   // TODO: If this value appears multiple times in a DIArgList, we should still
-  // only add the owning DbgValueInst once; use this set to track ArgListUsers.
+  // only add the owning dbg.value once; use this set to track ArgListUsers.
   // This behaviour can be removed when we can automatically remove duplicates.
-  SmallPtrSet<DbgValueInst *, 4> EncounteredDbgValues;
-  if (auto *L = LocalAsMetadata::getIfExists(V)) {
-    if (auto *MDV = MetadataAsValue::getIfExists(V->getContext(), L)) {
-      for (User *U : MDV->users())
-        if (DbgValueInst *DVI = dyn_cast<DbgValueInst>(U))
-          DbgValues.push_back(DVI);
-    }
-    for (Metadata *AL : L->getAllArgListUsers()) {
-      if (auto *MDV = MetadataAsValue::getIfExists(V->getContext(), AL)) {
-        for (User *U : MDV->users())
-          if (DbgValueInst *DVI = dyn_cast<DbgValueInst>(U))
-            if (EncounteredDbgValues.insert(DVI).second)
-              DbgValues.push_back(DVI);
+  // V will also appear twice in a dbg.assign if its used in the both the value
+  // and address components.
+  SmallPtrSet<DbgVariableRecord *, 4> EncounteredDbgVariableRecords;
+
+  /// Append users of MetadataAsValue(MD).
+  auto AppendUsers = [&EncounteredDbgVariableRecords,
+                      &DbgVariableRecords](Metadata *MD) {
+    // Get DbgVariableRecords that use this as a single value.
+    if (LocalAsMetadata *L = dyn_cast<LocalAsMetadata>(MD)) {
+      for (DbgVariableRecord *DVR : L->getAllDbgVariableRecordUsers()) {
+        if (!DbgAssignAndValuesOnly || DVR->isDbgValue() || DVR->isDbgAssign())
+          if (EncounteredDbgVariableRecords.insert(DVR).second)
+            DbgVariableRecords.push_back(DVR);
       }
+    }
+  };
+
+  if (auto *L = LocalAsMetadata::getIfExists(V)) {
+    AppendUsers(L);
+    for (Metadata *AL : L->getAllArgListUsers()) {
+      AppendUsers(AL);
+      DIArgList *DI = cast<DIArgList>(AL);
+      for (DbgVariableRecord *DVR : DI->getAllDbgVariableRecordUsers())
+        if (!DbgAssignAndValuesOnly || DVR->isDbgValue() || DVR->isDbgAssign())
+          if (EncounteredDbgVariableRecords.insert(DVR).second)
+            DbgVariableRecords.push_back(DVR);
     }
   }
 }
 
-void llvm::findDbgUsers(SmallVectorImpl<DbgVariableIntrinsic *> &DbgUsers,
-                        Value *V) {
-  // This function is hot. Check whether the value has any metadata to avoid a
-  // DenseMap lookup.
-  if (!V->isUsedByMetadata())
-    return;
-  // TODO: If this value appears multiple times in a DIArgList, we should still
-  // only add the owning DbgValueInst once; use this set to track ArgListUsers.
-  // This behaviour can be removed when we can automatically remove duplicates.
-  SmallPtrSet<DbgVariableIntrinsic *, 4> EncounteredDbgValues;
-  if (auto *L = LocalAsMetadata::getIfExists(V)) {
-    if (auto *MDV = MetadataAsValue::getIfExists(V->getContext(), L)) {
-      for (User *U : MDV->users())
-        if (DbgVariableIntrinsic *DII = dyn_cast<DbgVariableIntrinsic>(U))
-          DbgUsers.push_back(DII);
-    }
-    for (Metadata *AL : L->getAllArgListUsers()) {
-      if (auto *MDV = MetadataAsValue::getIfExists(V->getContext(), AL)) {
-        for (User *U : MDV->users())
-          if (DbgVariableIntrinsic *DII = dyn_cast<DbgVariableIntrinsic>(U))
-            if (EncounteredDbgValues.insert(DII).second)
-              DbgUsers.push_back(DII);
-      }
-    }
-  }
+void llvm::findDbgValues(
+    Value *V, SmallVectorImpl<DbgVariableRecord *> &DbgVariableRecords) {
+  findDbgIntrinsics</*DbgAssignAndValuesOnly=*/true>(V, DbgVariableRecords);
+}
+
+void llvm::findDbgUsers(
+    Value *V, SmallVectorImpl<DbgVariableRecord *> &DbgVariableRecords) {
+  findDbgIntrinsics</*DbgAssignAndValuesOnly=*/false>(V, DbgVariableRecords);
 }
 
 DISubprogram *llvm::getDISubprogram(const MDNode *Scope) {
@@ -135,16 +154,16 @@ DISubprogram *llvm::getDISubprogram(const MDNode *Scope) {
   return nullptr;
 }
 
-DebugLoc llvm::getDebugValueLoc(DbgVariableIntrinsic *DII) {
+DebugLoc llvm::getDebugValueLoc(DbgVariableRecord *DVR) {
   // Original dbg.declare must have a location.
-  const DebugLoc &DeclareLoc = DII->getDebugLoc();
+  const DebugLoc &DeclareLoc = DVR->getDebugLoc();
   MDNode *Scope = DeclareLoc.getScope();
   DILocation *InlinedAt = DeclareLoc.getInlinedAt();
   // Because no machine insts can come from debug intrinsics, only the scope
   // and inlinedAt is significant. Zero line numbers are used in case this
   // DebugLoc leaks into any adjacent instructions. Produce an unknown location
   // with the correct scope / inlinedAt fields.
-  return DILocation::get(DII->getContext(), 0, 0, Scope, InlinedAt);
+  return DILocation::get(DVR->getContext(), 0, 0, Scope, InlinedAt);
 }
 
 //===----------------------------------------------------------------------===//
@@ -157,6 +176,7 @@ void DebugInfoFinder::reset() {
   GVs.clear();
   TYs.clear();
   Scopes.clear();
+  Macros.clear();
   NodesSeen.clear();
 }
 
@@ -177,13 +197,8 @@ void DebugInfoFinder::processModule(const Module &M) {
 void DebugInfoFinder::processCompileUnit(DICompileUnit *CU) {
   if (!addCompileUnit(CU))
     return;
-  for (auto *DIG : CU->getGlobalVariables()) {
-    if (!addGlobalVariable(DIG))
-      continue;
-    auto *GV = DIG->getVariable();
-    processScope(GV->getScope());
-    processType(GV->getType());
-  }
+  for (auto *GVE : CU->getGlobalVariables())
+    processGlobalVariableExpression(GVE);
   for (auto *ET : CU->getEnumTypes())
     processType(ET);
   for (auto *RT : CU->getRetainedTypes())
@@ -191,26 +206,31 @@ void DebugInfoFinder::processCompileUnit(DICompileUnit *CU) {
       processType(T);
     else
       processSubprogram(cast<DISubprogram>(RT));
-  for (auto *Import : CU->getImportedEntities()) {
-    auto *Entity = Import->getEntity();
-    if (auto *T = dyn_cast<DIType>(Entity))
-      processType(T);
-    else if (auto *SP = dyn_cast<DISubprogram>(Entity))
-      processSubprogram(SP);
-    else if (auto *NS = dyn_cast<DINamespace>(Entity))
-      processScope(NS->getScope());
-    else if (auto *M = dyn_cast<DIModule>(Entity))
-      processScope(M->getScope());
-  }
+  for (auto *Import : CU->getImportedEntities())
+    processImportedEntity(Import);
+  for (auto *Macro : CU->getMacros())
+    processMacroNode(Macro, nullptr);
+}
+
+void DebugInfoFinder::processGlobalVariableExpression(
+    DIGlobalVariableExpression *GVE) {
+  if (!addGlobalVariable(GVE))
+    return;
+  auto *GV = GVE->getVariable();
+  processScope(GV->getScope());
+  processType(GV->getType());
 }
 
 void DebugInfoFinder::processInstruction(const Module &M,
                                          const Instruction &I) {
   if (auto *DVI = dyn_cast<DbgVariableIntrinsic>(&I))
-    processVariable(M, *DVI);
+    processVariable(DVI->getVariable());
 
   if (auto DbgLoc = I.getDebugLoc())
     processLocation(M, DbgLoc.get());
+
+  for (const DbgRecord &DPR : I.getDbgRecordRange())
+    processDbgRecord(M, DPR);
 }
 
 void DebugInfoFinder::processLocation(const Module &M, const DILocation *Loc) {
@@ -218,6 +238,17 @@ void DebugInfoFinder::processLocation(const Module &M, const DILocation *Loc) {
     return;
   processScope(Loc->getScope());
   processLocation(M, Loc->getInlinedAt());
+}
+
+void DebugInfoFinder::processDbgRecord(const Module &M, const DbgRecord &DR) {
+  if (const DbgVariableRecord *DVR = dyn_cast<const DbgVariableRecord>(&DR))
+    processVariable(DVR->getVariable());
+  processLocation(M, DR.getDebugLoc().get());
+}
+
+void DebugInfoFinder::processVariable(DIVariable *DV) {
+  if (auto *DLV = dyn_cast_or_null<DILocalVariable>(DV))
+    processVariable(DLV);
 }
 
 void DebugInfoFinder::processType(DIType *DT) {
@@ -231,17 +262,104 @@ void DebugInfoFinder::processType(DIType *DT) {
   }
   if (auto *DCT = dyn_cast<DICompositeType>(DT)) {
     processType(DCT->getBaseType());
+    processType(DCT->getVTableHolder());
+    processType(DCT->getDiscriminator());
+    processType(DCT->getSpecification());
+    processVariable(DCT->getDataLocation());
+    processVariable(DCT->getAssociated());
+    processVariable(DCT->getAllocated());
     for (Metadata *D : DCT->getElements()) {
       if (auto *T = dyn_cast<DIType>(D))
         processType(T);
       else if (auto *SP = dyn_cast<DISubprogram>(D))
         processSubprogram(SP);
+      else if (auto *P = dyn_cast<DIProperty>(D))
+        processType(P->getType());
+      else if (auto *SR = dyn_cast_or_null<DISubrange>(D)) {
+        auto VisitBound = [&](DISubrange::BoundType Bound) {
+          if (auto *BV = dyn_cast_if_present<DIVariable *>(Bound))
+            processVariable(BV);
+        };
+        VisitBound(SR->getLowerBound());
+        VisitBound(SR->getCount());
+        VisitBound(SR->getUpperBound());
+        VisitBound(SR->getStride());
+      } else if (auto *GSR = dyn_cast_or_null<DIGenericSubrange>(D)) {
+        auto VisitBound = [&](DIGenericSubrange::BoundType Bound) {
+          if (auto *BV = dyn_cast_if_present<DIVariable *>(Bound))
+            processVariable(BV);
+        };
+        VisitBound(GSR->getLowerBound());
+        VisitBound(GSR->getCount());
+        VisitBound(GSR->getUpperBound());
+        VisitBound(GSR->getStride());
+      }
     }
+    return;
+  }
+  if (auto *ST = dyn_cast<DIStringType>(DT)) {
+    processVariable(ST->getStringLength());
+    return;
+  }
+  if (auto *SRT = dyn_cast<DISubrangeType>(DT)) {
+    processType(SRT->getBaseType());
+    auto VisitBound = [&](DISubrangeType::BoundType Bound) {
+      if (auto *V = dyn_cast_if_present<DIVariable *>(Bound))
+        processVariable(V);
+      else if (auto *T = dyn_cast_if_present<DIDerivedType *>(Bound))
+        processType(T);
+    };
+    VisitBound(SRT->getLowerBound());
+    VisitBound(SRT->getUpperBound());
+    VisitBound(SRT->getStride());
+    VisitBound(SRT->getBias());
     return;
   }
   if (auto *DDT = dyn_cast<DIDerivedType>(DT)) {
     processType(DDT->getBaseType());
   }
+}
+
+void DebugInfoFinder::processImportedEntity(const DIImportedEntity *Import) {
+  auto *Entity = Import->getEntity();
+  if (auto *T = dyn_cast<DIType>(Entity))
+    processType(T);
+  else if (auto *SP = dyn_cast<DISubprogram>(Entity))
+    processSubprogram(SP);
+  else if (auto *NS = dyn_cast<DINamespace>(Entity))
+    processScope(NS->getScope());
+  else if (auto *M = dyn_cast<DIModule>(Entity))
+    processScope(M->getScope());
+}
+
+/// Process a macro debug info node (DIMacroNode).
+///
+/// A DIMacroNode is one of two types:
+///   - DIMacro: A single macro definition. Add it to the Macros list along with
+///     its containing DIMacroFile.
+///   - DIMacroFile: A file containing macros. Recursively process all nested
+///     macro nodes within it (avoiding duplicates by tracking visited nodes).
+void DebugInfoFinder::processMacroNode(DIMacroNode *Macro,
+                                       DIMacroFile *CurrentMacroFile) {
+  if (!Macro)
+    return;
+
+  if (auto *M = dyn_cast<DIMacro>(Macro)) {
+    addMacro(M, CurrentMacroFile);
+    return;
+  }
+
+  auto *MF = dyn_cast<DIMacroFile>(Macro);
+  assert(MF &&
+         "Expected a DIMacroFile (it can't be any other type at this point)");
+
+  // Check if we've already seen this macro file to avoid infinite recursion
+  if (!NodesSeen.insert(MF).second)
+    return;
+
+  // Recursively process nested macros in the macro file
+  for (auto *Element : MF->getElements())
+    processMacroNode(Element, MF);
 }
 
 void DebugInfoFinder::processScope(DIScope *Scope) {
@@ -279,9 +397,9 @@ void DebugInfoFinder::processSubprogram(DISubprogram *SP) {
   // just DISubprogram's, referenced from anywhere within the Function being
   // cloned prior to calling MapMetadata / RemapInstruction to avoid their
   // duplication later as DICompileUnit's are also directly referenced by
-  // llvm.dbg.cu list. Thefore we need to collect DICompileUnit's here as well.
-  // Also, DICompileUnit's may reference DISubprogram's too and therefore need
-  // to be at least looked through.
+  // llvm.dbg.cu list. Therefore we need to collect DICompileUnit's here as
+  // well. Also, DICompileUnit's may reference DISubprogram's too and therefore
+  // need to be at least looked through.
   processCompileUnit(SP->getUnit());
   processType(SP->getType());
   for (auto *Element : SP->getTemplateParams()) {
@@ -291,18 +409,15 @@ void DebugInfoFinder::processSubprogram(DISubprogram *SP) {
       processType(TVal->getType());
     }
   }
+
+  SP->forEachRetainedNode(
+      [this](DILocalVariable *LV) { processVariable(LV); }, [](DILabel *L) {},
+      [this](DIImportedEntity *IE) { processImportedEntity(IE); },
+      [this](DIType *T) { processType(T); },
+      [this](auto *GVE) { return processGlobalVariableExpression(GVE); });
 }
 
-void DebugInfoFinder::processVariable(const Module &M,
-                                      const DbgVariableIntrinsic &DVI) {
-  auto *N = dyn_cast<MDNode>(DVI.getVariable());
-  if (!N)
-    return;
-
-  auto *DV = dyn_cast<DILocalVariable>(N);
-  if (!DV)
-    return;
-
+void DebugInfoFinder::processVariable(const DILocalVariable *DV) {
   if (!NodesSeen.insert(DV).second)
     return;
   processScope(DV->getScope());
@@ -316,7 +431,7 @@ bool DebugInfoFinder::addType(DIType *DT) {
   if (!NodesSeen.insert(DT).second)
     return false;
 
-  TYs.push_back(const_cast<DIType *>(DT));
+  TYs.push_back(DT);
   return true;
 }
 
@@ -362,6 +477,49 @@ bool DebugInfoFinder::addScope(DIScope *Scope) {
   return true;
 }
 
+bool DebugInfoFinder::addMacro(DIMacro *Macro, DIMacroFile *MacroFile) {
+  if (!Macro)
+    return false;
+
+  if (!NodesSeen.insert(Macro).second)
+    return false;
+
+  Macros.push_back(std::make_pair(Macro, MacroFile));
+  return true;
+}
+
+/// Recursively handle DILocations in followup metadata etc.
+///
+/// TODO: If for example a followup loop metadata would reference itself this
+/// function would go into infinite recursion. We do not expect such cycles in
+/// the loop metadata (except for the self-referencing first element
+/// "LoopID"). However, we could at least handle such situations more gracefully
+/// somehow (e.g. by keeping track of visited nodes and dropping metadata).
+static Metadata *updateLoopMetadataDebugLocationsRecursive(
+    Metadata *MetadataIn, function_ref<Metadata *(Metadata *)> Updater) {
+  const MDTuple *M = dyn_cast_or_null<MDTuple>(MetadataIn);
+  // The loop metadata options should start with a MDString.
+  if (!M || M->getNumOperands() < 1 || !isa<MDString>(M->getOperand(0)))
+    return MetadataIn;
+
+  bool Updated = false;
+  SmallVector<Metadata *, 4> MDs{M->getOperand(0)};
+  for (Metadata *MD : llvm::drop_begin(M->operands())) {
+    if (!MD) {
+      MDs.push_back(nullptr);
+      continue;
+    }
+    Metadata *NewMD =
+        Updater(updateLoopMetadataDebugLocationsRecursive(MD, Updater));
+    if (NewMD)
+      MDs.push_back(NewMD);
+    Updated |= NewMD != MD;
+  }
+
+  assert(!M->isDistinct() && "M should not be distinct.");
+  return Updated ? MDNode::get(M->getContext(), MDs) : MetadataIn;
+}
+
 static MDNode *updateLoopMetadataDebugLocationsImpl(
     MDNode *OrigLoopID, function_ref<Metadata *(Metadata *)> Updater) {
   assert(OrigLoopID && OrigLoopID->getNumOperands() > 0 &&
@@ -372,11 +530,11 @@ static MDNode *updateLoopMetadataDebugLocationsImpl(
   // Save space for the self-referential LoopID.
   SmallVector<Metadata *, 4> MDs = {nullptr};
 
-  for (unsigned i = 1; i < OrigLoopID->getNumOperands(); ++i) {
-    Metadata *MD = OrigLoopID->getOperand(i);
+  for (Metadata *MD : llvm::drop_begin(OrigLoopID->operands())) {
     if (!MD)
       MDs.push_back(nullptr);
-    else if (Metadata *NewMD = Updater(MD))
+    else if (Metadata *NewMD = Updater(
+                 updateLoopMetadataDebugLocationsRecursive(MD, Updater)))
       MDs.push_back(NewMD);
   }
 
@@ -526,11 +684,6 @@ bool llvm::stripDebugInfo(Function &F) {
   DenseMap<MDNode *, MDNode *> LoopIDsMap;
   for (BasicBlock &BB : F) {
     for (Instruction &I : llvm::make_early_inc_range(BB)) {
-      if (isa<DbgInfoIntrinsic>(&I)) {
-        I.eraseFromParent();
-        Changed = true;
-        continue;
-      }
       if (I.getDebugLoc()) {
         Changed = true;
         I.setDebugLoc(DebugLoc());
@@ -549,18 +702,20 @@ bool llvm::stripDebugInfo(Function &F) {
         // DIAssignID are debug info metadata primitives.
         I.setMetadata(LLVMContext::MD_DIAssignID, nullptr);
       }
+      I.dropDbgRecords();
     }
   }
   return Changed;
 }
 
 bool llvm::StripDebugInfo(Module &M) {
+  llvm::TimeTraceScope timeScope("Strip debug info");
   bool Changed = false;
 
   for (NamedMDNode &NMD : llvm::make_early_inc_range(M.named_metadata())) {
     // We're stripping debug info, and without them, coverage information
     // doesn't quite make sense.
-    if (NMD.getName().startswith("llvm.dbg.") ||
+    if (NMD.getName().starts_with("llvm.dbg.") ||
         NMD.getName() == "llvm.gcov") {
       NMD.eraseFromParent();
       Changed = true;
@@ -628,7 +783,6 @@ private:
   // Create a new DISubprogram, to replace the one given.
   DISubprogram *getReplacementSubprogram(DISubprogram *MDS) {
     auto *FileAndScope = cast_or_null<DIFile>(map(MDS->getFile()));
-    StringRef LinkageName = MDS->getName().empty() ? MDS->getLinkageName() : "";
     DISubprogram *Declaration = nullptr;
     auto *Type = cast_or_null<DISubroutineType>(map(MDS->getType()));
     DIType *ContainingType =
@@ -636,8 +790,12 @@ private:
     auto *Unit = cast_or_null<DICompileUnit>(map(MDS->getUnit()));
     auto Variables = nullptr;
     auto TemplateParams = nullptr;
+    // Keep linkage names for profiling CUs, as -gline-tables-only does.
+    StringRef LinkageName;
+    if (MDS->getName().empty() || (Unit && Unit->getDebugInfoForProfiling()))
+      LinkageName = MDS->getLinkageName();
 
-    // Make a distinct DISubprogram, for situations that warrent it.
+    // Make a distinct DISubprogram, for situations that warrant it.
     auto distinctMDSubprogram = [&]() {
       return DISubprogram::getDistinct(
           MDS->getContext(), FileAndScope, MDS->getName(), LinkageName,
@@ -747,7 +905,11 @@ private:
 
       return getReplacementMDNode(N);
     };
-    Replacements[N] = doRemap(N);
+    // Separate recursive doRemap and operator [] into 2 lines to avoid
+    // out-of-order evaluations since both of them can access the same memory
+    // location in map Replacements.
+    auto Value = doRemap(N);
+    Replacements[N] = Value;
   }
 
   /// Do the remapping traversal.
@@ -791,20 +953,6 @@ void DebugTypeInfoRemoval::traverse(MDNode *N) {
 
 bool llvm::stripNonLineTableDebugInfo(Module &M) {
   bool Changed = false;
-
-  // First off, delete the debug intrinsics.
-  auto RemoveUses = [&](StringRef Name) {
-    if (auto *DbgVal = M.getFunction(Name)) {
-      while (!DbgVal->use_empty())
-        cast<Instruction>(DbgVal->user_back())->eraseFromParent();
-      DbgVal->eraseFromParent();
-      Changed = true;
-    }
-  };
-  RemoveUses("llvm.dbg.addr");
-  RemoveUses("llvm.dbg.declare");
-  RemoveUses("llvm.dbg.label");
-  RemoveUses("llvm.dbg.value");
 
   // Delete non-CU debug info named metadata nodes.
   for (auto NMI = M.named_metadata_begin(), NME = M.named_metadata_end();
@@ -864,13 +1012,16 @@ bool llvm::stripNonLineTableDebugInfo(Module &M) {
         // Strip heapallocsite attachments, they point into the DIType system.
         if (I.hasMetadataOtherThanDebugLoc())
           I.setMetadata("heapallocsite", nullptr);
+
+        // Strip any DbgRecords attached.
+        I.dropDbgRecords();
       }
     }
   }
 
   // Create a new llvm.dbg.cu, which is equivalent to the one
   // -gline-tables-only would have created.
-  for (auto &NMD : M.getNamedMDList()) {
+  for (auto &NMD : M.named_metadata()) {
     SmallVector<MDNode *, 8> Ops;
     for (MDNode *Op : NMD.operands())
       Ops.push_back(remap(Op));
@@ -893,9 +1044,8 @@ unsigned llvm::getDebugMetadataVersionFromModule(const Module &M) {
   return 0;
 }
 
-void Instruction::applyMergedLocation(const DILocation *LocA,
-                                      const DILocation *LocB) {
-  setDebugLoc(DILocation::getMergedLocation(LocA, LocB));
+void Instruction::applyMergedLocation(DebugLoc LocA, DebugLoc LocB) {
+  setDebugLoc(DebugLoc::getMergedLocation(LocA, LocB));
 }
 
 void Instruction::mergeDIAssignID(
@@ -920,9 +1070,9 @@ void Instruction::mergeDIAssignID(
     return; // No DIAssignID tags to process.
 
   DIAssignID *MergeID = IDs[0];
-  for (auto It = std::next(IDs.begin()), End = IDs.end(); It != End; ++It) {
-    if (*It != MergeID)
-      at::RAUW(*It, MergeID);
+  for (DIAssignID *AssignID : drop_begin(IDs)) {
+    if (AssignID != MergeID)
+      at::RAUW(AssignID, MergeID);
   }
   setMetadata(LLVMContext::MD_DIAssignID, MergeID);
 }
@@ -931,8 +1081,10 @@ void Instruction::updateLocationAfterHoist() { dropLocation(); }
 
 void Instruction::dropLocation() {
   const DebugLoc &DL = getDebugLoc();
-  if (!DL)
+  if (!DL) {
+    setDebugLoc(DebugLoc::getDropped());
     return;
+  }
 
   // If this isn't a call, drop the location to allow a location from a
   // preceding instruction to propagate.
@@ -944,7 +1096,7 @@ void Instruction::dropLocation() {
   }
 
   if (!MayLowerToCall) {
-    setDebugLoc(DebugLoc());
+    setDebugLoc(DebugLoc::getDropped());
     return;
   }
 
@@ -963,7 +1115,7 @@ void Instruction::dropLocation() {
     //
     // One alternative is to set a line 0 location with the existing scope and
     // inlinedAt info. The location might be sensitive to when inlining occurs.
-    setDebugLoc(DebugLoc());
+    setDebugLoc(DebugLoc::getDropped());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1042,7 +1194,7 @@ LLVMMetadataRef LLVMDIBuilderCreateCompileUnit(
   auto File = unwrapDI<DIFile>(FileRef);
 
   return wrap(unwrap(Builder)->createCompileUnit(
-      map_from_llvmDWARFsourcelanguage(Lang), File,
+      DISourceLanguageName(map_from_llvmDWARFsourcelanguage(Lang)), File,
       StringRef(Producer, ProducerLen), isOptimized, StringRef(Flags, FlagsLen),
       RuntimeVer, StringRef(SplitName, SplitNameLen),
       static_cast<DICompileUnit::DebugEmissionKind>(Kind), DWOId,
@@ -1057,6 +1209,35 @@ LLVMDIBuilderCreateFile(LLVMDIBuilderRef Builder, const char *Filename,
                         size_t DirectoryLen) {
   return wrap(unwrap(Builder)->createFile(StringRef(Filename, FilenameLen),
                                           StringRef(Directory, DirectoryLen)));
+}
+
+static llvm::DIFile::ChecksumKind
+map_from_llvmChecksumKind(LLVMChecksumKind CSKind) {
+  switch (CSKind) {
+  case LLVMChecksumKind::CSK_MD5:
+    return llvm::DIFile::CSK_MD5;
+  case LLVMChecksumKind::CSK_SHA1:
+    return llvm::DIFile::CSK_SHA1;
+  case LLVMChecksumKind::CSK_SHA256:
+    return llvm::DIFile::CSK_SHA256;
+  }
+  llvm_unreachable("Unhandled Checksum Kind");
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateFileWithChecksum(
+    LLVMDIBuilderRef Builder, const char *Filename, size_t FilenameLen,
+    const char *Directory, size_t DirectoryLen, LLVMChecksumKind ChecksumKind,
+    const char *Checksum, size_t ChecksumLen, const char *Source,
+    size_t SourceLen) {
+  StringRef ChkSum = StringRef(Checksum, ChecksumLen);
+  auto CSK = map_from_llvmChecksumKind(ChecksumKind);
+  llvm::DIFile::ChecksumInfo<StringRef> CSInfo(CSK, ChkSum);
+  std::optional<StringRef> Src;
+  if (SourceLen > 0)
+    Src = StringRef(Source, SourceLen);
+  return wrap(unwrap(Builder)->createFile(StringRef(Filename, FilenameLen),
+                                          StringRef(Directory, DirectoryLen),
+                                          CSInfo, Src));
 }
 
 LLVMMetadataRef
@@ -1241,6 +1422,15 @@ LLVMMetadataRef LLVMDIBuilderCreateEnumerator(LLVMDIBuilderRef Builder,
                                                 IsUnsigned != 0));
 }
 
+LLVMMetadataRef LLVMDIBuilderCreateEnumeratorOfArbitraryPrecision(
+    LLVMDIBuilderRef Builder, const char *Name, size_t NameLen,
+    uint64_t SizeInBits, const uint64_t Words[], LLVMBool IsUnsigned) {
+  uint64_t NumWords = (SizeInBits + 63) / 64;
+  return wrap(unwrap(Builder)->createEnumerator(
+      {Name, NameLen},
+      APSInt(APInt(SizeInBits, ArrayRef(Words, NumWords)), IsUnsigned != 0)));
+}
+
 LLVMMetadataRef LLVMDIBuilderCreateEnumerationType(
   LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
   size_t NameLen, LLVMMetadataRef File, unsigned LineNumber,
@@ -1251,6 +1441,63 @@ auto Elts = unwrap(Builder)->getOrCreateArray({unwrap(Elements),
 return wrap(unwrap(Builder)->createEnumerationType(
     unwrapDI<DIScope>(Scope), {Name, NameLen}, unwrapDI<DIFile>(File),
     LineNumber, SizeInBits, AlignInBits, Elts, unwrapDI<DIType>(ClassTy)));
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateSetType(
+    LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
+    size_t NameLen, LLVMMetadataRef File, unsigned LineNumber,
+    uint64_t SizeInBits, uint32_t AlignInBits, LLVMMetadataRef BaseTy) {
+  return wrap(unwrap(Builder)->createSetType(
+      unwrapDI<DIScope>(Scope), {Name, NameLen}, unwrapDI<DIFile>(File),
+      LineNumber, SizeInBits, AlignInBits, unwrapDI<DIType>(BaseTy)));
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateSubrangeType(
+    LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
+    size_t NameLen, unsigned LineNo, LLVMMetadataRef File, uint64_t SizeInBits,
+    uint32_t AlignInBits, LLVMDIFlags Flags, LLVMMetadataRef BaseTy,
+    LLVMMetadataRef LowerBound, LLVMMetadataRef UpperBound,
+    LLVMMetadataRef Stride, LLVMMetadataRef Bias) {
+  return wrap(unwrap(Builder)->createSubrangeType(
+      {Name, NameLen}, unwrapDI<DIFile>(File), LineNo, unwrapDI<DIScope>(Scope),
+      SizeInBits, AlignInBits, map_from_llvmDIFlags(Flags),
+      unwrapDI<DIType>(BaseTy), unwrap(LowerBound), unwrap(UpperBound),
+      unwrap(Stride), unwrap(Bias)));
+}
+
+/// MD may be nullptr, a DIExpression or DIVariable.
+PointerUnion<DIExpression *, DIVariable *> unwrapExprVar(LLVMMetadataRef MD) {
+  if (!MD)
+    return nullptr;
+  MDNode *MDN = unwrapDI<MDNode>(MD);
+  if (auto *E = dyn_cast<DIExpression>(MDN))
+    return E;
+  assert(isa<DIVariable>(MDN) && "Expected DIExpression or DIVariable");
+  return cast<DIVariable>(MDN);
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateDynamicArrayType(
+    LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
+    size_t NameLen, unsigned LineNo, LLVMMetadataRef File, uint64_t Size,
+    uint32_t AlignInBits, LLVMMetadataRef Ty, LLVMMetadataRef *Subscripts,
+    unsigned NumSubscripts, LLVMMetadataRef DataLocation,
+    LLVMMetadataRef Associated, LLVMMetadataRef Allocated, LLVMMetadataRef Rank,
+    LLVMMetadataRef BitStride) {
+  auto Subs =
+      unwrap(Builder)->getOrCreateArray({unwrap(Subscripts), NumSubscripts});
+  return wrap(unwrap(Builder)->createArrayType(
+      unwrapDI<DIScope>(Scope), {Name, NameLen}, unwrapDI<DIFile>(File), LineNo,
+      Size, AlignInBits, unwrapDI<DIType>(Ty), Subs,
+      unwrapExprVar(DataLocation), unwrapExprVar(Associated),
+      unwrapExprVar(Allocated), unwrapExprVar(Rank), unwrap(BitStride)));
+}
+
+void LLVMReplaceArrays(LLVMDIBuilderRef Builder, LLVMMetadataRef *T,
+                       LLVMMetadataRef *Elements, unsigned NumElements) {
+  auto CT = unwrap<DICompositeType>(*T);
+  auto Elts =
+      unwrap(Builder)->getOrCreateArray({unwrap(Elements), NumElements});
+  unwrap(Builder)->replaceArrays(CT, Elts);
 }
 
 LLVMMetadataRef LLVMDIBuilderCreateUnionType(
@@ -1304,9 +1551,9 @@ LLVMMetadataRef LLVMDIBuilderCreatePointerType(
     LLVMDIBuilderRef Builder, LLVMMetadataRef PointeeTy,
     uint64_t SizeInBits, uint32_t AlignInBits, unsigned AddressSpace,
     const char *Name, size_t NameLen) {
-  return wrap(unwrap(Builder)->createPointerType(unwrapDI<DIType>(PointeeTy),
-                                         SizeInBits, AlignInBits,
-                                         AddressSpace, {Name, NameLen}));
+  return wrap(unwrap(Builder)->createPointerType(
+      unwrapDI<DIType>(PointeeTy), SizeInBits, AlignInBits, AddressSpace,
+      {Name, NameLen}));
 }
 
 LLVMMetadataRef LLVMDIBuilderCreateStructType(
@@ -1341,17 +1588,15 @@ LLVMDIBuilderCreateUnspecifiedType(LLVMDIBuilderRef Builder, const char *Name,
   return wrap(unwrap(Builder)->createUnspecifiedType({Name, NameLen}));
 }
 
-LLVMMetadataRef
-LLVMDIBuilderCreateStaticMemberType(
+LLVMMetadataRef LLVMDIBuilderCreateStaticMemberType(
     LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
     size_t NameLen, LLVMMetadataRef File, unsigned LineNumber,
     LLVMMetadataRef Type, LLVMDIFlags Flags, LLVMValueRef ConstantVal,
     uint32_t AlignInBits) {
   return wrap(unwrap(Builder)->createStaticMemberType(
-                  unwrapDI<DIScope>(Scope), {Name, NameLen},
-                  unwrapDI<DIFile>(File), LineNumber, unwrapDI<DIType>(Type),
-                  map_from_llvmDIFlags(Flags), unwrap<Constant>(ConstantVal),
-                  AlignInBits));
+      unwrapDI<DIScope>(Scope), {Name, NameLen}, unwrapDI<DIFile>(File),
+      LineNumber, unwrapDI<DIType>(Type), map_from_llvmDIFlags(Flags),
+      unwrap<Constant>(ConstantVal), DW_TAG_member, AlignInBits));
 }
 
 LLVMMetadataRef
@@ -1382,10 +1627,11 @@ LLVMDIBuilderCreateObjCProperty(LLVMDIBuilderRef Builder,
                   PropertyAttributes, unwrapDI<DIType>(Ty)));
 }
 
-LLVMMetadataRef
-LLVMDIBuilderCreateObjectPointerType(LLVMDIBuilderRef Builder,
-                                     LLVMMetadataRef Type) {
-  return wrap(unwrap(Builder)->createObjectPointerType(unwrapDI<DIType>(Type)));
+LLVMMetadataRef LLVMDIBuilderCreateObjectPointerType(LLVMDIBuilderRef Builder,
+                                                     LLVMMetadataRef Type,
+                                                     LLVMBool Implicit) {
+  return wrap(unwrap(Builder)->createObjectPointerType(unwrapDI<DIType>(Type),
+                                                       Implicit));
 }
 
 LLVMMetadataRef
@@ -1493,13 +1739,12 @@ LLVMMetadataRef LLVMDIBuilderCreateClassType(LLVMDIBuilderRef Builder,
   auto Elts = unwrap(Builder)->getOrCreateArray({unwrap(Elements),
                                                  NumElements});
   return wrap(unwrap(Builder)->createClassType(
-                  unwrapDI<DIScope>(Scope), {Name, NameLen},
-                  unwrapDI<DIFile>(File), LineNumber,
-                  SizeInBits, AlignInBits, OffsetInBits,
-                  map_from_llvmDIFlags(Flags), unwrapDI<DIType>(DerivedFrom),
-                  Elts, unwrapDI<DIType>(VTableHolder),
-                  unwrapDI<MDNode>(TemplateParamsNode),
-                  {UniqueIdentifier, UniqueIdentifierLen}));
+      unwrapDI<DIScope>(Scope), {Name, NameLen}, unwrapDI<DIFile>(File),
+      LineNumber, SizeInBits, AlignInBits, OffsetInBits,
+      map_from_llvmDIFlags(Flags), unwrapDI<DIType>(DerivedFrom), Elts,
+      /*RunTimeLang=*/0, unwrapDI<DIType>(VTableHolder),
+      unwrapDI<MDNode>(TemplateParamsNode),
+      {UniqueIdentifier, UniqueIdentifierLen}));
 }
 
 LLVMMetadataRef
@@ -1508,8 +1753,12 @@ LLVMDIBuilderCreateArtificialType(LLVMDIBuilderRef Builder,
   return wrap(unwrap(Builder)->createArtificialType(unwrapDI<DIType>(Type)));
 }
 
+uint16_t LLVMGetDINodeTag(LLVMMetadataRef MD) {
+  return unwrapDI<DINode>(MD)->getTag();
+}
+
 const char *LLVMDITypeGetName(LLVMMetadataRef DType, size_t *Length) {
-  StringRef Str = unwrap<DIType>(DType)->getName();
+  StringRef Str = unwrapDI<DIType>(DType)->getName();
   *Length = Str.size();
   return Str.data();
 }
@@ -1626,47 +1875,45 @@ LLVMMetadataRef LLVMDIBuilderCreateTempGlobalVariableFwdDecl(
       unwrapDI<MDNode>(Decl), nullptr, AlignInBits));
 }
 
-LLVMValueRef
-LLVMDIBuilderInsertDeclareBefore(LLVMDIBuilderRef Builder, LLVMValueRef Storage,
-                                 LLVMMetadataRef VarInfo, LLVMMetadataRef Expr,
-                                 LLVMMetadataRef DL, LLVMValueRef Instr) {
-  return wrap(unwrap(Builder)->insertDeclare(
-                  unwrap(Storage), unwrap<DILocalVariable>(VarInfo),
-                  unwrap<DIExpression>(Expr), unwrap<DILocation>(DL),
-                  unwrap<Instruction>(Instr)));
+LLVMDbgRecordRef LLVMDIBuilderInsertDeclareRecordBefore(
+    LLVMDIBuilderRef Builder, LLVMValueRef Storage, LLVMMetadataRef VarInfo,
+    LLVMMetadataRef Expr, LLVMMetadataRef DL, LLVMValueRef Instr) {
+  DbgRecord *DbgInst = unwrap(Builder)->insertDeclare(
+      unwrap(Storage), unwrap<DILocalVariable>(VarInfo),
+      unwrap<DIExpression>(Expr), unwrap<DILocation>(DL),
+      Instr ? InsertPosition(unwrap<Instruction>(Instr)->getIterator())
+            : nullptr);
+  return wrap(DbgInst);
 }
 
-LLVMValueRef LLVMDIBuilderInsertDeclareAtEnd(
+LLVMDbgRecordRef LLVMDIBuilderInsertDeclareRecordAtEnd(
     LLVMDIBuilderRef Builder, LLVMValueRef Storage, LLVMMetadataRef VarInfo,
     LLVMMetadataRef Expr, LLVMMetadataRef DL, LLVMBasicBlockRef Block) {
-  return wrap(unwrap(Builder)->insertDeclare(
-                  unwrap(Storage), unwrap<DILocalVariable>(VarInfo),
-                  unwrap<DIExpression>(Expr), unwrap<DILocation>(DL),
-                  unwrap(Block)));
+  DbgRecord *DbgInst = unwrap(Builder)->insertDeclare(
+      unwrap(Storage), unwrap<DILocalVariable>(VarInfo),
+      unwrap<DIExpression>(Expr), unwrap<DILocation>(DL), unwrap(Block));
+  return wrap(DbgInst);
 }
 
-LLVMValueRef LLVMDIBuilderInsertDbgValueBefore(LLVMDIBuilderRef Builder,
-                                               LLVMValueRef Val,
-                                               LLVMMetadataRef VarInfo,
-                                               LLVMMetadataRef Expr,
-                                               LLVMMetadataRef DebugLoc,
-                                               LLVMValueRef Instr) {
-  return wrap(unwrap(Builder)->insertDbgValueIntrinsic(
-                  unwrap(Val), unwrap<DILocalVariable>(VarInfo),
-                  unwrap<DIExpression>(Expr), unwrap<DILocation>(DebugLoc),
-                  unwrap<Instruction>(Instr)));
+LLVMDbgRecordRef LLVMDIBuilderInsertDbgValueRecordBefore(
+    LLVMDIBuilderRef Builder, LLVMValueRef Val, LLVMMetadataRef VarInfo,
+    LLVMMetadataRef Expr, LLVMMetadataRef DebugLoc, LLVMValueRef Instr) {
+  DbgRecord *DbgInst = unwrap(Builder)->insertDbgValue(
+      unwrap(Val), unwrap<DILocalVariable>(VarInfo), unwrap<DIExpression>(Expr),
+      unwrap<DILocation>(DebugLoc),
+      Instr ? InsertPosition(unwrap<Instruction>(Instr)->getIterator())
+            : nullptr);
+  return wrap(DbgInst);
 }
 
-LLVMValueRef LLVMDIBuilderInsertDbgValueAtEnd(LLVMDIBuilderRef Builder,
-                                              LLVMValueRef Val,
-                                              LLVMMetadataRef VarInfo,
-                                              LLVMMetadataRef Expr,
-                                              LLVMMetadataRef DebugLoc,
-                                              LLVMBasicBlockRef Block) {
-  return wrap(unwrap(Builder)->insertDbgValueIntrinsic(
-                  unwrap(Val), unwrap<DILocalVariable>(VarInfo),
-                  unwrap<DIExpression>(Expr), unwrap<DILocation>(DebugLoc),
-                  unwrap(Block)));
+LLVMDbgRecordRef LLVMDIBuilderInsertDbgValueRecordAtEnd(
+    LLVMDIBuilderRef Builder, LLVMValueRef Val, LLVMMetadataRef VarInfo,
+    LLVMMetadataRef Expr, LLVMMetadataRef DebugLoc, LLVMBasicBlockRef Block) {
+  DbgRecord *DbgInst = unwrap(Builder)->insertDbgValue(
+      unwrap(Val), unwrap<DILocalVariable>(VarInfo), unwrap<DIExpression>(Expr),
+      unwrap<DILocation>(DebugLoc),
+      Block ? InsertPosition(unwrap(Block)->end()) : nullptr);
+  return wrap(DbgInst);
 }
 
 LLVMMetadataRef LLVMDIBuilderCreateAutoVariable(
@@ -1713,15 +1960,54 @@ unsigned LLVMDISubprogramGetLine(LLVMMetadataRef Subprogram) {
   return unwrapDI<DISubprogram>(Subprogram)->getLine();
 }
 
+void LLVMDISubprogramReplaceType(LLVMMetadataRef Subprogram,
+                                 LLVMMetadataRef SubroutineType) {
+  unwrapDI<DISubprogram>(Subprogram)
+      ->replaceType(unwrapDI<DISubroutineType>(SubroutineType));
+}
+
 LLVMMetadataRef LLVMInstructionGetDebugLoc(LLVMValueRef Inst) {
   return wrap(unwrap<Instruction>(Inst)->getDebugLoc().getAsMDNode());
 }
 
 void LLVMInstructionSetDebugLoc(LLVMValueRef Inst, LLVMMetadataRef Loc) {
   if (Loc)
-    unwrap<Instruction>(Inst)->setDebugLoc(DebugLoc(unwrap<MDNode>(Loc)));
+    unwrap<Instruction>(Inst)->setDebugLoc(DebugLoc(unwrap<DILocation>(Loc)));
   else
     unwrap<Instruction>(Inst)->setDebugLoc(DebugLoc());
+}
+
+LLVMMetadataRef LLVMDIBuilderCreateLabel(LLVMDIBuilderRef Builder,
+                                         LLVMMetadataRef Context,
+                                         const char *Name, size_t NameLen,
+                                         LLVMMetadataRef File, unsigned LineNo,
+                                         LLVMBool AlwaysPreserve) {
+  return wrap(unwrap(Builder)->createLabel(
+      unwrapDI<DIScope>(Context), StringRef(Name, NameLen),
+      unwrapDI<DIFile>(File), LineNo, /*Column*/ 0, /*IsArtificial*/ false,
+      /*CoroSuspendIdx*/ std::nullopt, AlwaysPreserve));
+}
+
+LLVMDbgRecordRef LLVMDIBuilderInsertLabelBefore(LLVMDIBuilderRef Builder,
+                                                LLVMMetadataRef LabelInfo,
+                                                LLVMMetadataRef Location,
+                                                LLVMValueRef InsertBefore) {
+  DbgRecord *DbgInst = unwrap(Builder)->insertLabel(
+      unwrapDI<DILabel>(LabelInfo), unwrapDI<DILocation>(Location),
+      InsertBefore
+          ? InsertPosition(unwrap<Instruction>(InsertBefore)->getIterator())
+          : nullptr);
+  return wrap(DbgInst);
+}
+
+LLVMDbgRecordRef LLVMDIBuilderInsertLabelAtEnd(LLVMDIBuilderRef Builder,
+                                               LLVMMetadataRef LabelInfo,
+                                               LLVMMetadataRef Location,
+                                               LLVMBasicBlockRef InsertAtEnd) {
+  DbgRecord *DbgInst = unwrap(Builder)->insertLabel(
+      unwrapDI<DILabel>(LabelInfo), unwrapDI<DILocation>(Location),
+      InsertAtEnd ? InsertPosition(unwrap(InsertAtEnd)->end()) : nullptr);
+  return wrap(DbgInst);
 }
 
 LLVMMetadataKind LLVMGetMetadataKind(LLVMMetadataRef Metadata) {
@@ -1735,49 +2021,12 @@ LLVMMetadataKind LLVMGetMetadataKind(LLVMMetadataRef Metadata) {
   }
 }
 
-AssignmentInstRange at::getAssignmentInsts(DIAssignID *ID) {
-  assert(ID && "Expected non-null ID");
-  LLVMContext &Ctx = ID->getContext();
-  auto &Map = Ctx.pImpl->AssignmentIDToInstrs;
-
-  auto MapIt = Map.find(ID);
-  if (MapIt == Map.end())
-    return make_range(nullptr, nullptr);
-
-  return make_range(MapIt->second.begin(), MapIt->second.end());
-}
-
-AssignmentMarkerRange at::getAssignmentMarkers(DIAssignID *ID) {
-  assert(ID && "Expected non-null ID");
-  LLVMContext &Ctx = ID->getContext();
-
-  auto *IDAsValue = MetadataAsValue::getIfExists(Ctx, ID);
-
-  // The ID is only used wrapped in MetadataAsValue(ID), so lets check that
-  // one of those already exists first.
-  if (!IDAsValue)
-    return make_range(Value::user_iterator(), Value::user_iterator());
-
-  return make_range(IDAsValue->user_begin(), IDAsValue->user_end());
-}
-
 void at::deleteAssignmentMarkers(const Instruction *Inst) {
-  auto Range = getAssignmentMarkers(Inst);
-  if (Range.empty())
-    return;
-  SmallVector<DbgAssignIntrinsic *> ToDelete(Range.begin(), Range.end());
-  for (auto *DAI : ToDelete)
-    DAI->eraseFromParent();
+  for (auto *DVR : getDVRAssignmentMarkers(Inst))
+    DVR->eraseFromParent();
 }
 
 void at::RAUW(DIAssignID *Old, DIAssignID *New) {
-  // Replace MetadataAsValue uses.
-  if (auto *OldIDAsValue =
-          MetadataAsValue::getIfExists(Old->getContext(), Old)) {
-    auto *NewIDAsValue = MetadataAsValue::get(Old->getContext(), New);
-    OldIDAsValue->replaceAllUsesWith(NewIDAsValue);
-  }
-
   // Replace attachments.
   AssignmentInstRange InstRange = getAssignmentInsts(Old);
   // Use intermediate storage for the instruction ptrs because the
@@ -1786,36 +2035,100 @@ void at::RAUW(DIAssignID *Old, DIAssignID *New) {
   SmallVector<Instruction *> InstVec(InstRange.begin(), InstRange.end());
   for (auto *I : InstVec)
     I->setMetadata(LLVMContext::MD_DIAssignID, New);
+
+  for (DbgVariableRecord *DVR :
+       SmallVector<DbgVariableRecord *>(Old->getRecords()))
+    DVR->setAssignId(New);
 }
 
 void at::deleteAll(Function *F) {
-  SmallVector<DbgAssignIntrinsic *, 12> ToDelete;
   for (BasicBlock &BB : *F) {
     for (Instruction &I : BB) {
-      if (auto *DAI = dyn_cast<DbgAssignIntrinsic>(&I))
-        ToDelete.push_back(DAI);
-      else
-        I.setMetadata(LLVMContext::MD_DIAssignID, nullptr);
+      for (DbgVariableRecord &DVR :
+           make_early_inc_range(filterDbgVars(I.getDbgRecordRange())))
+        if (DVR.isDbgAssign())
+          DVR.eraseFromParent();
+
+      I.setMetadata(LLVMContext::MD_DIAssignID, nullptr);
     }
   }
-  for (auto *DAI : ToDelete)
-    DAI->eraseFromParent();
 }
 
-/// Collect constant properies (base, size, offset) of \p StoreDest.
-/// Return std::nullopt if any properties are not constants.
+bool at::calculateFragmentIntersect(
+    const DataLayout &DL, const Value *Dest, uint64_t SliceOffsetInBits,
+    uint64_t SliceSizeInBits, const DbgVariableRecord *AssignRecord,
+    std::optional<DIExpression::FragmentInfo> &Result) {
+  // No overlap if this DbgRecord describes a killed location.
+  if (AssignRecord->isKillAddress())
+    return false;
+
+  int64_t AddrOffsetInBits;
+  {
+    int64_t AddrOffsetInBytes;
+    SmallVector<uint64_t> PostOffsetOps; //< Unused.
+    // Bail if we can't find a constant offset (or none) in the expression.
+    if (!AssignRecord->getAddressExpression()->extractLeadingOffset(
+            AddrOffsetInBytes, PostOffsetOps))
+      return false;
+    AddrOffsetInBits = AddrOffsetInBytes * 8;
+  }
+
+  Value *Addr = AssignRecord->getAddress();
+  // FIXME: It may not always be zero.
+  int64_t BitExtractOffsetInBits = 0;
+  DIExpression::FragmentInfo VarFrag =
+      AssignRecord->getFragmentOrEntireVariable();
+
+  int64_t OffsetFromLocationInBits; //< Unused.
+  return DIExpression::calculateFragmentIntersect(
+      DL, Dest, SliceOffsetInBits, SliceSizeInBits, Addr, AddrOffsetInBits,
+      BitExtractOffsetInBits, VarFrag, Result, OffsetFromLocationInBits);
+}
+
+/// Update inlined instructions' DIAssignID metadata. We need to do this
+/// otherwise a function inlined more than once into the same function
+/// will cause DIAssignID to be shared by many instructions.
+void at::remapAssignID(DenseMap<DIAssignID *, DIAssignID *> &Map,
+                       Instruction &I) {
+  auto GetNewID = [&Map](Metadata *Old) {
+    DIAssignID *OldID = cast<DIAssignID>(Old);
+    if (DIAssignID *NewID = Map.lookup(OldID))
+      return NewID;
+    DIAssignID *NewID = DIAssignID::getDistinct(OldID->getContext());
+    Map[OldID] = NewID;
+    return NewID;
+  };
+  // If we find a DIAssignID attachment or use, replace it with a new version.
+  for (DbgVariableRecord &DVR : filterDbgVars(I.getDbgRecordRange())) {
+    if (DVR.isDbgAssign())
+      DVR.setAssignId(GetNewID(DVR.getAssignID()));
+  }
+  if (auto *ID = I.getMetadata(LLVMContext::MD_DIAssignID))
+    I.setMetadata(LLVMContext::MD_DIAssignID, GetNewID(ID));
+}
+
+/// Collect constant properties (base, size, offset) of \p StoreDest.
+/// Return std::nullopt if any properties are not constants or the
+/// offset from the base pointer is negative.
 static std::optional<AssignmentInfo>
 getAssignmentInfoImpl(const DataLayout &DL, const Value *StoreDest,
-                      uint64_t SizeInBits) {
+                      TypeSize SizeInBits) {
+  if (SizeInBits.isScalable())
+    return std::nullopt;
   APInt GEPOffset(DL.getIndexTypeSizeInBits(StoreDest->getType()), 0);
   const Value *Base = StoreDest->stripAndAccumulateConstantOffsets(
       DL, GEPOffset, /*AllowNonInbounds*/ true);
+
+  if (GEPOffset.isNegative())
+    return std::nullopt;
+
   uint64_t OffsetInBytes = GEPOffset.getLimitedValue();
   // Check for overflow.
   if (OffsetInBytes == UINT64_MAX)
     return std::nullopt;
   if (const auto *Alloca = dyn_cast<AllocaInst>(Base))
-    return AssignmentInfo(DL, Alloca, OffsetInBytes * 8, SizeInBits);
+    if (!Alloca->isScalable())
+      return AssignmentInfo(DL, Alloca, OffsetInBytes * 8, SizeInBits);
   return std::nullopt;
 }
 
@@ -1828,41 +2141,65 @@ std::optional<AssignmentInfo> at::getAssignmentInfo(const DataLayout &DL,
     // We can't use a non-const size, bail.
     return std::nullopt;
   uint64_t SizeInBits = 8 * ConstLengthInBytes->getZExtValue();
-  return getAssignmentInfoImpl(DL, StoreDest, SizeInBits);
+  return getAssignmentInfoImpl(DL, StoreDest, TypeSize::getFixed(SizeInBits));
 }
 
 std::optional<AssignmentInfo> at::getAssignmentInfo(const DataLayout &DL,
                                                     const StoreInst *SI) {
-  const Value *StoreDest = SI->getPointerOperand();
-  uint64_t SizeInBits = DL.getTypeSizeInBits(SI->getValueOperand()->getType());
-  return getAssignmentInfoImpl(DL, StoreDest, SizeInBits);
+  TypeSize SizeInBits = DL.getTypeSizeInBits(SI->getValueOperand()->getType());
+  return getAssignmentInfoImpl(DL, SI->getPointerOperand(), SizeInBits);
 }
 
 std::optional<AssignmentInfo> at::getAssignmentInfo(const DataLayout &DL,
                                                     const AllocaInst *AI) {
-  uint64_t SizeInBits = DL.getTypeSizeInBits(AI->getAllocatedType());
+  TypeSize SizeInBits = DL.getTypeSizeInBits(AI->getAllocatedType());
   return getAssignmentInfoImpl(DL, AI, SizeInBits);
 }
 
-static CallInst *emitDbgAssign(AssignmentInfo Info, Value *Val, Value *Dest,
-                               Instruction &StoreLikeInst,
-                               const VarRecord &VarRec, DIBuilder &DIB) {
+/// Returns nullptr if the assignment shouldn't be attributed to this variable.
+static void emitDbgAssign(AssignmentInfo Info, Value *Val, Value *Dest,
+                          Instruction &StoreLikeInst, const VarRecord &VarRec,
+                          DIBuilder &DIB) {
   auto *ID = StoreLikeInst.getMetadata(LLVMContext::MD_DIAssignID);
   assert(ID && "Store instruction must have DIAssignID metadata");
   (void)ID;
 
-  DIExpression *Expr =
-      DIExpression::get(StoreLikeInst.getContext(), std::nullopt);
-  if (!Info.StoreToWholeAlloca) {
-    auto R = DIExpression::createFragmentExpression(Expr, Info.OffsetInBits,
-                                                    Info.SizeInBits);
+  const uint64_t StoreStartBit = Info.OffsetInBits;
+  const uint64_t StoreEndBit = Info.OffsetInBits + Info.SizeInBits;
+
+  uint64_t FragStartBit = StoreStartBit;
+  uint64_t FragEndBit = StoreEndBit;
+
+  bool StoreToWholeVariable = Info.StoreToWholeAlloca;
+  if (auto Size = VarRec.Var->getSizeInBits()) {
+    // NOTE: trackAssignments doesn't understand base expressions yet, so all
+    // variables that reach here are guaranteed to start at offset 0 in the
+    // alloca.
+    const uint64_t VarStartBit = 0;
+    const uint64_t VarEndBit = *Size;
+
+    // FIXME: trim FragStartBit when nonzero VarStartBit is supported.
+    FragEndBit = std::min(FragEndBit, VarEndBit);
+
+    // Discard stores to bits outside this variable.
+    if (FragStartBit >= FragEndBit)
+      return;
+
+    StoreToWholeVariable = FragStartBit <= VarStartBit && FragEndBit >= *Size;
+  }
+
+  DIExpression *Expr = DIExpression::get(StoreLikeInst.getContext(), {});
+  if (!StoreToWholeVariable) {
+    auto R = DIExpression::createFragmentExpression(Expr, FragStartBit,
+                                                    FragEndBit - FragStartBit);
     assert(R.has_value() && "failed to create fragment expression");
     Expr = *R;
   }
-  DIExpression *AddrExpr =
-      DIExpression::get(StoreLikeInst.getContext(), std::nullopt);
-  return DIB.insertDbgAssign(&StoreLikeInst, Val, VarRec.Var, Expr, Dest,
-                             AddrExpr, VarRec.DL);
+  DIExpression *AddrExpr = DIExpression::get(StoreLikeInst.getContext(), {});
+  auto *Assign = DbgVariableRecord::createLinkedDVRAssign(
+      &StoreLikeInst, Val, VarRec.Var, Expr, Dest, AddrExpr, VarRec.DL);
+  (void)Assign;
+  LLVM_DEBUG(if (Assign) errs() << " > INSERT: " << *Assign << "\n");
 }
 
 #undef DEBUG_TYPE // Silence redefinition warning (from ConstantsContext.h).
@@ -1878,8 +2215,8 @@ void at::trackAssignments(Function::iterator Start, Function::iterator End,
   auto &Ctx = Start->getContext();
   auto &Module = *Start->getModule();
 
-  // Undef type doesn't matter, so long as it isn't void. Let's just use i1.
-  auto *Undef = UndefValue::get(Type::getInt1Ty(Ctx));
+  // Poison type doesn't matter, so long as it isn't void. Let's just use i1.
+  auto *Poison = PoisonValue::get(Type::getInt1Ty(Ctx));
   DIBuilder DIB(Module, /*AllowUnresolved*/ false);
 
   // Scan the instructions looking for stores to local variables' storage.
@@ -1893,9 +2230,9 @@ void at::trackAssignments(Function::iterator Start, Function::iterator End,
       if (auto *AI = dyn_cast<AllocaInst>(&I)) {
         // We want to track the variable's stack home from its alloca's
         // position onwards so we treat it as an assignment (where the stored
-        // value is Undef).
+        // value is poison).
         Info = getAssignmentInfo(DL, AI);
-        ValueComponent = Undef;
+        ValueComponent = Poison;
         DestComponent = AI;
       } else if (auto *SI = dyn_cast<StoreInst>(&I)) {
         Info = getAssignmentInfo(DL, SI);
@@ -1904,7 +2241,7 @@ void at::trackAssignments(Function::iterator Start, Function::iterator End,
       } else if (auto *MI = dyn_cast<MemTransferInst>(&I)) {
         Info = getAssignmentInfo(DL, MI);
         // May not be able to represent this value easily.
-        ValueComponent = Undef;
+        ValueComponent = Poison;
         DestComponent = MI->getOperand(0);
       } else if (auto *MI = dyn_cast<MemSetInst>(&I)) {
         Info = getAssignmentInfo(DL, MI);
@@ -1914,7 +2251,7 @@ void at::trackAssignments(Function::iterator Start, Function::iterator End,
         if (ConstValue && ConstValue->isZero())
           ValueComponent = ConstValue;
         else
-          ValueComponent = Undef;
+          ValueComponent = Poison;
         DestComponent = MI->getOperand(0);
       } else {
         // Not a store-like instruction.
@@ -1949,48 +2286,60 @@ void at::trackAssignments(Function::iterator Start, Function::iterator End,
         I.setMetadata(LLVMContext::MD_DIAssignID, ID);
       }
 
-      for (const VarRecord &R : LocalIt->second) {
-        auto *Assign =
-            emitDbgAssign(*Info, ValueComponent, DestComponent, I, R, DIB);
-        (void)Assign;
-        LLVM_DEBUG(errs() << " > INSERT: " << *Assign << "\n");
-      }
+      for (const VarRecord &R : LocalIt->second)
+        emitDbgAssign(*Info, ValueComponent, DestComponent, I, R, DIB);
     }
   }
 }
 
-void AssignmentTrackingPass::runOnFunction(Function &F) {
+bool AssignmentTrackingPass::runOnFunction(Function &F) {
+  // No value in assignment tracking without optimisations.
+  if (F.hasFnAttribute(Attribute::OptimizeNone))
+    return /*Changed*/ false;
+
+  bool Changed = false;
+  auto *DL = &F.getDataLayout();
   // Collect a map of {backing storage : dbg.declares} (currently "backing
   // storage" is limited to Allocas). We'll use this to find dbg.declares to
   // delete after running `trackAssignments`.
-  DenseMap<const AllocaInst *, SmallPtrSet<DbgDeclareInst *, 2>> DbgDeclares;
+  DenseMap<const AllocaInst *, SmallPtrSet<DbgVariableRecord *, 2>> DVRDeclares;
   // Create another similar map of {storage : variables} that we'll pass to
   // trackAssignments.
   StorageToVarsMap Vars;
+  auto ProcessDeclare = [&](DbgVariableRecord &Declare) {
+    // FIXME: trackAssignments doesn't let you specify any modifiers to the
+    // variable (e.g. fragment) or location (e.g. offset), so we have to
+    // leave dbg.declares with non-empty expressions in place.
+    if (Declare.getExpression()->getNumElements() != 0)
+      return;
+    if (!Declare.getAddress())
+      return;
+    if (AllocaInst *Alloca =
+            dyn_cast<AllocaInst>(Declare.getAddress()->stripPointerCasts())) {
+      // FIXME: Skip VLAs for now (let these variables use dbg.declares).
+      if (!Alloca->isStaticAlloca())
+        return;
+      // Similarly, skip scalable vectors (use dbg.declares instead).
+      if (auto Sz = Alloca->getAllocationSize(*DL); Sz && Sz->isScalable())
+        return;
+      DVRDeclares[Alloca].insert(&Declare);
+      Vars[Alloca].insert(VarRecord(&Declare));
+    }
+  };
   for (auto &BB : F) {
     for (auto &I : BB) {
-      DbgDeclareInst *DDI = dyn_cast<DbgDeclareInst>(&I);
-      if (!DDI)
-        continue;
-      // FIXME: trackAssignments doesn't let you specify any modifiers to the
-      // variable (e.g. fragment) or location (e.g. offset), so we have to
-      // leave dbg.declares with non-empty expressions in place.
-      if (DDI->getExpression()->getNumElements() != 0)
-        continue;
-      if (AllocaInst *Alloca =
-              dyn_cast<AllocaInst>(DDI->getAddress()->stripPointerCasts())) {
-        DbgDeclares[Alloca].insert(DDI);
-        Vars[Alloca].insert(VarRecord(DDI));
+      for (DbgVariableRecord &DVR : filterDbgVars(I.getDbgRecordRange())) {
+        if (DVR.isDbgDeclare())
+          ProcessDeclare(DVR);
       }
     }
   }
 
-  auto DL = std::make_unique<DataLayout>(F.getParent());
   // FIXME: Locals can be backed by caller allocas (sret, byval).
   // Note: trackAssignments doesn't respect dbg.declare's IR positions (as it
   // doesn't "understand" dbg.declares). However, this doesn't appear to break
   // any rules given this description of dbg.declare from
-  // llvm/docs/SourceLevelDebugging.rst:
+  // llvm/docs/SourceLevelDebugging.md:
   //
   //   It is not control-dependent, meaning that if a call to llvm.dbg.declare
   //   exists and has a valid location argument, that address is considered to
@@ -1998,22 +2347,27 @@ void AssignmentTrackingPass::runOnFunction(Function &F) {
   trackAssignments(F.begin(), F.end(), Vars, *DL);
 
   // Delete dbg.declares for variables now tracked with assignment tracking.
-  for (auto &P : DbgDeclares) {
-    const AllocaInst *Alloca = P.first;
-    auto Markers = at::getAssignmentMarkers(Alloca);
-    (void)Markers;
-    for (DbgDeclareInst *DDI : P.second) {
-      // Assert that the alloca that DDI uses is now linked to a dbg.assign
-      // describing the same variable (i.e. check that this dbg.declare
-      // has been replaced by a dbg.assign).
-      assert(llvm::any_of(Markers, [DDI](DbgAssignIntrinsic *DAI) {
-        return DebugVariable(DAI) == DebugVariable(DDI);
+  for (auto &[Insts, Declares] : DVRDeclares) {
+    auto Markers = at::getDVRAssignmentMarkers(Insts);
+    for (auto *Declare : Declares) {
+      // Assert that the alloca that Declare uses is now linked to a dbg.assign
+      // describing the same variable (i.e. check that this dbg.declare has
+      // been replaced by a dbg.assign). Use DebugVariableAggregate to Discard
+      // the fragment part because trackAssignments may alter the
+      // fragment. e.g. if the alloca is smaller than the variable, then
+      // trackAssignments will create an alloca-sized fragment for the
+      // dbg.assign.
+      assert(llvm::any_of(Markers, [Declare](auto *Assign) {
+        return DebugVariableAggregate(Assign) ==
+               DebugVariableAggregate(Declare);
       }));
-      // Delete DDI because the variable location is now tracked using
+      // Delete Declare because the variable location is now tracked using
       // assignment tracking.
-      DDI->eraseFromParent();
+      Declare->eraseFromParent();
+      Changed = true;
     }
-  }
+  };
+  return Changed;
 }
 
 static const char *AssignmentTrackingModuleFlag =
@@ -2027,7 +2381,7 @@ static void setAssignmentTrackingModuleFlag(Module &M) {
 
 static bool getAssignmentTrackingModuleFlag(const Module &M) {
   Metadata *Value = M.getModuleFlag(AssignmentTrackingModuleFlag);
-  return Value && !cast<ConstantAsMetadata>(Value)->getValue()->isZeroValue();
+  return Value && !cast<ConstantAsMetadata>(Value)->getValue()->isNullValue();
 }
 
 bool llvm::isAssignmentTrackingEnabled(const Module &M) {
@@ -2036,10 +2390,11 @@ bool llvm::isAssignmentTrackingEnabled(const Module &M) {
 
 PreservedAnalyses AssignmentTrackingPass::run(Function &F,
                                               FunctionAnalysisManager &AM) {
-  runOnFunction(F);
+  if (!runOnFunction(F))
+    return PreservedAnalyses::all();
 
   // Record that this module uses assignment tracking. It doesn't matter that
-  // some functons in the module may not use it - the debug info in those
+  // some functions in the module may not use it - the debug info in those
   // functions will still be handled properly.
   setAssignmentTrackingModuleFlag(*F.getParent());
 
@@ -2052,8 +2407,12 @@ PreservedAnalyses AssignmentTrackingPass::run(Function &F,
 
 PreservedAnalyses AssignmentTrackingPass::run(Module &M,
                                               ModuleAnalysisManager &AM) {
+  bool Changed = false;
   for (auto &F : M)
-    runOnFunction(F);
+    Changed |= runOnFunction(F);
+
+  if (!Changed)
+    return PreservedAnalyses::all();
 
   // Record that this module uses assignment tracking.
   setAssignmentTrackingModuleFlag(M);

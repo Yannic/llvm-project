@@ -107,7 +107,8 @@ std::vector<LocatedSymbol> findImplementations(ParsedAST &AST, Position Pos,
 ///
 /// For example, given `b^ar()` wher bar return Foo, this function returns the
 /// definition of class Foo.
-std::vector<LocatedSymbol> findType(ParsedAST &AST, Position Pos);
+std::vector<LocatedSymbol> findType(ParsedAST &AST, Position Pos,
+                                    const SymbolIndex *Index);
 
 /// Returns references of the symbol at a specified \p Pos.
 /// \p Limit limits the number of results returned (0 means no limit).
@@ -131,7 +132,8 @@ std::vector<TypeHierarchyItem> getTypeHierarchy(
     const SymbolIndex *Index = nullptr, PathRef TUPath = PathRef{});
 
 /// Returns direct parents of a TypeHierarchyItem using SymbolIDs stored inside
-/// the item.
+/// the item. Returns nullopt if the item does not have parents or if
+/// the index is not provided.
 std::optional<std::vector<TypeHierarchyItem>>
 superTypes(const TypeHierarchyItem &Item, const SymbolIndex *Index);
 /// Returns direct children of a TypeHierarchyItem.
@@ -148,6 +150,9 @@ prepareCallHierarchy(ParsedAST &AST, Position Pos, PathRef TUPath);
 
 std::vector<CallHierarchyIncomingCall>
 incomingCalls(const CallHierarchyItem &Item, const SymbolIndex *Index);
+
+std::vector<CallHierarchyOutgoingCall>
+outgoingCalls(const CallHierarchyItem &Item, const SymbolIndex *Index);
 
 /// Returns all decls that are referenced in the \p FD except local symbols.
 llvm::DenseSet<const Decl *> getNonLocalDeclRefs(ParsedAST &AST,

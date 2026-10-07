@@ -1,10 +1,10 @@
-//===- unittest/ASTMatchers/Dynamic/RegistryTest.cpp - Registry unit tests -===//
+//===- RegistryTest.cpp - Registry unit tests -----------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-//===-----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
 
 #include "../ASTMatchersTest.h"
 #include "clang/ASTMatchers/Dynamic/Registry.h"
@@ -285,6 +285,15 @@ TEST_F(RegistryTest, PolymorphicMatchers) {
   EXPECT_FALSE(matches("class Foo { public: Foo(); };", ConstructExpr));
   EXPECT_TRUE(
       matches("class Foo { public: Foo(); }; Foo foo = Foo();", ConstructExpr));
+}
+
+TEST_F(RegistryTest, DynCastAllOfConvertsArgumentsToDerivedKind) {
+  VariantMatcher AnyDecl = VariantMatcher::SingleMatcher(decl());
+  Matcher<Decl> Record =
+      constructMatcher("recordDecl", AnyDecl).getTypedMatcher<Decl>();
+
+  EXPECT_TRUE(matches("struct X {};", Record));
+  EXPECT_FALSE(matches("void f();", Record));
 }
 
 TEST_F(RegistryTest, TemplateArgument) {

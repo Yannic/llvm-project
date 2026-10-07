@@ -132,15 +132,12 @@ return:
 define i32 @all_sign_bits_clear_branch(i32 %P, i32 %Q) nounwind {
 ; CHECK-LABEL: all_sign_bits_clear_branch:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    testl %edi, %edi
-; CHECK-NEXT:    js .LBB9_3
-; CHECK-NEXT:  # %bb.1: # %entry
-; CHECK-NEXT:    testl %esi, %esi
-; CHECK-NEXT:    js .LBB9_3
-; CHECK-NEXT:  # %bb.2: # %bb1
+; CHECK-NEXT:    orl %esi, %edi
+; CHECK-NEXT:    js .LBB9_2
+; CHECK-NEXT:  # %bb.1: # %bb1
 ; CHECK-NEXT:    movl $4, %eax
 ; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB9_3: # %return
+; CHECK-NEXT:  .LBB9_2: # %return
 ; CHECK-NEXT:    movl $192, %eax
 ; CHECK-NEXT:    retq
 entry:
@@ -159,15 +156,13 @@ return:
 define i32 @all_bits_set_branch(i32 %P, i32 %Q) nounwind {
 ; CHECK-LABEL: all_bits_set_branch:
 ; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    andl %esi, %edi
 ; CHECK-NEXT:    cmpl $-1, %edi
-; CHECK-NEXT:    jne .LBB10_3
-; CHECK-NEXT:  # %bb.1: # %entry
-; CHECK-NEXT:    cmpl $-1, %esi
-; CHECK-NEXT:    jne .LBB10_3
-; CHECK-NEXT:  # %bb.2: # %bb1
+; CHECK-NEXT:    jne .LBB10_2
+; CHECK-NEXT:  # %bb.1: # %bb1
 ; CHECK-NEXT:    movl $4, %eax
 ; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB10_3: # %return
+; CHECK-NEXT:  .LBB10_2: # %return
 ; CHECK-NEXT:    movl $192, %eax
 ; CHECK-NEXT:    retq
 entry:
@@ -186,15 +181,12 @@ return:
 define i32 @all_sign_bits_set_branch(i32 %P, i32 %Q) nounwind {
 ; CHECK-LABEL: all_sign_bits_set_branch:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    testl %edi, %edi
-; CHECK-NEXT:    jns .LBB11_3
-; CHECK-NEXT:  # %bb.1: # %entry
-; CHECK-NEXT:    testl %esi, %esi
-; CHECK-NEXT:    jns .LBB11_3
-; CHECK-NEXT:  # %bb.2: # %bb1
+; CHECK-NEXT:    testl %esi, %edi
+; CHECK-NEXT:    jns .LBB11_2
+; CHECK-NEXT:  # %bb.1: # %bb1
 ; CHECK-NEXT:    movl $4, %eax
 ; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB11_3: # %return
+; CHECK-NEXT:  .LBB11_2: # %return
 ; CHECK-NEXT:    movl $192, %eax
 ; CHECK-NEXT:    retq
 entry:
@@ -238,16 +230,13 @@ return:
 define i32 @any_sign_bits_set_branch(i32 %P, i32 %Q) nounwind {
 ; CHECK-LABEL: any_sign_bits_set_branch:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    testl %edi, %edi
-; CHECK-NEXT:    js .LBB13_2
-; CHECK-NEXT:  # %bb.1: # %entry
-; CHECK-NEXT:    testl %esi, %esi
-; CHECK-NEXT:    js .LBB13_2
-; CHECK-NEXT:  # %bb.3: # %return
-; CHECK-NEXT:    movl $192, %eax
-; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB13_2: # %bb1
+; CHECK-NEXT:    orl %esi, %edi
+; CHECK-NEXT:    jns .LBB13_2
+; CHECK-NEXT:  # %bb.1: # %bb1
 ; CHECK-NEXT:    movl $4, %eax
+; CHECK-NEXT:    retq
+; CHECK-NEXT:  .LBB13_2: # %return
+; CHECK-NEXT:    movl $192, %eax
 ; CHECK-NEXT:    retq
 entry:
   %a = icmp slt i32 %P, 0
@@ -265,16 +254,14 @@ return:
 define i32 @any_bits_clear_branch(i32 %P, i32 %Q) nounwind {
 ; CHECK-LABEL: any_bits_clear_branch:
 ; CHECK:       # %bb.0: # %entry
+; CHECK-NEXT:    andl %esi, %edi
 ; CHECK-NEXT:    cmpl $-1, %edi
-; CHECK-NEXT:    jne .LBB14_2
-; CHECK-NEXT:  # %bb.1: # %entry
-; CHECK-NEXT:    cmpl $-1, %esi
-; CHECK-NEXT:    jne .LBB14_2
-; CHECK-NEXT:  # %bb.3: # %return
-; CHECK-NEXT:    movl $192, %eax
-; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB14_2: # %bb1
+; CHECK-NEXT:    je .LBB14_2
+; CHECK-NEXT:  # %bb.1: # %bb1
 ; CHECK-NEXT:    movl $4, %eax
+; CHECK-NEXT:    retq
+; CHECK-NEXT:  .LBB14_2: # %return
+; CHECK-NEXT:    movl $192, %eax
 ; CHECK-NEXT:    retq
 entry:
   %a = icmp ne i32 %P, -1
@@ -292,16 +279,13 @@ return:
 define i32 @any_sign_bits_clear_branch(i32 %P, i32 %Q) nounwind {
 ; CHECK-LABEL: any_sign_bits_clear_branch:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    testl %edi, %edi
-; CHECK-NEXT:    jns .LBB15_2
-; CHECK-NEXT:  # %bb.1: # %entry
-; CHECK-NEXT:    testl %esi, %esi
-; CHECK-NEXT:    jns .LBB15_2
-; CHECK-NEXT:  # %bb.3: # %return
-; CHECK-NEXT:    movl $192, %eax
-; CHECK-NEXT:    retq
-; CHECK-NEXT:  .LBB15_2: # %bb1
+; CHECK-NEXT:    testl %esi, %edi
+; CHECK-NEXT:    js .LBB15_2
+; CHECK-NEXT:  # %bb.1: # %bb1
 ; CHECK-NEXT:    movl $4, %eax
+; CHECK-NEXT:    retq
+; CHECK-NEXT:  .LBB15_2: # %return
+; CHECK-NEXT:    movl $192, %eax
 ; CHECK-NEXT:    retq
 entry:
   %a = icmp sgt i32 %P, -1
@@ -324,7 +308,7 @@ define i32 @vec_extract_branch(<2 x double> %x)  {
 ; CHECK-NEXT:    xorpd %xmm1, %xmm1
 ; CHECK-NEXT:    cmpltpd %xmm0, %xmm1
 ; CHECK-NEXT:    movmskpd %xmm1, %eax
-; CHECK-NEXT:    cmpb $3, %al
+; CHECK-NEXT:    cmpl $3, %eax
 ; CHECK-NEXT:    jne .LBB16_2
 ; CHECK-NEXT:  # %bb.1: # %true
 ; CHECK-NEXT:    movl $42, %eax
@@ -456,8 +440,8 @@ define zeroext i1 @ne_neg1_and_ne_zero(i64 %x) nounwind {
 ; CHECK-LABEL: ne_neg1_and_ne_zero:
 ; CHECK:       # %bb.0:
 ; CHECK-NEXT:    incq %rdi
-; CHECK-NEXT:    cmpq $2, %rdi
-; CHECK-NEXT:    setae %al
+; CHECK-NEXT:    testq $-2, %rdi
+; CHECK-NEXT:    setne %al
 ; CHECK-NEXT:    retq
   %cmp1 = icmp ne i64 %x, -1
   %cmp2 = icmp ne i64 %x, 0
@@ -557,10 +541,9 @@ define <4 x i32> @and_icmps_const_1bit_diff_vec(<4 x i32> %x) {
 ; CHECK-NEXT:    movdqa {{.*#+}} xmm1 = [44,60,44,60]
 ; CHECK-NEXT:    pcmpeqd %xmm0, %xmm1
 ; CHECK-NEXT:    pcmpeqd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0
-; CHECK-NEXT:    pcmpeqd %xmm2, %xmm2
-; CHECK-NEXT:    pxor %xmm0, %xmm2
-; CHECK-NEXT:    pandn %xmm2, %xmm1
-; CHECK-NEXT:    movdqa %xmm1, %xmm0
+; CHECK-NEXT:    por %xmm1, %xmm0
+; CHECK-NEXT:    pcmpeqd %xmm1, %xmm1
+; CHECK-NEXT:    pxor %xmm1, %xmm0
 ; CHECK-NEXT:    retq
   %a = icmp ne <4 x i32> %x, <i32 44, i32 60, i32 44, i32 60>
   %b = icmp ne <4 x i32> %x, <i32 60, i32 44, i32 60, i32 44>
@@ -642,11 +625,34 @@ define i1 @and_icmps_const_1bit_diff_common_op(i32 %x, i32 %y) {
 
 ; PR44136 - fold cmpeq(or(X,Y),X) --> cmpeq(and(~X,Y),0)
 
+define i1 @or_cmp_eq_i128(i128 %x, i128 %y) {
+; NOBMI-LABEL: or_cmp_eq_i128:
+; NOBMI:       # %bb.0:
+; NOBMI-NEXT:    notq %rdi
+; NOBMI-NEXT:    notq %rsi
+; NOBMI-NEXT:    andq %rcx, %rsi
+; NOBMI-NEXT:    andq %rdx, %rdi
+; NOBMI-NEXT:    orq %rsi, %rdi
+; NOBMI-NEXT:    sete %al
+; NOBMI-NEXT:    retq
+;
+; BMI-LABEL: or_cmp_eq_i128:
+; BMI:       # %bb.0:
+; BMI-NEXT:    andnq %rcx, %rsi, %rax
+; BMI-NEXT:    andnq %rdx, %rdi, %rcx
+; BMI-NEXT:    orq %rax, %rcx
+; BMI-NEXT:    sete %al
+; BMI-NEXT:    retq
+  %o = or i128 %x, %y
+  %c = icmp eq i128 %o, %x
+  ret i1 %c
+}
+
 define i1 @or_cmp_eq_i64(i64 %x, i64 %y) {
 ; NOBMI-LABEL: or_cmp_eq_i64:
 ; NOBMI:       # %bb.0:
 ; NOBMI-NEXT:    notq %rdi
-; NOBMI-NEXT:    testq %rsi, %rdi
+; NOBMI-NEXT:    testq %rdi, %rsi
 ; NOBMI-NEXT:    sete %al
 ; NOBMI-NEXT:    retq
 ;
@@ -664,7 +670,7 @@ define i1 @or_cmp_ne_i32(i32 %x, i32 %y) {
 ; NOBMI-LABEL: or_cmp_ne_i32:
 ; NOBMI:       # %bb.0:
 ; NOBMI-NEXT:    notl %esi
-; NOBMI-NEXT:    testl %edi, %esi
+; NOBMI-NEXT:    testl %esi, %edi
 ; NOBMI-NEXT:    setne %al
 ; NOBMI-NEXT:    retq
 ;
@@ -682,7 +688,7 @@ define i1 @or_cmp_eq_i16(i16 zeroext %x, i16 zeroext %y) {
 ; NOBMI-LABEL: or_cmp_eq_i16:
 ; NOBMI:       # %bb.0:
 ; NOBMI-NEXT:    notl %edi
-; NOBMI-NEXT:    testl %esi, %edi
+; NOBMI-NEXT:    testl %edi, %esi
 ; NOBMI-NEXT:    sete %al
 ; NOBMI-NEXT:    retq
 ;
@@ -700,7 +706,7 @@ define i1 @or_cmp_ne_i8(i8 zeroext %x, i8 zeroext %y) {
 ; CHECK-LABEL: or_cmp_ne_i8:
 ; CHECK:       # %bb.0:
 ; CHECK-NEXT:    notb %sil
-; CHECK-NEXT:    testb %dil, %sil
+; CHECK-NEXT:    testb %sil, %dil
 ; CHECK-NEXT:    setne %al
 ; CHECK-NEXT:    retq
   %o = or i8 %x, %y
@@ -733,4 +739,137 @@ define <16 x i8> @or_cmp_ne_v4i32(<16 x i8> %x, <16 x i8> %y) {
   %c = icmp ne <16 x i8> %o, %x
   %s = sext <16 x i1> %c to <16 x i8>
   ret <16 x i8> %s
+}
+
+;PR214772 - Merge bittest comparisions.
+
+define i1 @and_cmp_ne(i8 %x) {
+; CHECK-LABEL: and_cmp_ne:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    notb %dil
+; CHECK-NEXT:    testb $12, %dil
+; CHECK-NEXT:    sete %al
+; CHECK-NEXT:    retq
+  %a1 = and i8 %x, 4
+  %a2 = and i8 %x, 8
+  %c1 = icmp ne i8 %a1, 0
+  %c2 = icmp ne i8 %a2, 0
+  %res = and i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @and_cmp_eq(i8 %x) {
+; CHECK-LABEL: and_cmp_eq:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    testb $12, %dil
+; CHECK-NEXT:    sete %al
+; CHECK-NEXT:    retq
+  %a1 = and i8 %x, 4
+  %a2 = and i8 %x, 8
+  %c1 = icmp eq i8 %a1, 0
+  %c2 = icmp eq i8 %a2, 0
+  %res = and i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @or_cmp_eq(i32 %x) {
+; CHECK-LABEL: or_cmp_eq:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    notl %edi
+; CHECK-NEXT:    testb $40, %dil
+; CHECK-NEXT:    setne %al
+; CHECK-NEXT:    retq
+  %a1 = and i32 %x, 8
+  %a2 = and i32 %x, 32
+  %c1 = icmp eq i32 %a1, 0
+  %c2 = icmp eq i32 %a2, 0
+  %res = or i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @or_cmp_ne(i32 %x) {
+; CHECK-LABEL: or_cmp_ne:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    testb $40, %dil
+; CHECK-NEXT:    setne %al
+; CHECK-NEXT:    retq
+  %a1 = and i32 %x, 8
+  %a2 = and i32 %x, 32
+  %c1 = icmp ne i32 %a1, 0
+  %c2 = icmp ne i32 %a2, 0
+  %res = or i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @not_pow2(i8 %x) {
+; CHECK-LABEL: not_pow2:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    movl %edi, %eax
+; CHECK-NEXT:    andb $8, %al
+; CHECK-NEXT:    testb $3, %dil
+; CHECK-NEXT:    setne %cl
+; CHECK-NEXT:    shrb $3, %al
+; CHECK-NEXT:    andb %cl, %al
+; CHECK-NEXT:    retq
+  %a1 = and i8 %x, 3
+  %a2 = and i8 %x, 8
+  %c1 = icmp ne i8 %a1, 0
+  %c2 = icmp ne i8 %a2, 0
+  %res = and i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @diff_vars(i8 %x, i8 %y) {
+; CHECK-LABEL: diff_vars:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    movl %esi, %eax
+; CHECK-NEXT:    andb $8, %al
+; CHECK-NEXT:    shrb $2, %dil
+; CHECK-NEXT:    shrb $3, %al
+; CHECK-NEXT:    andb %dil, %al
+; CHECK-NEXT:    # kill: def $al killed $al killed $eax
+; CHECK-NEXT:    retq
+  %a1 = and i8 %x, 4
+  %a2 = and i8 %y, 8
+  %c1 = icmp ne i8 %a1, 0
+  %c2 = icmp ne i8 %a2, 0
+  %res = and i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @nonzero_rhs(i8 %x) {
+; CHECK-LABEL: nonzero_rhs:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    movl %edi, %eax
+; CHECK-NEXT:    andb $4, %al
+; CHECK-NEXT:    andb $8, %dil
+; CHECK-NEXT:    cmpb $1, %al
+; CHECK-NEXT:    setne %al
+; CHECK-NEXT:    shrb $3, %dil
+; CHECK-NEXT:    andb %dil, %al
+; CHECK-NEXT:    retq
+  %a1 = and i8 %x, 4
+  %a2 = and i8 %x, 8
+  %c1 = icmp ne i8 %a1, 1
+  %c2 = icmp ne i8 %a2, 0
+  %res = and i1 %c1, %c2
+  ret i1 %res
+}
+
+define i1 @mixed_cc(i8 %x) {
+; CHECK-LABEL: mixed_cc:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    movl %edi, %eax
+; CHECK-NEXT:    andb $8, %al
+; CHECK-NEXT:    testb $4, %dil
+; CHECK-NEXT:    sete %cl
+; CHECK-NEXT:    shrb $3, %al
+; CHECK-NEXT:    andb %cl, %al
+; CHECK-NEXT:    retq
+  %a1 = and i8 %x, 4
+  %a2 = and i8 %x, 8
+  %c1 = icmp eq i8 %a1, 0
+  %c2 = icmp ne i8 %a2, 0
+  %res = and i1 %c1, %c2
+  ret i1 %res
 }

@@ -40,18 +40,18 @@ def SPIRV_BitcastOp : SPIRV_Op<"Bitcast", [Pure]> {
   let summary = "Bit pattern-preserving type conversion.";
 
   let description = [{
-    Result Type must be an OpTypePointer, or a scalar or vector of
-    numerical-type.
+    Result Type must be an OpTypePointer, cooperative matrix, or a scalar or
+    vector of numerical-type.
 
-    Operand must have a type of OpTypePointer, or a scalar or vector of
-    numerical-type. It must be a different type than Result Type.
+    Operand must have a type of OpTypePointer, cooperative matrix, or a scalar
+    or vector of numerical-type. It must be a different type than Result Type.
 
     If either Result Type or Operand is a pointer, the other must be a
     pointer (diverges from the SPIR-V spec).
 
     If Result Type has a different number of components than Operand, the
     total number of bits in Result Type must equal the total number of bits
-    in Operand. Let L be the type, either Result Type or Operand’s type,
+    in Operand. Let L be the type, either Result Type or Operand's type,
     that has the larger number of components. Let S be the other type, with
     the smaller number of components. The number of components in L must be
     an integer multiple of the number of components in S. The first
@@ -60,13 +60,6 @@ def SPIRV_BitcastOp : SPIRV_Op<"Bitcast", [Pure]> {
     mapping to the last components of L. Within this mapping, any single
     component of S (mapping to multiple components of L) maps its lower-
     ordered bits to the lower-numbered components of L.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    bitcast-op ::= ssa-id `=` `spirv.Bitcast` ssa-use
-                   `:` operand-type `to` result-type
-    ```
 
     #### Example:
 
@@ -78,11 +71,11 @@ def SPIRV_BitcastOp : SPIRV_Op<"Bitcast", [Pure]> {
   }];
 
   let arguments = (ins
-    SPIRV_ScalarOrVectorOrPtr:$operand
+    SPIRV_ScalarOrVectorOrPtrOrCoopMatrix:$operand
   );
 
   let results = (outs
-    SPIRV_ScalarOrVectorOrPtr:$result
+    SPIRV_ScalarOrVectorOrPtrOrCoopMatrix:$result
   );
 
   let assemblyFormat = [{
@@ -93,7 +86,7 @@ def SPIRV_BitcastOp : SPIRV_Op<"Bitcast", [Pure]> {
 
 // -----
 
-def SPIRV_ConvertFToSOp : SPIRV_CastOp<"ConvertFToS", SPIRV_Integer, SPIRV_Float, []> {
+def SPIRV_ConvertFToSOp : SPIRV_CastOp<"ConvertFToS", SPIRV_Integer, SPIRV_AnyFloat, []> {
   let summary = [{
     Convert value numerically from floating point to signed integer, with
     round toward 0.0.
@@ -105,14 +98,7 @@ def SPIRV_ConvertFToSOp : SPIRV_CastOp<"ConvertFToS", SPIRV_Integer, SPIRV_Float
     Float Value must be a scalar or vector of floating-point type.  It must
     have the same number of components as Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    convert-f-to-s-op ::= ssa-id `=` `spirv.ConvertFToSOp` ssa-use
-                          `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
@@ -125,7 +111,7 @@ def SPIRV_ConvertFToSOp : SPIRV_CastOp<"ConvertFToS", SPIRV_Integer, SPIRV_Float
 
 // -----
 
-def SPIRV_ConvertFToUOp : SPIRV_CastOp<"ConvertFToU", SPIRV_Integer, SPIRV_Float, []> {
+def SPIRV_ConvertFToUOp : SPIRV_CastOp<"ConvertFToU", SPIRV_Integer, SPIRV_AnyFloat, []> {
   let summary = [{
     Convert value numerically from floating point to unsigned integer, with
     round toward 0.0.
@@ -138,14 +124,7 @@ def SPIRV_ConvertFToUOp : SPIRV_CastOp<"ConvertFToU", SPIRV_Integer, SPIRV_Float
     Float Value must be a scalar or vector of floating-point type.  It must
     have the same number of components as Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    convert-f-to-u-op ::= ssa-id `=` `spirv.ConvertFToUOp` ssa-use
-                          `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
@@ -159,7 +138,7 @@ def SPIRV_ConvertFToUOp : SPIRV_CastOp<"ConvertFToU", SPIRV_Integer, SPIRV_Float
 // -----
 
 def SPIRV_ConvertSToFOp : SPIRV_CastOp<"ConvertSToF",
-                                   SPIRV_Float,
+                                   SPIRV_AnyFloat,
                                    SPIRV_Integer,
                                    [SignedOp]> {
   let summary = [{
@@ -172,14 +151,7 @@ def SPIRV_ConvertSToFOp : SPIRV_CastOp<"ConvertSToF",
     Signed Value must be a scalar or vector of integer type.  It must have
     the same number of components as Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    convert-s-to-f-op ::= ssa-id `=` `spirv.ConvertSToFOp` ssa-use
-                          `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
@@ -193,7 +165,7 @@ def SPIRV_ConvertSToFOp : SPIRV_CastOp<"ConvertSToF",
 // -----
 
 def SPIRV_ConvertUToFOp : SPIRV_CastOp<"ConvertUToF",
-                                   SPIRV_Float,
+                                   SPIRV_AnyFloat,
                                    SPIRV_Integer,
                                    [UnsignedOp]> {
   let summary = [{
@@ -206,14 +178,7 @@ def SPIRV_ConvertUToFOp : SPIRV_CastOp<"ConvertUToF",
     Unsigned Value must be a scalar or vector of integer type.  It must have
     the same number of components as Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    convert-u-to-f-op ::= ssa-id `=` `spirv.ConvertUToFOp` ssa-use
-                          `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
@@ -227,8 +192,8 @@ def SPIRV_ConvertUToFOp : SPIRV_CastOp<"ConvertUToF",
 // -----
 
 def SPIRV_FConvertOp : SPIRV_CastOp<"FConvert",
-                                SPIRV_Float,
-                                SPIRV_Float,
+                                SPIRV_AnyFloat,
+                                SPIRV_AnyFloat,
                                 [UsableInSpecConstantOp]> {
   let summary = [{
     Convert value numerically from one floating-point width to another
@@ -239,23 +204,16 @@ def SPIRV_FConvertOp : SPIRV_CastOp<"FConvert",
     Result Type must be a scalar or vector of floating-point type.
 
     Float Value must be a scalar or vector of floating-point type.  It must
-    have the same number of components as Result Type.  The component width
-    cannot equal the component width in Result Type.
+    have the same number of components as Result Type.  The component type
+    must not equal the component type in Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    f-convert-op ::= ssa-id `=` `spirv.FConvertOp` ssa-use
-                     `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
     ```mlir
-    %1 = spirv.FConvertOp %0 : f32 to f64
-    %3 = spirv.FConvertOp %2 : vector<3xf32> to vector<3xf64>
+    %1 = spirv.FConvert %0 : f32 to f64
+    %3 = spirv.FConvert %2 : vector<3xf32> to vector<3xf64>
     ```
   }];
 }
@@ -277,20 +235,13 @@ def SPIRV_SConvertOp : SPIRV_CastOp<"SConvert",
     the same number of components as Result Type.  The component width
     cannot equal the component width in Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    s-convert-op ::= ssa-id `=` `spirv.SConvertOp` ssa-use
-                     `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
     ```mlir
-    %1 = spirv.SConvertOp %0 : i32 to i64
-    %3 = spirv.SConvertOp %2 : vector<3xi32> to vector<3xi64>
+    %1 = spirv.SConvert %0 : i32 to i64
+    %3 = spirv.SConvert %2 : vector<3xi32> to vector<3xi64>
     ```
   }];
 }
@@ -313,25 +264,116 @@ def SPIRV_UConvertOp : SPIRV_CastOp<"UConvert",
     the same number of components as Result Type.  The component width
     cannot equal the component width in Result Type.
 
-     Results are computed per component.
-
-    <!-- End of AutoGen section -->
-
-    ```
-    u-convert-op ::= ssa-id `=` `spirv.UConvertOp` ssa-use
-                 `:` operand-type `to` result-type
-    ```
+    Results are computed per component.
 
     #### Example:
 
     ```mlir
-    %1 = spirv.UConvertOp %0 : i32 to i64
-    %3 = spirv.UConvertOp %2 : vector<3xi32> to vector<3xi64>
+    %1 = spirv.UConvert %0 : i32 to i64
+    %3 = spirv.UConvert %2 : vector<3xi32> to vector<3xi64>
     ```
   }];
 }
 
 // -----
+
+def SPIRV_ConvertPtrToUOp : SPIRV_Op<"ConvertPtrToU", []> {
+  let summary = [{
+    Bit pattern-preserving conversion of a pointer to
+    an unsigned scalar integer of possibly different bit width.
+  }];
+
+  let description = [{
+    Result Type must be a scalar of integer type, whose Signedness operand is 0.
+
+    Pointer must be a physical pointer type. If the bit width of Pointer is
+    smaller than that of Result Type, the conversion zero extends Pointer.
+    If the bit width of Pointer is larger than that of Result Type,
+    the conversion truncates Pointer.
+
+    For same bit width Pointer and Result Type, this is the same as OpBitcast.
+
+    #### Example:
+
+    ```mlir
+    %1 = spirv.ConvertPtrToU %0 : !spirv.ptr<i32, Generic> to i32
+    ```
+  }];
+
+  let availability = [
+    MinVersion<SPIRV_V_1_0>,
+    MaxVersion<SPIRV_V_1_6>,
+    Extension<[]>,
+    Capability<[SPIRV_C_Addresses, SPIRV_C_PhysicalStorageBufferAddresses]>
+  ];
+
+  let arguments = (ins
+    SPIRV_AnyPtr:$pointer
+  );
+
+  let results = (outs
+    SPIRV_Integer:$result
+  );
+
+  let assemblyFormat = [{
+    $pointer attr-dict `:` type($pointer) `to` type($result)
+  }];
+
+  let hasVerifier = 1;
+}
+
+
+// -----
+
+def SPIRV_ConvertUToPtrOp : SPIRV_Op<"ConvertUToPtr", [UnsignedOp]> {
+  let summary = [{
+    Bit pattern-preserving conversion of an unsigned scalar integer
+    to a pointer.
+  }];
+
+  let description = [{
+    Result Type must be a physical pointer type.
+
+    Integer Value must be a scalar of integer type, whose Signedness
+    operand is 0. If the bit width of Integer Value is smaller
+    than that of Result Type, the conversion zero extends Integer Value.
+    If the bit width of Integer Value is larger than that of Result Type,
+    the conversion truncates Integer Value.
+
+    For same-width Integer Value and Result Type, this is the same as OpBitcast.
+
+    #### Example:
+
+    ```mlir
+    %1 = spirv.ConvertUToPtr %0 :  i32 to !spirv.ptr<i32, Generic>
+    ```
+  }];
+
+  let availability = [
+    MinVersion<SPIRV_V_1_0>,
+    MaxVersion<SPIRV_V_1_6>,
+    Extension<[]>,
+    Capability<[SPIRV_C_Addresses, SPIRV_C_PhysicalStorageBufferAddresses]>
+  ];
+
+  let arguments = (ins
+    SPIRV_Integer:$operand
+  );
+
+  let results = (outs
+    SPIRV_AnyPtr:$result
+  );
+
+  let assemblyFormat = [{
+    $operand attr-dict `:` type($operand) `to` type($result)
+  }];
+
+  let hasVerifier = 1;
+}
+
+// -----
+
+
 def SPIRV_PtrCastToGenericOp : SPIRV_Op<"PtrCastToGeneric", [Pure]> {
   let summary = "Convert a pointer’s Storage Class to Generic.";
 
@@ -348,7 +390,7 @@ def SPIRV_PtrCastToGenericOp : SPIRV_Op<"PtrCastToGeneric", [Pure]> {
     #### Example:
 
     ```mlir
-    %1 = spirv.PtrCastToGenericOp %0 : !spirv.ptr<f32, CrossWorkGroup> to
+    %1 = spirv.PtrCastToGeneric %0 : !spirv.ptr<f32, CrossWorkgroup> to
          !spirv.ptr<f32, Generic>
     ```
   }];
@@ -391,8 +433,8 @@ def SPIRV_GenericCastToPtrOp : SPIRV_Op<"GenericCastToPtr", [Pure]> {
     #### Example:
 
     ```mlir
-       %1 = spirv.GenericCastToPtrOp %0 : !spirv.ptr<f32, Generic> to
-       !spirv.ptr<f32, CrossWorkGroup>
+    %1 = spirv.GenericCastToPtr %0 : !spirv.ptr<f32, Generic> to
+         !spirv.ptr<f32, CrossWorkgroup>
     ```
   }];
 
@@ -440,8 +482,8 @@ def SPIRV_GenericCastToPtrExplicitOp : SPIRV_Op<"GenericCastToPtrExplicit", [Pur
     #### Example:
 
     ```mlir
-       %1 = spirv.GenericCastToPtrExplicitOp %0 : !spirv.ptr<f32, Generic> to
-       !spirv.ptr<f32, CrossWorkGroup>
+    %1 = spirv.GenericCastToPtrExplicit %0 : !spirv.ptr<f32, Generic> to
+         !spirv.ptr<f32, CrossWorkgroup>
     ```
   }];
 

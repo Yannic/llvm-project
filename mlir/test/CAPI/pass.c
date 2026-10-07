@@ -33,17 +33,16 @@ void testRunPassOnModule(void) {
   MlirContext ctx = mlirContextCreate();
   registerAllUpstreamDialects(ctx);
 
-  MlirModule module = mlirModuleCreateParse(
-      ctx,
-      // clang-format off
-                            mlirStringRefCreateFromCString(
-"func.func @foo(%arg0 : i32) -> i32 {                                   \n"
-"  %res = arith.addi %arg0, %arg0 : i32                                     \n"
-"  return %res : i32                                                        \n"
-"}"));
-  // clang-format on
-  if (mlirModuleIsNull(module)) {
-    fprintf(stderr, "Unexpected failure parsing module.\n");
+  const char *funcAsm = //
+      "func.func @foo(%arg0 : i32) -> i32 {   \n"
+      "  %res = arith.addi %arg0, %arg0 : i32 \n"
+      "  return %res : i32                    \n"
+      "}                                      \n";
+  MlirOperation func =
+      mlirOperationCreateParse(ctx, mlirStringRefCreateFromCString(funcAsm),
+                               mlirStringRefCreateFromCString("funcAsm"));
+  if (mlirOperationIsNull(func)) {
+    fprintf(stderr, "Unexpected failure parsing asm.\n");
     exit(EXIT_FAILURE);
   }
 
@@ -54,16 +53,16 @@ void testRunPassOnModule(void) {
   // CHECK: func.return        , 1
   {
     MlirPassManager pm = mlirPassManagerCreate(ctx);
-    MlirPass printOpStatPass = mlirCreateTransformsPrintOpStats();
+    MlirPass printOpStatPass = mlirCreateTransformsPrintOpStatsPass();
     mlirPassManagerAddOwnedPass(pm, printOpStatPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, func);
     if (mlirLogicalResultIsFailure(success)) {
       fprintf(stderr, "Unexpected failure running pass manager.\n");
       exit(EXIT_FAILURE);
     }
     mlirPassManagerDestroy(pm);
   }
-  mlirModuleDestroy(module);
+  mlirOperationDestroy(func);
   mlirContextDestroy(ctx);
 }
 
@@ -71,22 +70,23 @@ void testRunPassOnNestedModule(void) {
   MlirContext ctx = mlirContextCreate();
   registerAllUpstreamDialects(ctx);
 
-  MlirModule module = mlirModuleCreateParse(
-      ctx,
-      // clang-format off
-                            mlirStringRefCreateFromCString(
-"func.func @foo(%arg0 : i32) -> i32 {                                   \n"
-"  %res = arith.addi %arg0, %arg0 : i32                                     \n"
-"  return %res : i32                                                        \n"
-"}                                                                          \n"
-"module {                                                                   \n"
-"  func.func @bar(%arg0 : f32) -> f32 {                                     \n"
-"    %res = arith.addf %arg0, %arg0 : f32                                   \n"
-"    return %res : f32                                                      \n"
-"  }                                                                        \n"
-"}"));
-  // clang-format on
-  if (mlirModuleIsNull(module))
+  const char *moduleAsm = //
+      "module {                                   \n"
+      "  func.func @foo(%arg0 : i32) -> i32 {     \n"
+      "    %res = arith.addi %arg0, %arg0 : i32   \n"
+      "    return %res : i32                      \n"
+      "  }                                        \n"
+      "  module {                                 \n"
+      "    func.func @bar(%arg0 : f32) -> f32 {   \n"
+      "      %res = arith.addf %arg0, %arg0 : f32 \n"
+      "      return %res : f32                    \n"
+      "    }                                      \n"
+      "  }                                        \n"
+      "}                                          \n";
+  MlirOperation module =
+      mlirOperationCreateParse(ctx, mlirStringRefCreateFromCString(moduleAsm),
+                               mlirStringRefCreateFromCString("moduleAsm"));
+  if (mlirOperationIsNull(module))
     exit(1);
 
   // Run the print-op-stats pass on functions under the top-level module:
@@ -98,9 +98,9 @@ void testRunPassOnNestedModule(void) {
     MlirPassManager pm = mlirPassManagerCreate(ctx);
     MlirOpPassManager nestedFuncPm = mlirPassManagerGetNestedUnder(
         pm, mlirStringRefCreateFromCString("func.func"));
-    MlirPass printOpStatPass = mlirCreateTransformsPrintOpStats();
+    MlirPass printOpStatPass = mlirCreateTransformsPrintOpStatsPass();
     mlirOpPassManagerAddOwnedPass(nestedFuncPm, printOpStatPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsFailure(success))
       exit(2);
     mlirPassManagerDestroy(pm);
@@ -116,15 +116,15 @@ void testRunPassOnNestedModule(void) {
         pm, mlirStringRefCreateFromCString("builtin.module"));
     MlirOpPassManager nestedFuncPm = mlirOpPassManagerGetNestedUnder(
         nestedModulePm, mlirStringRefCreateFromCString("func.func"));
-    MlirPass printOpStatPass = mlirCreateTransformsPrintOpStats();
+    MlirPass printOpStatPass = mlirCreateTransformsPrintOpStatsPass();
     mlirOpPassManagerAddOwnedPass(nestedFuncPm, printOpStatPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsFailure(success))
       exit(2);
     mlirPassManagerDestroy(pm);
   }
 
-  mlirModuleDestroy(module);
+  mlirOperationDestroy(module);
   mlirContextDestroy(ctx);
 }
 
@@ -147,7 +147,7 @@ void testPrintPassPipeline(void) {
       pm, mlirStringRefCreateFromCString("builtin.module"));
   MlirOpPassManager nestedFuncPm = mlirOpPassManagerGetNestedUnder(
       nestedModulePm, mlirStringRefCreateFromCString("func.func"));
-  MlirPass printOpStatPass = mlirCreateTransformsPrintOpStats();
+  MlirPass printOpStatPass = mlirCreateTransformsPrintOpStatsPass();
   mlirOpPassManagerAddOwnedPass(nestedFuncPm, printOpStatPass);
 
   // Print the top level pass manager
@@ -192,7 +192,7 @@ void testParsePassPipeline(void) {
     exit(EXIT_FAILURE);
   }
   // Try again after registrating the pass.
-  mlirRegisterTransformsPrintOpStats();
+  mlirRegisterTransformsPrintOpStatsPass();
   status = mlirParsePassPipeline(
       mlirPassManagerGetAsOpPassManager(pm),
       mlirStringRefCreateFromCString(
@@ -339,16 +339,17 @@ void testExternalPass(void) {
   MlirContext ctx = mlirContextCreate();
   registerAllUpstreamDialects(ctx);
 
-  MlirModule module = mlirModuleCreateParse(
-      ctx,
-      // clang-format off
-      mlirStringRefCreateFromCString(
-"func.func @foo(%arg0 : i32) -> i32 {                                   \n"
-"  %res = arith.addi %arg0, %arg0 : i32                                     \n"
-"  return %res : i32                                                        \n"
-"}"));
-  // clang-format on
-  if (mlirModuleIsNull(module)) {
+  const char *moduleAsm = //
+      "module {                                 \n"
+      "  func.func @foo(%arg0 : i32) -> i32 {   \n"
+      "    %res = arith.addi %arg0, %arg0 : i32 \n"
+      "    return %res : i32                    \n"
+      "  }                                      \n"
+      "}";
+  MlirOperation module =
+      mlirOperationCreateParse(ctx, mlirStringRefCreateFromCString(moduleAsm),
+                               mlirStringRefCreateFromCString("moduleAsm"));
+  if (mlirOperationIsNull(module)) {
     fprintf(stderr, "Unexpected failure parsing module.\n");
     exit(EXIT_FAILURE);
   }
@@ -377,7 +378,7 @@ void testExternalPass(void) {
 
     MlirPassManager pm = mlirPassManagerCreate(ctx);
     mlirPassManagerAddOwnedPass(pm, externalPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsFailure(success)) {
       fprintf(stderr, "Unexpected failure running external pass.\n");
       exit(EXIT_FAILURE);
@@ -421,7 +422,7 @@ void testExternalPass(void) {
     MlirOpPassManager nestedFuncPm =
         mlirPassManagerGetNestedUnder(pm, funcOpName);
     mlirOpPassManagerAddOwnedPass(nestedFuncPm, externalPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsFailure(success)) {
       fprintf(stderr, "Unexpected failure running external operation pass.\n");
       exit(EXIT_FAILURE);
@@ -469,7 +470,7 @@ void testExternalPass(void) {
 
     MlirPassManager pm = mlirPassManagerCreate(ctx);
     mlirPassManagerAddOwnedPass(pm, externalPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsFailure(success)) {
       fprintf(stderr, "Unexpected failure running external pass.\n");
       exit(EXIT_FAILURE);
@@ -482,6 +483,23 @@ void testExternalPass(void) {
 
     if (userData.runCallCount != 1) {
       fprintf(stderr, "Expected runCallCount to be 1\n");
+      exit(EXIT_FAILURE);
+    }
+
+    // Run the pass again and confirm that the initializeCallCount is still 1.
+    MlirLogicalResult second_success = mlirPassManagerRunOnOp(pm, module);
+    if (mlirLogicalResultIsFailure(second_success)) {
+      fprintf(stderr, "Unexpected failure running external pass.\n");
+      exit(EXIT_FAILURE);
+    }
+
+    if (userData.initializeCallCount != 1) {
+      fprintf(stderr, "Expected initializeCallCount to be 1\n");
+      exit(EXIT_FAILURE);
+    }
+
+    if (userData.runCallCount != 2) {
+      fprintf(stderr, "Expected runCallCount to be 2\n");
       exit(EXIT_FAILURE);
     }
 
@@ -516,7 +534,7 @@ void testExternalPass(void) {
 
     MlirPassManager pm = mlirPassManagerCreate(ctx);
     mlirPassManagerAddOwnedPass(pm, externalPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsSuccess(success)) {
       fprintf(
           stderr,
@@ -564,7 +582,7 @@ void testExternalPass(void) {
 
     MlirPassManager pm = mlirPassManagerCreate(ctx);
     mlirPassManagerAddOwnedPass(pm, externalPass);
-    MlirLogicalResult success = mlirPassManagerRun(pm, module);
+    MlirLogicalResult success = mlirPassManagerRunOnOp(pm, module);
     if (mlirLogicalResultIsSuccess(success)) {
       fprintf(
           stderr,
@@ -587,7 +605,7 @@ void testExternalPass(void) {
   }
 
   mlirTypeIDAllocatorDestroy(typeIDAllocator);
-  mlirModuleDestroy(module);
+  mlirOperationDestroy(module);
   mlirContextDestroy(ctx);
 }
 

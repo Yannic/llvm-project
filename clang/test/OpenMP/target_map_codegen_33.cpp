@@ -3,27 +3,31 @@
 #define HEADER
 
 ///==========================================================================///
-// RUN: %clang_cc1 -DCK32 -verify -fopenmp -fopenmp-version=50 -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -emit-llvm %s -o - | FileCheck %s --check-prefix CK32 --check-prefix CK32-64
-// RUN: %clang_cc1 -DCK32 -fopenmp -fopenmp-version=50 -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -std=c++11 -triple powerpc64le-unknown-unknown -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=50 -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s  --check-prefix CK32 --check-prefix CK32-64
-// RUN: %clang_cc1 -DCK32 -verify -fopenmp -fopenmp-version=50 -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -emit-llvm %s -o - | FileCheck %s  --check-prefix CK32 --check-prefix CK32-32
-// RUN: %clang_cc1 -DCK32 -fopenmp -fopenmp-version=50 -fopenmp-targets=i386-pc-linux-gnu -x c++ -std=c++11 -triple i386-unknown-unknown -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp -fopenmp-version=50 -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s  --check-prefix CK32 --check-prefix CK32-32
+// RUN: %clang_cc1 -DCK32 -verify -fopenmp -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -emit-llvm %s -o - | FileCheck %s --check-prefix CK32 --check-prefix CK32-64
+// RUN: %clang_cc1 -DCK32 -fopenmp -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -std=c++11 -triple powerpc64le-unknown-unknown -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s  --check-prefix CK32 --check-prefix CK32-64
+// RUN: %clang_cc1 -DCK32 -verify -fopenmp -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -emit-llvm %s -o - | FileCheck %s  --check-prefix CK32 --check-prefix CK32-32
+// RUN: %clang_cc1 -DCK32 -fopenmp -fopenmp-targets=i386-pc-linux-gnu -x c++ -std=c++11 -triple i386-unknown-unknown -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s  --check-prefix CK32 --check-prefix CK32-32
 
-// RUN: %clang_cc1 -DCK32 -verify -fopenmp-simd -fopenmp-version=50 -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY32 %s
-// RUN: %clang_cc1 -DCK32 -fopenmp-simd -fopenmp-version=50 -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -std=c++11 -triple powerpc64le-unknown-unknown -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=50 -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY32 %s
-// RUN: %clang_cc1 -DCK32 -verify -fopenmp-simd -fopenmp-version=50 -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY32 %s
-// RUN: %clang_cc1 -DCK32 -fopenmp-simd -fopenmp-version=50 -fopenmp-targets=i386-pc-linux-gnu -x c++ -std=c++11 -triple i386-unknown-unknown -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp-simd -fopenmp-version=50 -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY32 %s
+// RUN: %clang_cc1 -DCK32 -verify -fopenmp-simd -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY32 %s
+// RUN: %clang_cc1 -DCK32 -fopenmp-simd -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -std=c++11 -triple powerpc64le-unknown-unknown -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -fopenmp-targets=powerpc64le-ibm-linux-gnu -x c++ -triple powerpc64le-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY32 %s
+// RUN: %clang_cc1 -DCK32 -verify -fopenmp-simd -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY32 %s
+// RUN: %clang_cc1 -DCK32 -fopenmp-simd -fopenmp-targets=i386-pc-linux-gnu -x c++ -std=c++11 -triple i386-unknown-unknown -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp-simd -fopenmp-targets=i386-pc-linux-gnu -x c++ -triple i386-unknown-unknown -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY32 %s
 // SIMD-ONLY32-NOT: {{__kmpc|__tgt}}
 #ifdef CK32
 
-// CK32-DAG: [[MTYPE_TO:@.+]] = {{.+}}constant [1 x i64] [i64 33]
-// CK32-DAG: [[MTYPE_FROM:@.+]] = {{.+}}constant [1 x i64] [i64 34]
+// CK32-DAG: [[MTYPE_TO:@.+]] = {{.+}}constant [3 x i64] [i64 33, i64 16384, i64 288]
+// CK32-DAG: [[MTYPE_FROM:@.+]] = {{.+}}constant [3 x i64] [i64 34, i64 16384, i64 288]
 
 void array_shaping(float *f, int sa) {
 
+// Region 01
+//  &f[0], &f[0], <size-of-shaping-array>, PARAM | TO
+//  &f, &f[0], sizeof(f), ATTACH
+//
 // CK32-DAG: call i32 @__tgt_target_kernel(ptr @{{.+}}, i64 -1, i32 -1, i32 0, ptr @.{{.+}}.region_id, ptr [[ARGS:%.+]])
 // CK32-DAG: [[BPARG:%.+]] = getelementptr inbounds {{.+}}[[ARGS]], i32 0, i32 2
 // CK32-DAG: store ptr [[BPGEP:%.+]], ptr [[BPARG]]
@@ -39,12 +43,17 @@ void array_shaping(float *f, int sa) {
 // CK32-DAG: [[P0:%.+]] = getelementptr inbounds {{.+}}[[P]], i{{.+}} 0, i{{.+}} 0
 // CK32-DAG: [[S0:%.+]] = getelementptr inbounds {{.+}}[[S]], i{{.+}} 0, i{{.+}} 0
 
-
 // CK32-DAG: store ptr [[F1:%.+]], ptr [[BP0]],
 // CK32-DAG: store ptr [[F2:%.+]], ptr [[P0]],
 // CK32-DAG: store i64 [[SIZE:%.+]], ptr [[S0]],
 
-// CK32-DAG: [[F1]] = load ptr, ptr [[F_ADDR:%.+]],
+// CK32-DAG: [[BP1:%.+]] = getelementptr inbounds {{.+}}[[BP]], i{{.+}} 0, i{{.+}} 1
+// CK32-DAG: [[P1:%.+]] = getelementptr inbounds {{.+}}[[P]], i{{.+}} 0, i{{.+}} 1
+
+// CK32-DAG: store ptr [[F_ADDR:%.+]], ptr [[BP1]],
+// CK32-DAG: store ptr [[F2]], ptr [[P1]],
+
+// CK32-DAG: [[F1]] = load ptr, ptr [[F_ADDR]],
 // CK32-DAG: [[F2]] = load ptr, ptr [[F_ADDR]],
 // CK32-64-DAG: [[SIZE]] = mul nuw i64 [[SZ1:%.+]], 4
 // CK32-64-DAG: [[SZ1]] = mul nuw i64 12, %{{.+}}
@@ -55,6 +64,11 @@ void array_shaping(float *f, int sa) {
                        : ([3][sa][4])f)
   f[0] = 1;
   sa = 1;
+
+// Region 02
+//  &f[0], &f[0], <size-of-shaping-array>, PARAM | FROM
+//  &f, &f[0], sizeof(f), ATTACH
+//
 // CK32-DAG: call i32 @__tgt_target_kernel(ptr @{{.+}}, i64 -1, i32 -1, i32 0, ptr @.{{.+}}.region_id, ptr [[ARGS:%.+]])
 // CK32-DAG: [[BPARG:%.+]] = getelementptr inbounds {{.+}}[[ARGS]], i32 0, i32 2
 // CK32-DAG: store ptr [[BPGEP:%.+]], ptr [[BPARG]]
@@ -70,12 +84,17 @@ void array_shaping(float *f, int sa) {
 // CK32-DAG: [[P0:%.+]] = getelementptr inbounds {{.+}}[[P]], i{{.+}} 0, i{{.+}} 0
 // CK32-DAG: [[S0:%.+]] = getelementptr inbounds {{.+}}[[S]], i{{.+}} 0, i{{.+}} 0
 
-
 // CK32-DAG: store ptr [[F1:%.+]], ptr [[BP0]],
 // CK32-DAG: store ptr [[F2:%.+]], ptr [[P0]],
 // CK32-DAG: store i64 [[SIZE:%.+]], ptr [[S0]],
 
-// CK32-DAG: [[F1]] = load ptr, ptr [[F_ADDR:%.+]],
+// CK32-DAG: [[BP1:%.+]] = getelementptr inbounds {{.+}}[[BP]], i{{.+}} 0, i{{.+}} 1
+// CK32-DAG: [[P1:%.+]] = getelementptr inbounds {{.+}}[[P]], i{{.+}} 0, i{{.+}} 1
+
+// CK32-DAG: store ptr [[F_ADDR:%.+]], ptr [[BP1]],
+// CK32-DAG: store ptr [[F2]], ptr [[P1]],
+
+// CK32-DAG: [[F1]] = load ptr, ptr [[F_ADDR]],
 // CK32-DAG: [[F2]] = load ptr, ptr [[F_ADDR]],
 // CK32-64-DAG: [[SIZE]] = mul nuw i64 [[SZ1:%.+]], 5
 // CK32-64-DAG: [[SZ1]] = mul nuw i64 4, %{{.+}}

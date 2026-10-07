@@ -16,9 +16,9 @@
 #include "llvm/FileCheck/FileCheck.h"
 #include "FileCheckImpl.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cstdint>
 #include <list>
@@ -27,6 +27,8 @@
 #include <utility>
 
 using namespace llvm;
+
+constexpr static int BackrefLimit = 20;
 
 StringRef ExpressionFormat::toString() const {
   switch (Value) {
@@ -77,39 +79,34 @@ Expected<std::string> ExpressionFormat::getWildcardRegex() const {
 }
 
 Expected<std::string>
-ExpressionFormat::getMatchingString(ExpressionValue IntegerValue) const {
-  uint64_t AbsoluteValue;
-  StringRef SignPrefix = IntegerValue.isNegative() ? "-" : "";
+ExpressionFormat::getMatchingString(APInt IntValue) const {
+  if (Value != Kind::Signed && IntValue.isNegative())
+    return make_error<OverflowError>();
 
-  if (Value == Kind::Signed) {
-    Expected<int64_t> SignedValue = IntegerValue.getSignedValue();
-    if (!SignedValue)
-      return SignedValue.takeError();
-    if (*SignedValue < 0)
-      AbsoluteValue = cantFail(IntegerValue.getAbsolute().getUnsignedValue());
-    else
-      AbsoluteValue = *SignedValue;
-  } else {
-    Expected<uint64_t> UnsignedValue = IntegerValue.getUnsignedValue();
-    if (!UnsignedValue)
-      return UnsignedValue.takeError();
-    AbsoluteValue = *UnsignedValue;
-  }
-
-  std::string AbsoluteValueStr;
+  unsigned Radix;
+  bool UpperCase = false;
+  SmallString<8> AbsoluteValueStr;
+  StringRef SignPrefix = IntValue.isNegative() ? "-" : "";
   switch (Value) {
   case Kind::Unsigned:
   case Kind::Signed:
-    AbsoluteValueStr = utostr(AbsoluteValue);
+    Radix = 10;
     break;
   case Kind::HexUpper:
+    UpperCase = true;
+    Radix = 16;
+    break;
   case Kind::HexLower:
-    AbsoluteValueStr = utohexstr(AbsoluteValue, Value == Kind::HexLower);
+    Radix = 16;
+    UpperCase = false;
     break;
   default:
     return createStringError(std::errc::invalid_argument,
                              "trying to match value with invalid format");
   }
+  IntValue.abs().toString(AbsoluteValueStr, Radix, /*Signed=*/false,
+                          /*formatAsCLiteral=*/false,
+                          /*UpperCase=*/UpperCase);
 
   StringRef AlternateFormPrefix = AlternateForm ? StringRef("0x") : StringRef();
 
@@ -124,268 +121,122 @@ ExpressionFormat::getMatchingString(ExpressionValue IntegerValue) const {
       .str();
 }
 
-Expected<ExpressionValue>
-ExpressionFormat::valueFromStringRepr(StringRef StrVal,
-                                      const SourceMgr &SM) const {
+static unsigned nextAPIntBitWidth(unsigned BitWidth) {
+  return (BitWidth < APInt::APINT_BITS_PER_WORD) ? APInt::APINT_BITS_PER_WORD
+                                                 : BitWidth * 2;
+}
+
+static APInt toSigned(APInt AbsVal, bool Negative) {
+  if (AbsVal.isSignBitSet())
+    AbsVal = AbsVal.zext(nextAPIntBitWidth(AbsVal.getBitWidth()));
+  APInt Result = AbsVal;
+  if (Negative)
+    Result.negate();
+  return Result;
+}
+
+APInt ExpressionFormat::valueFromStringRepr(StringRef StrVal,
+                                            const SourceMgr &SM) const {
   bool ValueIsSigned = Value == Kind::Signed;
+  bool Negative = StrVal.consume_front("-");
+  bool Hex = Value == Kind::HexUpper || Value == Kind::HexLower;
+  bool MissingFormPrefix =
+      !ValueIsSigned && AlternateForm && !StrVal.consume_front("0x");
+  (void)MissingFormPrefix;
+  assert(!MissingFormPrefix && "missing alternate form prefix");
+  APInt ResultValue;
+  [[maybe_unused]] bool ParseFailure =
+      StrVal.getAsInteger(Hex ? 16 : 10, ResultValue);
   // Both the FileCheck utility and library only call this method with a valid
   // value in StrVal. This is guaranteed by the regex returned by
-  // getWildcardRegex() above. Only underflow and overflow errors can thus
-  // occur. However new uses of this method could be added in the future so
-  // the error message does not make assumptions about StrVal.
-  StringRef IntegerParseErrorStr = "unable to represent numeric value";
-  if (ValueIsSigned) {
-    int64_t SignedValue;
-
-    if (StrVal.getAsInteger(10, SignedValue))
-      return ErrorDiagnostic::get(SM, StrVal, IntegerParseErrorStr);
-
-    return ExpressionValue(SignedValue);
-  }
-
-  bool Hex = Value == Kind::HexUpper || Value == Kind::HexLower;
-  uint64_t UnsignedValue;
-  bool MissingFormPrefix = AlternateForm && !StrVal.consume_front("0x");
-  if (StrVal.getAsInteger(Hex ? 16 : 10, UnsignedValue))
-    return ErrorDiagnostic::get(SM, StrVal, IntegerParseErrorStr);
-
-  // Error out for a missing prefix only now that we know we have an otherwise
-  // valid integer.  For example, "-0x18" is reported above instead.
-  if (MissingFormPrefix)
-    return ErrorDiagnostic::get(SM, StrVal, "missing alternate form prefix");
-
-  return ExpressionValue(UnsignedValue);
+  // getWildcardRegex() above.
+  assert(!ParseFailure && "unable to represent numeric value");
+  return toSigned(ResultValue, Negative);
 }
 
-static int64_t getAsSigned(uint64_t UnsignedValue) {
-  // Use memcpy to reinterpret the bitpattern in Value since casting to
-  // signed is implementation-defined if the unsigned value is too big to be
-  // represented in the signed type and using an union violates type aliasing
-  // rules.
-  int64_t SignedValue;
-  memcpy(&SignedValue, &UnsignedValue, sizeof(SignedValue));
-  return SignedValue;
+Expected<APInt> llvm::exprAdd(const APInt &LeftOperand,
+                              const APInt &RightOperand, bool &Overflow) {
+  return LeftOperand.sadd_ov(RightOperand, Overflow);
 }
 
-Expected<int64_t> ExpressionValue::getSignedValue() const {
-  if (Negative)
-    return getAsSigned(Value);
+Expected<APInt> llvm::exprSub(const APInt &LeftOperand,
+                              const APInt &RightOperand, bool &Overflow) {
+  return LeftOperand.ssub_ov(RightOperand, Overflow);
+}
 
-  if (Value > (uint64_t)std::numeric_limits<int64_t>::max())
+Expected<APInt> llvm::exprMul(const APInt &LeftOperand,
+                              const APInt &RightOperand, bool &Overflow) {
+  return LeftOperand.smul_ov(RightOperand, Overflow);
+}
+
+Expected<APInt> llvm::exprDiv(const APInt &LeftOperand,
+                              const APInt &RightOperand, bool &Overflow) {
+  // Check for division by zero.
+  if (RightOperand.isZero())
     return make_error<OverflowError>();
 
-  // Value is in the representable range of int64_t so we can use cast.
-  return static_cast<int64_t>(Value);
+  return LeftOperand.sdiv_ov(RightOperand, Overflow);
 }
 
-Expected<uint64_t> ExpressionValue::getUnsignedValue() const {
-  if (Negative)
-    return make_error<OverflowError>();
-
-  return Value;
+Expected<APInt> llvm::exprMax(const APInt &LeftOperand,
+                              const APInt &RightOperand, bool &Overflow) {
+  Overflow = false;
+  return LeftOperand.slt(RightOperand) ? RightOperand : LeftOperand;
 }
 
-ExpressionValue ExpressionValue::getAbsolute() const {
-  if (!Negative)
-    return *this;
-
-  int64_t SignedValue = getAsSigned(Value);
-  int64_t MaxInt64 = std::numeric_limits<int64_t>::max();
-  // Absolute value can be represented as int64_t.
-  if (SignedValue >= -MaxInt64)
-    return ExpressionValue(-getAsSigned(Value));
-
-  // -X == -(max int64_t + Rem), negate each component independently.
-  SignedValue += MaxInt64;
-  uint64_t RemainingValueAbsolute = -SignedValue;
-  return ExpressionValue(MaxInt64 + RemainingValueAbsolute);
-}
-
-Expected<ExpressionValue> llvm::operator+(const ExpressionValue &LeftOperand,
-                                          const ExpressionValue &RightOperand) {
-  if (LeftOperand.isNegative() && RightOperand.isNegative()) {
-    int64_t LeftValue = cantFail(LeftOperand.getSignedValue());
-    int64_t RightValue = cantFail(RightOperand.getSignedValue());
-    std::optional<int64_t> Result = checkedAdd<int64_t>(LeftValue, RightValue);
-    if (!Result)
-      return make_error<OverflowError>();
-
-    return ExpressionValue(*Result);
-  }
-
-  // (-A) + B == B - A.
-  if (LeftOperand.isNegative())
-    return RightOperand - LeftOperand.getAbsolute();
-
-  // A + (-B) == A - B.
-  if (RightOperand.isNegative())
-    return LeftOperand - RightOperand.getAbsolute();
-
-  // Both values are positive at this point.
-  uint64_t LeftValue = cantFail(LeftOperand.getUnsignedValue());
-  uint64_t RightValue = cantFail(RightOperand.getUnsignedValue());
-  std::optional<uint64_t> Result =
-      checkedAddUnsigned<uint64_t>(LeftValue, RightValue);
-  if (!Result)
-    return make_error<OverflowError>();
-
-  return ExpressionValue(*Result);
-}
-
-Expected<ExpressionValue> llvm::operator-(const ExpressionValue &LeftOperand,
-                                          const ExpressionValue &RightOperand) {
-  // Result will be negative and thus might underflow.
-  if (LeftOperand.isNegative() && !RightOperand.isNegative()) {
-    int64_t LeftValue = cantFail(LeftOperand.getSignedValue());
-    uint64_t RightValue = cantFail(RightOperand.getUnsignedValue());
-    // Result <= -1 - (max int64_t) which overflows on 1- and 2-complement.
-    if (RightValue > (uint64_t)std::numeric_limits<int64_t>::max())
-      return make_error<OverflowError>();
-    std::optional<int64_t> Result =
-        checkedSub(LeftValue, static_cast<int64_t>(RightValue));
-    if (!Result)
-      return make_error<OverflowError>();
-
-    return ExpressionValue(*Result);
-  }
-
-  // (-A) - (-B) == B - A.
-  if (LeftOperand.isNegative())
-    return RightOperand.getAbsolute() - LeftOperand.getAbsolute();
-
-  // A - (-B) == A + B.
-  if (RightOperand.isNegative())
-    return LeftOperand + RightOperand.getAbsolute();
-
-  // Both values are positive at this point.
-  uint64_t LeftValue = cantFail(LeftOperand.getUnsignedValue());
-  uint64_t RightValue = cantFail(RightOperand.getUnsignedValue());
-  if (LeftValue >= RightValue)
-    return ExpressionValue(LeftValue - RightValue);
-  else {
-    uint64_t AbsoluteDifference = RightValue - LeftValue;
-    uint64_t MaxInt64 = std::numeric_limits<int64_t>::max();
-    // Value might underflow.
-    if (AbsoluteDifference > MaxInt64) {
-      AbsoluteDifference -= MaxInt64;
-      int64_t Result = -MaxInt64;
-      int64_t MinInt64 = std::numeric_limits<int64_t>::min();
-      // Underflow, tested by:
-      //   abs(Result + (max int64_t)) > abs((min int64_t) + (max int64_t))
-      if (AbsoluteDifference > static_cast<uint64_t>(-(MinInt64 - Result)))
-        return make_error<OverflowError>();
-      Result -= static_cast<int64_t>(AbsoluteDifference);
-      return ExpressionValue(Result);
-    }
-
-    return ExpressionValue(-static_cast<int64_t>(AbsoluteDifference));
-  }
-}
-
-Expected<ExpressionValue> llvm::operator*(const ExpressionValue &LeftOperand,
-                                          const ExpressionValue &RightOperand) {
-  // -A * -B == A * B
-  if (LeftOperand.isNegative() && RightOperand.isNegative())
-    return LeftOperand.getAbsolute() * RightOperand.getAbsolute();
-
-  // A * -B == -B * A
-  if (RightOperand.isNegative())
-    return RightOperand * LeftOperand;
-
-  assert(!RightOperand.isNegative() && "Unexpected negative operand!");
-
-  // Result will be negative and can underflow.
-  if (LeftOperand.isNegative()) {
-    auto Result = LeftOperand.getAbsolute() * RightOperand.getAbsolute();
-    if (!Result)
-      return Result;
-
-    return ExpressionValue(0) - *Result;
-  }
-
-  // Result will be positive and can overflow.
-  uint64_t LeftValue = cantFail(LeftOperand.getUnsignedValue());
-  uint64_t RightValue = cantFail(RightOperand.getUnsignedValue());
-  std::optional<uint64_t> Result =
-      checkedMulUnsigned<uint64_t>(LeftValue, RightValue);
-  if (!Result)
-    return make_error<OverflowError>();
-
-  return ExpressionValue(*Result);
-}
-
-Expected<ExpressionValue> llvm::operator/(const ExpressionValue &LeftOperand,
-                                          const ExpressionValue &RightOperand) {
-  // -A / -B == A / B
-  if (LeftOperand.isNegative() && RightOperand.isNegative())
-    return LeftOperand.getAbsolute() / RightOperand.getAbsolute();
-
-  // Check for divide by zero.
-  if (RightOperand == ExpressionValue(0))
-    return make_error<OverflowError>();
-
-  // Result will be negative and can underflow.
-  if (LeftOperand.isNegative() || RightOperand.isNegative())
-    return ExpressionValue(0) -
-           cantFail(LeftOperand.getAbsolute() / RightOperand.getAbsolute());
-
-  uint64_t LeftValue = cantFail(LeftOperand.getUnsignedValue());
-  uint64_t RightValue = cantFail(RightOperand.getUnsignedValue());
-  return ExpressionValue(LeftValue / RightValue);
-}
-
-Expected<ExpressionValue> llvm::max(const ExpressionValue &LeftOperand,
-                                    const ExpressionValue &RightOperand) {
-  if (LeftOperand.isNegative() && RightOperand.isNegative()) {
-    int64_t LeftValue = cantFail(LeftOperand.getSignedValue());
-    int64_t RightValue = cantFail(RightOperand.getSignedValue());
-    return ExpressionValue(std::max(LeftValue, RightValue));
-  }
-
-  if (!LeftOperand.isNegative() && !RightOperand.isNegative()) {
-    uint64_t LeftValue = cantFail(LeftOperand.getUnsignedValue());
-    uint64_t RightValue = cantFail(RightOperand.getUnsignedValue());
-    return ExpressionValue(std::max(LeftValue, RightValue));
-  }
-
-  if (LeftOperand.isNegative())
+Expected<APInt> llvm::exprMin(const APInt &LeftOperand,
+                              const APInt &RightOperand, bool &Overflow) {
+  Overflow = false;
+  if (cantFail(exprMax(LeftOperand, RightOperand, Overflow)) == LeftOperand)
     return RightOperand;
 
   return LeftOperand;
 }
 
-Expected<ExpressionValue> llvm::min(const ExpressionValue &LeftOperand,
-                                    const ExpressionValue &RightOperand) {
-  if (cantFail(max(LeftOperand, RightOperand)) == LeftOperand)
-    return RightOperand;
-
-  return LeftOperand;
-}
-
-Expected<ExpressionValue> NumericVariableUse::eval() const {
-  std::optional<ExpressionValue> Value = Variable->getValue();
+Expected<APInt> NumericVariableUse::eval() const {
+  std::optional<APInt> Value = Variable->getValue();
   if (Value)
     return *Value;
 
   return make_error<UndefVarError>(getExpressionStr());
 }
 
-Expected<ExpressionValue> BinaryOperation::eval() const {
-  Expected<ExpressionValue> LeftOp = LeftOperand->eval();
-  Expected<ExpressionValue> RightOp = RightOperand->eval();
+Expected<APInt> BinaryOperation::eval() const {
+  Expected<APInt> MaybeLeftOp = LeftOperand->eval();
+  Expected<APInt> MaybeRightOp = RightOperand->eval();
 
   // Bubble up any error (e.g. undefined variables) in the recursive
   // evaluation.
-  if (!LeftOp || !RightOp) {
+  if (!MaybeLeftOp || !MaybeRightOp) {
     Error Err = Error::success();
-    if (!LeftOp)
-      Err = joinErrors(std::move(Err), LeftOp.takeError());
-    if (!RightOp)
-      Err = joinErrors(std::move(Err), RightOp.takeError());
+    if (!MaybeLeftOp)
+      Err = joinErrors(std::move(Err), MaybeLeftOp.takeError());
+    if (!MaybeRightOp)
+      Err = joinErrors(std::move(Err), MaybeRightOp.takeError());
     return std::move(Err);
   }
 
-  return EvalBinop(*LeftOp, *RightOp);
+  APInt LeftOp = *MaybeLeftOp;
+  APInt RightOp = *MaybeRightOp;
+  bool Overflow;
+  // Ensure both operands have the same bitwidth.
+  unsigned LeftBitWidth = LeftOp.getBitWidth();
+  unsigned RightBitWidth = RightOp.getBitWidth();
+  unsigned NewBitWidth = std::max(LeftBitWidth, RightBitWidth);
+  LeftOp = LeftOp.sext(NewBitWidth);
+  RightOp = RightOp.sext(NewBitWidth);
+  do {
+    Expected<APInt> MaybeResult = EvalBinop(LeftOp, RightOp, Overflow);
+    if (!MaybeResult)
+      return MaybeResult.takeError();
+
+    if (!Overflow)
+      return MaybeResult;
+
+    NewBitWidth = nextAPIntBitWidth(NewBitWidth);
+    LeftOp = LeftOp.sext(NewBitWidth);
+    RightOp = RightOp.sext(NewBitWidth);
+  } while (true);
 }
 
 Expected<ExpressionFormat>
@@ -415,23 +266,63 @@ BinaryOperation::getImplicitFormat(const SourceMgr &SM) const {
                                                          : *RightFormat;
 }
 
-Expected<std::string> NumericSubstitution::getResult() const {
+Expected<std::string> NumericSubstitution::getResultRegex() const {
   assert(ExpressionPointer->getAST() != nullptr &&
          "Substituting empty expression");
-  Expected<ExpressionValue> EvaluatedValue =
-      ExpressionPointer->getAST()->eval();
+  Expected<APInt> EvaluatedValue = ExpressionPointer->getAST()->eval();
   if (!EvaluatedValue)
     return EvaluatedValue.takeError();
   ExpressionFormat Format = ExpressionPointer->getFormat();
   return Format.getMatchingString(*EvaluatedValue);
 }
 
-Expected<std::string> StringSubstitution::getResult() const {
+Expected<std::string> NumericSubstitution::getResultForDiagnostics() const {
+  // The "regex" returned by getResultRegex() is just a numeric value
+  // like '42', '0x2A', '-17', 'DEADBEEF' etc. This is already suitable for use
+  // in diagnostics.
+  Expected<std::string> Literal = getResultRegex();
+  if (!Literal)
+    return Literal;
+
+  return "\"" + std::move(*Literal) + "\"";
+}
+
+Expected<std::string> StringSubstitution::getResultRegex() const {
   // Look up the value and escape it so that we can put it into the regex.
   Expected<StringRef> VarVal = Context->getPatternVarValue(FromStr);
   if (!VarVal)
     return VarVal.takeError();
   return Regex::escape(*VarVal);
+}
+
+Expected<std::string> StringSubstitution::getResultForDiagnostics() const {
+  Expected<StringRef> VarVal = Context->getPatternVarValue(FromStr);
+  if (!VarVal)
+    return VarVal.takeError();
+
+  std::string Result;
+  Result.reserve(VarVal->size() + 2);
+  raw_string_ostream OS(Result);
+
+  OS << '"';
+  // Escape the string if it contains any characters that
+  // make it hard to read, such as non-printable characters (including all
+  // whitespace except space) and double quotes. These are the characters that
+  // are escaped by write_escaped(), except we do not include backslashes,
+  // because they are common in Windows paths and escaping them would make the
+  // output harder to read. However, when we do escape, backslashes are escaped
+  // as well, otherwise the output would be ambiguous.
+  const bool NeedsEscaping =
+      llvm::any_of(*VarVal, [](char C) { return !isPrint(C) || C == '"'; });
+  if (NeedsEscaping)
+    OS.write_escaped(*VarVal);
+  else
+    OS << *VarVal;
+  OS << '"';
+  if (NeedsEscaping)
+    OS << " (escaped value)";
+
+  return Result;
 }
 
 bool Pattern::isValidVarNameStart(char C) { return C == '_' || isAlpha(C); }
@@ -447,6 +338,12 @@ Pattern::parseVariable(StringRef &Str, const SourceMgr &SM) {
   // Global vars start with '$'.
   if (Str[0] == '$' || IsPseudo)
     ++I;
+
+  if (I == Str.size())
+    return ErrorDiagnostic::get(SM, Str.substr(I),
+                                StringRef("empty ") +
+                                    (IsPseudo ? "pseudo " : "global ") +
+                                    "variable name");
 
   if (!isValidVarNameStart(Str[I++]))
     return ErrorDiagnostic::get(SM, Str, "invalid variable name");
@@ -493,8 +390,7 @@ Expected<NumericVariable *> Pattern::parseNumericVariableDefinition(
 
   // Detect collisions between string and numeric variables when the latter
   // is created later than the former.
-  if (Context->DefinedVariableTable.find(Name) !=
-      Context->DefinedVariableTable.end())
+  if (Context->DefinedVariableTable.contains(Name))
     return ErrorDiagnostic::get(
         SM, Name, "string variable with name '" + Name + "' already exists");
 
@@ -520,7 +416,7 @@ Expected<NumericVariable *> Pattern::parseNumericVariableDefinition(
 Expected<std::unique_ptr<NumericVariableUse>> Pattern::parseNumericVariableUse(
     StringRef Name, bool IsPseudo, std::optional<size_t> LineNumber,
     FileCheckPatternContext *Context, const SourceMgr &SM) {
-  if (IsPseudo && !Name.equals("@LINE"))
+  if (IsPseudo && Name != "@LINE")
     return ErrorDiagnostic::get(
         SM, Name, "invalid pseudo numeric variable '" + Name + "'");
 
@@ -532,15 +428,12 @@ Expected<std::unique_ptr<NumericVariableUse>> Pattern::parseNumericVariableUse(
   // that happens, we create a dummy variable so that parsing can continue. All
   // uses of undefined variables, whether string or numeric, are then diagnosed
   // in printNoMatch() after failing to match.
-  auto VarTableIter = Context->GlobalNumericVariableTable.find(Name);
-  NumericVariable *NumericVariable;
-  if (VarTableIter != Context->GlobalNumericVariableTable.end())
-    NumericVariable = VarTableIter->second;
-  else {
-    NumericVariable = Context->makeNumericVariable(
+  auto [VarTableIter, Inserted] =
+      Context->GlobalNumericVariableTable.try_emplace(Name);
+  if (Inserted)
+    VarTableIter->second = Context->makeNumericVariable(
         Name, ExpressionFormat(ExpressionFormat::Kind::Unsigned));
-    Context->GlobalNumericVariableTable[Name] = NumericVariable;
-  }
+  NumericVariable *NumericVariable = VarTableIter->second;
 
   std::optional<size_t> DefLineNumber = NumericVariable->getDefLineNumber();
   if (DefLineNumber && LineNumber && *DefLineNumber == *LineNumber)
@@ -556,7 +449,7 @@ Expected<std::unique_ptr<ExpressionAST>> Pattern::parseNumericOperand(
     StringRef &Expr, AllowedOperand AO, bool MaybeInvalidConstraint,
     std::optional<size_t> LineNumber, FileCheckPatternContext *Context,
     const SourceMgr &SM) {
-  if (Expr.startswith("(")) {
+  if (Expr.starts_with("(")) {
     if (AO != AllowedOperand::Any)
       return ErrorDiagnostic::get(
           SM, Expr, "parenthesized expression not permitted here");
@@ -569,7 +462,7 @@ Expected<std::unique_ptr<ExpressionAST>> Pattern::parseNumericOperand(
         parseVariable(Expr, SM);
     if (ParseVarResult) {
       // Try to parse a function call.
-      if (Expr.ltrim(SpaceChars).startswith("(")) {
+      if (Expr.ltrim(SpaceChars).starts_with("(")) {
         if (AO != AllowedOperand::Any)
           return ErrorDiagnostic::get(SM, ParseVarResult->Name,
                                       "unexpected function call");
@@ -590,21 +483,17 @@ Expected<std::unique_ptr<ExpressionAST>> Pattern::parseNumericOperand(
   }
 
   // Otherwise, parse it as a literal.
-  int64_t SignedLiteralValue;
-  uint64_t UnsignedLiteralValue;
+  APInt LiteralValue;
   StringRef SaveExpr = Expr;
-  // Accept both signed and unsigned literal, default to signed literal.
+  bool Negative = Expr.consume_front("-");
   if (!Expr.consumeInteger((AO == AllowedOperand::LegacyLiteral) ? 10 : 0,
-                           UnsignedLiteralValue))
+                           LiteralValue)) {
+    LiteralValue = toSigned(LiteralValue, Negative);
     return std::make_unique<ExpressionLiteral>(SaveExpr.drop_back(Expr.size()),
-                                               UnsignedLiteralValue);
-  Expr = SaveExpr;
-  if (AO == AllowedOperand::Any && !Expr.consumeInteger(0, SignedLiteralValue))
-    return std::make_unique<ExpressionLiteral>(SaveExpr.drop_back(Expr.size()),
-                                               SignedLiteralValue);
-
+                                               LiteralValue);
+  }
   return ErrorDiagnostic::get(
-      SM, Expr,
+      SM, SaveExpr,
       Twine("invalid ") +
           (MaybeInvalidConstraint ? "matching constraint or " : "") +
           "operand format");
@@ -614,7 +503,7 @@ Expected<std::unique_ptr<ExpressionAST>>
 Pattern::parseParenExpr(StringRef &Expr, std::optional<size_t> LineNumber,
                         FileCheckPatternContext *Context, const SourceMgr &SM) {
   Expr = Expr.ltrim(SpaceChars);
-  assert(Expr.startswith("("));
+  assert(Expr.starts_with("("));
 
   // Parse right operand.
   Expr.consume_front("(");
@@ -627,7 +516,7 @@ Pattern::parseParenExpr(StringRef &Expr, std::optional<size_t> LineNumber,
       Expr, AllowedOperand::Any, /*MaybeInvalidConstraint=*/false, LineNumber,
       Context, SM);
   Expr = Expr.ltrim(SpaceChars);
-  while (SubExprResult && !Expr.empty() && !Expr.startswith(")")) {
+  while (SubExprResult && !Expr.empty() && !Expr.starts_with(")")) {
     StringRef OrigExpr = Expr;
     SubExprResult = parseBinop(OrigExpr, Expr, std::move(*SubExprResult), false,
                                LineNumber, Context, SM);
@@ -659,10 +548,10 @@ Pattern::parseBinop(StringRef Expr, StringRef &RemainingExpr,
   binop_eval_t EvalBinop;
   switch (Operator) {
   case '+':
-    EvalBinop = operator+;
+    EvalBinop = exprAdd;
     break;
   case '-':
-    EvalBinop = operator-;
+    EvalBinop = exprSub;
     break;
   default:
     return ErrorDiagnostic::get(
@@ -693,15 +582,15 @@ Pattern::parseCallExpr(StringRef &Expr, StringRef FuncName,
                        std::optional<size_t> LineNumber,
                        FileCheckPatternContext *Context, const SourceMgr &SM) {
   Expr = Expr.ltrim(SpaceChars);
-  assert(Expr.startswith("("));
+  assert(Expr.starts_with("("));
 
   auto OptFunc = StringSwitch<binop_eval_t>(FuncName)
-                     .Case("add", operator+)
-                     .Case("div", operator/)
-                     .Case("max", max)
-                     .Case("min", min)
-                     .Case("mul", operator*)
-                     .Case("sub", operator-)
+                     .Case("add", exprAdd)
+                     .Case("div", exprDiv)
+                     .Case("max", exprMax)
+                     .Case("min", exprMin)
+                     .Case("mul", exprMul)
+                     .Case("sub", exprSub)
                      .Default(nullptr);
 
   if (!OptFunc)
@@ -713,8 +602,8 @@ Pattern::parseCallExpr(StringRef &Expr, StringRef FuncName,
 
   // Parse call arguments, which are comma separated.
   SmallVector<std::unique_ptr<ExpressionAST>, 4> Args;
-  while (!Expr.empty() && !Expr.startswith(")")) {
-    if (Expr.startswith(","))
+  while (!Expr.empty() && !Expr.starts_with(")")) {
+    if (Expr.starts_with(","))
       return ErrorDiagnostic::get(SM, Expr, "missing argument");
 
     // Parse the argument, which is an arbitary expression.
@@ -725,7 +614,7 @@ Pattern::parseCallExpr(StringRef &Expr, StringRef FuncName,
     while (Arg && !Expr.empty()) {
       Expr = Expr.ltrim(SpaceChars);
       // Have we reached an argument terminator?
-      if (Expr.startswith(",") || Expr.startswith(")"))
+      if (Expr.starts_with(",") || Expr.starts_with(")"))
         break;
 
       // Arg = Arg <op> <expr>
@@ -744,7 +633,7 @@ Pattern::parseCallExpr(StringRef &Expr, StringRef FuncName,
       break;
 
     Expr = Expr.ltrim(SpaceChars);
-    if (Expr.startswith(")"))
+    if (Expr.starts_with(")"))
       return ErrorDiagnostic::get(SM, Expr, "missing argument");
   }
 
@@ -774,7 +663,7 @@ Expected<std::unique_ptr<Expression>> Pattern::parseNumericSubstitutionBlock(
   ExpressionFormat ExplicitFormat = ExpressionFormat();
   unsigned Precision = 0;
 
-  // Parse format specifier (NOTE: ',' is also an argument seperator).
+  // Parse format specifier (NOTE: ',' is also an argument separator).
   size_t FormatSpecEnd = Expr.find(',');
   size_t FunctionStart = Expr.find('(');
   if (FormatSpecEnd != StringRef::npos && FormatSpecEnd < FunctionStart) {
@@ -846,9 +735,7 @@ Expected<std::unique_ptr<Expression>> Pattern::parseNumericSubstitutionBlock(
 
   // Parse matching constraint.
   Expr = Expr.ltrim(SpaceChars);
-  bool HasParsedValidConstraint = false;
-  if (Expr.consume_front("=="))
-    HasParsedValidConstraint = true;
+  bool HasParsedValidConstraint = Expr.consume_front("==");
 
   // Parse the expression itself.
   Expr = Expr.ltrim(SpaceChars);
@@ -922,9 +809,7 @@ bool Pattern::parsePattern(StringRef PatternStr, StringRef Prefix,
 
   if (!(Req.NoCanonicalizeWhiteSpace && Req.MatchFullLines))
     // Ignore trailing whitespace.
-    while (!PatternStr.empty() &&
-           (PatternStr.back() == ' ' || PatternStr.back() == '\t'))
-      PatternStr = PatternStr.substr(0, PatternStr.size() - 1);
+    PatternStr = PatternStr.rtrim(" \t");
 
   // Check that there is something on the line.
   if (PatternStr.empty() && CheckTy != Check::CheckEmpty) {
@@ -974,7 +859,7 @@ bool Pattern::parsePattern(StringRef PatternStr, StringRef Prefix,
   // by escaping scary characters in fixed strings, building up one big regex.
   while (!PatternStr.empty()) {
     // RegEx matches.
-    if (PatternStr.startswith("{{")) {
+    if (PatternStr.starts_with("{{")) {
       // This is the start of a regex match.  Scan for the }}.
       size_t End = PatternStr.find("}}");
       if (End == StringRef::npos) {
@@ -988,12 +873,16 @@ bool Pattern::parsePattern(StringRef PatternStr, StringRef Prefix,
       // capturing the result for any purpose.  This is required in case the
       // expression contains an alternation like: CHECK:  abc{{x|z}}def.  We
       // want this to turn into: "abc(x|z)def" not "abcx|zdef".
-      RegExStr += '(';
-      ++CurParen;
+      bool HasAlternation = PatternStr.contains('|');
+      if (HasAlternation) {
+        RegExStr += '(';
+        ++CurParen;
+      }
 
       if (AddRegExToRegEx(PatternStr.substr(2, End - 2), CurParen, SM))
         return true;
-      RegExStr += ')';
+      if (HasAlternation)
+        RegExStr += ')';
 
       PatternStr = PatternStr.substr(End + 2);
       continue;
@@ -1009,7 +898,7 @@ bool Pattern::parsePattern(StringRef PatternStr, StringRef Prefix,
     // names must satisfy the regular expression "[a-zA-Z_][0-9a-zA-Z_]*" to be
     // valid, as this helps catch some common errors. If there are extra '['s
     // before the "[[", treat them literally.
-    if (PatternStr.startswith("[[") && !PatternStr.startswith("[[[")) {
+    if (PatternStr.starts_with("[[") && !PatternStr.starts_with("[[[")) {
       StringRef UnparsedPatternStr = PatternStr.substr(2);
       // Find the closing bracket pair ending the match.  End is going to be an
       // offset relative to the beginning of the match string.
@@ -1072,8 +961,7 @@ bool Pattern::parsePattern(StringRef PatternStr, StringRef Prefix,
 
           // Detect collisions between string and numeric variables when the
           // former is created later than the latter.
-          if (Context->GlobalNumericVariableTable.find(Name) !=
-              Context->GlobalNumericVariableTable.end()) {
+          if (Context->GlobalNumericVariableTable.contains(Name)) {
             SM.PrintMessage(
                 SMLoc::getFromPointer(Name.data()), SourceMgr::DK_Error,
                 "numeric variable with name '" + Name + "' already exists");
@@ -1164,12 +1052,15 @@ bool Pattern::parsePattern(StringRef PatternStr, StringRef Prefix,
         // Handle substitution of string variables that were defined earlier on
         // the same line by emitting a backreference. Expressions do not
         // support substituting a numeric variable defined on the same line.
-        if (!IsNumBlock && VariableDefs.find(SubstStr) != VariableDefs.end()) {
-          unsigned CaptureParenGroup = VariableDefs[SubstStr];
-          if (CaptureParenGroup < 1 || CaptureParenGroup > 9) {
+        decltype(VariableDefs)::iterator It;
+        if (!IsNumBlock &&
+            (It = VariableDefs.find(SubstStr)) != VariableDefs.end()) {
+          unsigned CaptureParenGroup = It->second;
+          if (CaptureParenGroup < 1 || CaptureParenGroup > BackrefLimit) {
             SM.PrintMessage(SMLoc::getFromPointer(SubstStr.data()),
                             SourceMgr::DK_Error,
-                            "Can't back-reference more than 9 variables");
+                            "Can't back-reference more than " +
+                                Twine(BackrefLimit) + " variables");
             return true;
           }
           AddBackrefToRegEx(CaptureParenGroup);
@@ -1220,8 +1111,14 @@ bool Pattern::AddRegExToRegEx(StringRef RS, unsigned &CurParen, SourceMgr &SM) {
 }
 
 void Pattern::AddBackrefToRegEx(unsigned BackrefNum) {
-  assert(BackrefNum >= 1 && BackrefNum <= 9 && "Invalid backref number");
-  std::string Backref = std::string("\\") + std::string(1, '0' + BackrefNum);
+  assert(BackrefNum >= 1 && BackrefNum <= BackrefLimit &&
+         "Invalid backref number");
+  std::string Backref;
+  if (BackrefNum >= 1 && BackrefNum <= 9)
+    Backref = std::string("\\") + std::string(1, '0' + BackrefNum);
+  else
+    Backref = std::string("\\g{") + std::to_string(BackrefNum) + '}';
+
   RegExStr += Backref;
 }
 
@@ -1249,7 +1146,8 @@ Pattern::MatchResult Pattern::match(StringRef Buffer,
   if (!Substitutions.empty()) {
     TmpStr = RegExStr;
     if (LineNumber)
-      Context->LineVariable->setValue(ExpressionValue(*LineNumber));
+      Context->LineVariable->setValue(
+          APInt(sizeof(*LineNumber) * 8, *LineNumber));
 
     size_t InsertOffset = 0;
     // Substitute all string variables and expressions whose values are only
@@ -1258,7 +1156,7 @@ Pattern::MatchResult Pattern::match(StringRef Buffer,
     Error Errs = Error::success();
     for (const auto &Substitution : Substitutions) {
       // Substitute and check for failure (e.g. use of undefined variable).
-      Expected<std::string> Value = Substitution->getResult();
+      Expected<std::string> Value = Substitution->getResultRegex();
       if (!Value) {
         // Convert to an ErrorDiagnostic to get location information. This is
         // done here rather than printMatch/printNoMatch since now we know which
@@ -1328,11 +1226,16 @@ Pattern::MatchResult Pattern::match(StringRef Buffer,
 
     StringRef MatchedValue = MatchInfo[CaptureParenGroup];
     ExpressionFormat Format = DefinedNumericVariable->getImplicitFormat();
-    Expected<ExpressionValue> Value =
-        Format.valueFromStringRepr(MatchedValue, SM);
-    if (!Value)
-      return MatchResult(TheMatch, Value.takeError());
-    DefinedNumericVariable->setValue(*Value, MatchedValue);
+    APInt Value = Format.valueFromStringRepr(MatchedValue, SM);
+    // Numeric variables are already inserted into GlobalNumericVariableTable
+    // during parsing, but clearLocalVars might remove them, so we must
+    // reinsert them. Numeric-variable resolution does not access
+    // GlobalNumericVariableTable; it directly uses a pointer to the variable.
+    // However, other functions (such as clearLocalVars) may require active
+    // variables to be in the table.
+    Context->GlobalNumericVariableTable.try_emplace(NumericVariableDef.getKey(),
+                                                    DefinedNumericVariable);
+    DefinedNumericVariable->setValue(Value, MatchedValue);
   }
 
   return MatchResult(TheMatch, Error::success());
@@ -1357,15 +1260,15 @@ unsigned Pattern::computeMatchDistance(StringRef Buffer) const {
 
 void Pattern::printSubstitutions(const SourceMgr &SM, StringRef Buffer,
                                  SMRange Range,
-                                 FileCheckDiag::MatchType MatchTy,
-                                 std::vector<FileCheckDiag> *Diags) const {
+                                 FileCheckDiagList *Diags) const {
   // Print what we know about substitutions.
   if (!Substitutions.empty()) {
     for (const auto &Substitution : Substitutions) {
       SmallString<256> Msg;
       raw_svector_ostream OS(Msg);
 
-      Expected<std::string> MatchedValue = Substitution->getResult();
+      Expected<std::string> MatchedValue =
+          Substitution->getResultForDiagnostics();
       // Substitution failures are handled in printNoMatch().
       if (!MatchedValue) {
         consumeError(MatchedValue.takeError());
@@ -1373,25 +1276,43 @@ void Pattern::printSubstitutions(const SourceMgr &SM, StringRef Buffer,
       }
 
       OS << "with \"";
-      OS.write_escaped(Substitution->getFromString()) << "\" equal to \"";
-      OS.write_escaped(*MatchedValue) << "\"";
+      OS.write_escaped(Substitution->getFromString()) << "\" equal to ";
+      OS << *MatchedValue;
 
-      // We report only the start of the match/search range to suggest we are
-      // reporting the substitutions as set at the start of the match/search.
-      // Indicating a non-zero-length range might instead seem to imply that the
+      // Unlike MatchCustomNoteDiag, PrintMessage needs a location.  We report
+      // only the start of the match/search range to suggest we are reporting
+      // the substitutions as set at the start of the match/search.  Indicating
+      // a non-zero-length range might instead seem to imply that the
       // substitution matches or was captured from exactly that range.
       if (Diags)
-        Diags->emplace_back(SM, CheckTy, getLoc(), MatchTy,
-                            SMRange(Range.Start, Range.Start), OS.str());
+        Diags->emplace<MatchCustomNoteDiag>(OS.str());
       else
         SM.PrintMessage(Range.Start, SourceMgr::DK_Note, OS.str());
     }
   }
 }
 
+void Pattern::printVariableDefAttempts(const SourceMgr &SM, StringRef Buffer,
+                                       FileCheckDiagList *Diags) const {
+  if (VariableDefs.empty() && NumericVariableDefs.empty())
+    return;
+  SmallString<256> Msg;
+  raw_svector_ostream OS(Msg);
+  OS << "pattern attempts to capture variables: ";
+  llvm::ListSeparator LS;
+  for (const auto &Def : VariableDefs)
+    OS << LS << '"' << Def.first << '"';
+  for (const auto &Def : NumericVariableDefs)
+    OS << LS << '"' << Def.getKey() << '"';
+  SMLoc Start = SMLoc::getFromPointer(Buffer.data());
+  if (Diags)
+    Diags->emplace<MatchCustomNoteDiag>(OS.str());
+  else
+    SM.PrintMessage(Start, SourceMgr::DK_Note, OS.str());
+}
+
 void Pattern::printVariableDefs(const SourceMgr &SM,
-                                FileCheckDiag::MatchType MatchTy,
-                                std::vector<FileCheckDiag> *Diags) const {
+                                FileCheckDiagList *Diags) const {
   if (VariableDefs.empty() && NumericVariableDefs.empty())
     return;
   // Build list of variable captures.
@@ -1436,35 +1357,24 @@ void Pattern::printVariableDefs(const SourceMgr &SM,
     raw_svector_ostream OS(Msg);
     OS << "captured var \"" << VC.Name << "\"";
     if (Diags)
-      Diags->emplace_back(SM, CheckTy, getLoc(), MatchTy, VC.Range, OS.str());
+      Diags->emplace<MatchCustomNoteDiag>(VC.Range, OS.str());
     else
       SM.PrintMessage(VC.Range.Start, SourceMgr::DK_Note, OS.str(), VC.Range);
   }
 }
 
-static SMRange ProcessMatchResult(FileCheckDiag::MatchType MatchTy,
-                                  const SourceMgr &SM, SMLoc Loc,
-                                  Check::FileCheckType CheckTy,
-                                  StringRef Buffer, size_t Pos, size_t Len,
-                                  std::vector<FileCheckDiag> *Diags,
-                                  bool AdjustPrevDiags = false) {
-  SMLoc Start = SMLoc::getFromPointer(Buffer.data() + Pos);
-  SMLoc End = SMLoc::getFromPointer(Buffer.data() + Pos + Len);
-  SMRange Range(Start, End);
-  if (Diags) {
-    if (AdjustPrevDiags) {
-      SMLoc CheckLoc = Diags->rbegin()->CheckLoc;
-      for (auto I = Diags->rbegin(), E = Diags->rend();
-           I != E && I->CheckLoc == CheckLoc; ++I)
-        I->MatchTy = MatchTy;
-    } else
-      Diags->emplace_back(SM, CheckTy, Loc, MatchTy, Range);
-  }
-  return Range;
+static SMRange buildMatchRange(StringRef Buffer, size_t Pos, size_t Len) {
+  return SMRange(SMLoc::getFromPointer(Buffer.data() + Pos),
+                 SMLoc::getFromPointer(Buffer.data() + Pos + Len));
+}
+
+static SMRange buildSearchRange(StringRef Buffer) {
+  return SMRange(SMLoc::getFromPointer(Buffer.data()),
+                 SMLoc::getFromPointer(Buffer.data() + Buffer.size()));
 }
 
 void Pattern::printFuzzyMatch(const SourceMgr &SM, StringRef Buffer,
-                              std::vector<FileCheckDiag> *Diags) const {
+                              FileCheckDiagList *Diags) const {
   // Attempt to find the closest/best fuzzy match.  Usually an error happens
   // because some string in the output didn't exactly match. In these cases, we
   // would like to show the user a best guess at what "should have" matched, to
@@ -1472,6 +1382,12 @@ void Pattern::printFuzzyMatch(const SourceMgr &SM, StringRef Buffer,
   size_t NumLinesForward = 0;
   size_t Best = StringRef::npos;
   double BestQuality = 0;
+
+  // Arbitrarily limit quadratic search behavior stemming from long CHECK lines.
+  if (size_t(4096) * size_t(2048) <
+      std::min(size_t(4096), Buffer.size()) *
+          std::max(FixedStr.size(), RegExStr.size()))
+    return;
 
   // Use an arbitrary 4k limit on how far we will search.
   for (size_t i = 0, e = std::min(size_t(4096), Buffer.size()); i != e; ++i) {
@@ -1498,10 +1414,10 @@ void Pattern::printFuzzyMatch(const SourceMgr &SM, StringRef Buffer,
   // reasonable and not equal to what we showed in the "scanning from here"
   // line.
   if (Best && Best != StringRef::npos && BestQuality < 50) {
-    SMRange MatchRange =
-        ProcessMatchResult(FileCheckDiag::MatchFuzzy, SM, getLoc(),
-                           getCheckTy(), Buffer, Best, 0, Diags);
-    SM.PrintMessage(MatchRange.Start, SourceMgr::DK_Note,
+    SMLoc MatchStart = SMLoc::getFromPointer(Buffer.data() + Best);
+    if (Diags)
+      Diags->emplace<MatchFuzzyDiag>(MatchStart);
+    SM.PrintMessage(MatchStart, SourceMgr::DK_Note,
                     "possible intended match here");
 
     // FIXME: If we wanted to be really friendly we would show why the match
@@ -1547,7 +1463,7 @@ size_t Pattern::FindRegexVarEnd(StringRef Str, SourceMgr &SM) {
   size_t BracketDepth = 0;
 
   while (!Str.empty()) {
-    if (Str.startswith("]]") && BracketDepth == 0)
+    if (Str.starts_with("]]") && BracketDepth == 0)
       return Offset;
     if (Str[0] == '\\') {
       // Backslash escapes the next char within regexes, so skip them both.
@@ -1607,19 +1523,6 @@ StringRef FileCheck::CanonicalizeFile(MemoryBuffer &MB,
   return StringRef(OutputBuffer.data(), OutputBuffer.size() - 1);
 }
 
-FileCheckDiag::FileCheckDiag(const SourceMgr &SM,
-                             const Check::FileCheckType &CheckTy,
-                             SMLoc CheckLoc, MatchType MatchTy,
-                             SMRange InputRange, StringRef Note)
-    : CheckTy(CheckTy), CheckLoc(CheckLoc), MatchTy(MatchTy), Note(Note) {
-  auto Start = SM.getLineAndColumn(InputRange.Start);
-  auto End = SM.getLineAndColumn(InputRange.End);
-  InputStartLine = Start.first;
-  InputStartCol = Start.second;
-  InputEndLine = End.first;
-  InputEndCol = End.second;
-}
-
 static bool IsPartOfWord(char c) {
   return (isAlnum(c) || c == '-' || c == '_');
 }
@@ -1641,7 +1544,7 @@ std::string Check::FileCheckType::getModifiersDescription() const {
   if (isLiteralMatch())
     OS << "LITERAL";
   OS << '}';
-  return OS.str();
+  return Ret;
 }
 
 std::string Check::FileCheckType::getDescription(StringRef Prefix) const {
@@ -1746,10 +1649,10 @@ FindCheckType(const FileCheckRequest &Req, StringRef Buffer, StringRef Prefix,
   }
 
   // You can't combine -NOT with another suffix.
-  if (Rest.startswith("DAG-NOT:") || Rest.startswith("NOT-DAG:") ||
-      Rest.startswith("NEXT-NOT:") || Rest.startswith("NOT-NEXT:") ||
-      Rest.startswith("SAME-NOT:") || Rest.startswith("NOT-SAME:") ||
-      Rest.startswith("EMPTY-NOT:") || Rest.startswith("NOT-EMPTY:"))
+  if (Rest.starts_with("DAG-NOT:") || Rest.starts_with("NOT-DAG:") ||
+      Rest.starts_with("NEXT-NOT:") || Rest.starts_with("NOT-NEXT:") ||
+      Rest.starts_with("SAME-NOT:") || Rest.starts_with("NOT-SAME:") ||
+      Rest.starts_with("EMPTY-NOT:") || Rest.starts_with("NOT-EMPTY:"))
     return {Check::CheckBadNot, Rest};
 
   if (Rest.consume_front("NEXT"))
@@ -1789,6 +1692,58 @@ static size_t SkipWord(StringRef Str, size_t Loc) {
   return Loc;
 }
 
+static const char *DefaultCheckPrefixes[] = {"CHECK"};
+static const char *DefaultCommentPrefixes[] = {"COM", "RUN"};
+
+static void addDefaultPrefixes(FileCheckRequest &Req) {
+  if (Req.CheckPrefixes.empty()) {
+    llvm::append_range(Req.CheckPrefixes, DefaultCheckPrefixes);
+    Req.IsDefaultCheckPrefix = true;
+  }
+  if (Req.CommentPrefixes.empty())
+    llvm::append_range(Req.CommentPrefixes, DefaultCommentPrefixes);
+}
+
+struct PrefixMatcher {
+  /// Prefixes and their first occurrence past the current position.
+  SmallVector<std::pair<StringRef, size_t>> Prefixes;
+  StringRef Input;
+
+  PrefixMatcher(ArrayRef<StringRef> CheckPrefixes,
+                ArrayRef<StringRef> CommentPrefixes, StringRef Input)
+      : Input(Input) {
+    for (StringRef Prefix : CheckPrefixes)
+      Prefixes.push_back({Prefix, Input.find(Prefix)});
+    for (StringRef Prefix : CommentPrefixes)
+      Prefixes.push_back({Prefix, Input.find(Prefix)});
+
+    // Sort by descending length.
+    llvm::sort(Prefixes,
+               [](auto A, auto B) { return A.first.size() > B.first.size(); });
+  }
+
+  /// Find the next match of a prefix in Buffer.
+  /// Returns empty StringRef if not found.
+  StringRef match(StringRef Buffer) {
+    assert(Buffer.data() >= Input.data() &&
+           Buffer.data() + Buffer.size() == Input.data() + Input.size() &&
+           "Buffer must be suffix of Input");
+
+    size_t From = Buffer.data() - Input.data();
+    StringRef Match;
+    for (auto &[Prefix, Pos] : Prefixes) {
+      // If the last occurrence was before From, find the next one after From.
+      if (Pos < From)
+        Pos = Input.find(Prefix, From);
+      // Find the first prefix with the lowest position.
+      if (Pos != StringRef::npos &&
+          (Match.empty() || size_t(Match.data() - Input.data()) > Pos))
+        Match = StringRef(Input.substr(Pos, Prefix.size()));
+    }
+    return Match;
+  }
+};
+
 /// Searches the buffer for the first prefix in the prefix regular expression.
 ///
 /// This searches the buffer using the provided regular expression, however it
@@ -1813,19 +1768,15 @@ static size_t SkipWord(StringRef Str, size_t Loc) {
 /// If no valid prefix is found, the state of Buffer, LineNumber, and CheckTy
 /// is unspecified.
 static std::pair<StringRef, StringRef>
-FindFirstMatchingPrefix(const FileCheckRequest &Req, Regex &PrefixRE,
+FindFirstMatchingPrefix(const FileCheckRequest &Req, PrefixMatcher &Matcher,
                         StringRef &Buffer, unsigned &LineNumber,
                         Check::FileCheckType &CheckTy) {
-  SmallVector<StringRef, 2> Matches;
-
   while (!Buffer.empty()) {
-    // Find the first (longest) match using the RE.
-    if (!PrefixRE.match(Buffer, &Matches))
+    // Find the first (longest) prefix match.
+    StringRef Prefix = Matcher.match(Buffer);
+    if (Prefix.empty())
       // No match at all, bail.
       return {StringRef(), StringRef()};
-
-    StringRef Prefix = Matches[0];
-    Matches.clear();
 
     assert(Prefix.data() >= Buffer.data() &&
            Prefix.data() < Buffer.data() + Buffer.size() &&
@@ -1869,13 +1820,12 @@ void FileCheckPatternContext::createLineVariable() {
 }
 
 FileCheck::FileCheck(FileCheckRequest Req)
-    : Req(Req), PatternContext(std::make_unique<FileCheckPatternContext>()),
-      CheckStrings(std::make_unique<std::vector<FileCheckString>>()) {}
+    : Req(Req), PatternContext(std::make_unique<FileCheckPatternContext>()) {}
 
 FileCheck::~FileCheck() = default;
 
 bool FileCheck::readCheckFile(
-    SourceMgr &SM, StringRef Buffer, Regex &PrefixRE,
+    SourceMgr &SM, StringRef Buffer,
     std::pair<unsigned, unsigned> *ImpPatBufferIDRange) {
   if (ImpPatBufferIDRange)
     ImpPatBufferIDRange->first = ImpPatBufferIDRange->second = 0;
@@ -1889,7 +1839,7 @@ bool FileCheck::readCheckFile(
 
   PatternContext->createLineVariable();
 
-  std::vector<Pattern> ImplicitNegativeChecks;
+  std::vector<FileCheckString::DagNotPrefixInfo> ImplicitNegativeChecks;
   for (StringRef PatternString : Req.ImplicitCheckNot) {
     // Create a buffer with fake command line content in order to display the
     // command line option responsible for the specific implicit CHECK-NOT.
@@ -1912,18 +1862,21 @@ bool FileCheck::readCheckFile(
       }
     }
 
-    ImplicitNegativeChecks.push_back(
-        Pattern(Check::CheckNot, PatternContext.get()));
-    ImplicitNegativeChecks.back().parsePattern(PatternInBuffer,
-                                               "IMPLICIT-CHECK", SM, Req);
+    ImplicitNegativeChecks.emplace_back(
+        Pattern(Check::CheckNot, PatternContext.get()),
+        StringRef("IMPLICIT-CHECK"));
+    ImplicitNegativeChecks.back().DagNotPat.parsePattern(
+        PatternInBuffer, "IMPLICIT-CHECK", SM, Req);
   }
 
-  std::vector<Pattern> DagNotMatches = ImplicitNegativeChecks;
-
+  std::vector<FileCheckString::DagNotPrefixInfo> DagNotMatches =
+      ImplicitNegativeChecks;
   // LineNumber keeps track of the line on which CheckPrefix instances are
   // found.
   unsigned LineNumber = 1;
 
+  addDefaultPrefixes(Req);
+  PrefixMatcher Matcher(Req.CheckPrefixes, Req.CommentPrefixes, Buffer);
   std::set<StringRef> PrefixesNotFound(Req.CheckPrefixes.begin(),
                                        Req.CheckPrefixes.end());
   const size_t DistinctPrefixes = PrefixesNotFound.size();
@@ -1934,7 +1887,7 @@ bool FileCheck::readCheckFile(
     StringRef UsedPrefix;
     StringRef AfterSuffix;
     std::tie(UsedPrefix, AfterSuffix) =
-        FindFirstMatchingPrefix(Req, PrefixRE, Buffer, LineNumber, CheckTy);
+        FindFirstMatchingPrefix(Req, Matcher, Buffer, LineNumber, CheckTy);
     if (UsedPrefix.empty())
       break;
     if (CheckTy != Check::CheckComment)
@@ -1943,17 +1896,17 @@ bool FileCheck::readCheckFile(
     assert(UsedPrefix.data() == Buffer.data() &&
            "Failed to move Buffer's start forward, or pointed prefix outside "
            "of the buffer!");
+
+    [[maybe_unused]] const char *BufferEnd = Buffer.data() + Buffer.size();
     assert(AfterSuffix.data() >= Buffer.data() &&
-           AfterSuffix.data() < Buffer.data() + Buffer.size() &&
+           AfterSuffix.data() <= BufferEnd &&
            "Parsing after suffix doesn't start inside of buffer!");
+
+    // Skip the buffer to the end of the parsed directive suffix.
+    Buffer = AfterSuffix;
 
     // Location to use for error messages.
     const char *UsedPrefixStart = UsedPrefix.data();
-
-    // Skip the buffer to the end of parsed suffix (or just prefix, if no good
-    // suffix was processed).
-    Buffer = AfterSuffix.empty() ? Buffer.drop_front(UsedPrefix.size())
-                                 : AfterSuffix;
 
     // Complain about misspelled directives.
     if (CheckTy == Check::CheckMisspelled) {
@@ -2016,7 +1969,7 @@ bool FileCheck::readCheckFile(
     // Verify that CHECK-NEXT/SAME/EMPTY lines have at least one CHECK line before them.
     if ((CheckTy == Check::CheckNext || CheckTy == Check::CheckSame ||
          CheckTy == Check::CheckEmpty) &&
-        CheckStrings->empty()) {
+        CheckStrings.empty()) {
       StringRef Type = CheckTy == Check::CheckNext
                            ? "NEXT"
                            : CheckTy == Check::CheckEmpty ? "EMPTY" : "SAME";
@@ -2029,13 +1982,13 @@ bool FileCheck::readCheckFile(
 
     // Handle CHECK-DAG/-NOT.
     if (CheckTy == Check::CheckDAG || CheckTy == Check::CheckNot) {
-      DagNotMatches.push_back(P);
+      DagNotMatches.emplace_back(P, UsedPrefix);
       continue;
     }
 
     // Okay, add the string we captured to the output vector and move on.
-    CheckStrings->emplace_back(P, UsedPrefix, PatternLoc);
-    std::swap(DagNotMatches, CheckStrings->back().DagNotStrings);
+    CheckStrings.emplace_back(std::move(P), UsedPrefix, PatternLoc,
+                              std::move(DagNotMatches));
     DagNotMatches = ImplicitNegativeChecks;
   }
 
@@ -2048,13 +2001,9 @@ bool FileCheck::readCheckFile(
       (ImplicitNegativeChecks.empty() || !Req.IsDefaultCheckPrefix)) {
     errs() << "error: no check strings found with prefix"
            << (PrefixesNotFound.size() > 1 ? "es " : " ");
-    bool First = true;
-    for (StringRef MissingPrefix : PrefixesNotFound) {
-      if (!First)
-        errs() << ", ";
-      errs() << "\'" << MissingPrefix << ":'";
-      First = false;
-    }
+    ListSeparator LS;
+    for (StringRef MissingPrefix : PrefixesNotFound)
+      errs() << LS << "\'" << MissingPrefix << ":'";
     errs() << '\n';
     return true;
   }
@@ -2062,10 +2011,10 @@ bool FileCheck::readCheckFile(
   // Add an EOF pattern for any trailing --implicit-check-not/CHECK-DAG/-NOTs,
   // and use the first prefix as a filler for the error message.
   if (!DagNotMatches.empty()) {
-    CheckStrings->emplace_back(
+    CheckStrings.emplace_back(
         Pattern(Check::CheckEOF, PatternContext.get(), LineNumber + 1),
-        *Req.CheckPrefixes.begin(), SMLoc::getFromPointer(Buffer.data()));
-    std::swap(DagNotMatches, CheckStrings->back().DagNotStrings);
+        *Req.CheckPrefixes.begin(), SMLoc::getFromPointer(Buffer.data()),
+        std::move(DagNotMatches));
   }
 
   return false;
@@ -2077,8 +2026,7 @@ static Error printMatch(bool ExpectedMatch, const SourceMgr &SM,
                         StringRef Prefix, SMLoc Loc, const Pattern &Pat,
                         int MatchedCount, StringRef Buffer,
                         Pattern::MatchResult MatchResult,
-                        const FileCheckRequest &Req,
-                        std::vector<FileCheckDiag> *Diags) {
+                        const FileCheckRequest &Req, FileCheckDiagList *Diags) {
   // Suppress some verbosity if there's no error.
   bool HasError = !ExpectedMatch || MatchResult.TheError;
   bool PrintDiag = true;
@@ -2094,15 +2042,16 @@ static Error printMatch(bool ExpectedMatch, const SourceMgr &SM,
   }
 
   // Add "found" diagnostic, substitutions, and variable definitions to Diags.
-  FileCheckDiag::MatchType MatchTy = ExpectedMatch
-                                         ? FileCheckDiag::MatchFoundAndExpected
-                                         : FileCheckDiag::MatchFoundButExcluded;
-  SMRange MatchRange = ProcessMatchResult(MatchTy, SM, Loc, Pat.getCheckTy(),
-                                          Buffer, MatchResult.TheMatch->Pos,
-                                          MatchResult.TheMatch->Len, Diags);
+  MatchFoundDiag::StatusTy Status =
+      ExpectedMatch ? MatchFoundDiag::Success : MatchFoundDiag::Excluded;
+  SMRange MatchRange = buildMatchRange(Buffer, MatchResult.TheMatch->Pos,
+                                       MatchResult.TheMatch->Len);
+  SMRange SearchRange = buildSearchRange(Buffer);
   if (Diags) {
-    Pat.printSubstitutions(SM, Buffer, MatchRange, MatchTy, Diags);
-    Pat.printVariableDefs(SM, MatchTy, Diags);
+    Diags->emplace<MatchFoundDiag>(Pat.getCheckTy(), Loc, Status, MatchRange,
+                                   SearchRange);
+    Pat.printSubstitutions(SM, Buffer, MatchRange, Diags);
+    Pat.printVariableDefs(SM, Diags);
   }
   if (!PrintDiag) {
     assert(!HasError && "expected to report more diagnostics for error");
@@ -2122,8 +2071,8 @@ static Error printMatch(bool ExpectedMatch, const SourceMgr &SM,
                   {MatchRange});
 
   // Print additional information, which can be useful even if there are errors.
-  Pat.printSubstitutions(SM, Buffer, MatchRange, MatchTy, nullptr);
-  Pat.printVariableDefs(SM, MatchTy, nullptr);
+  Pat.printSubstitutions(SM, Buffer, MatchRange, nullptr);
+  Pat.printVariableDefs(SM, nullptr);
 
   // Print errors and add them to Diags.  We report these errors after the match
   // itself because we found them after the match.  If we had found them before
@@ -2132,9 +2081,9 @@ static Error printMatch(bool ExpectedMatch, const SourceMgr &SM,
                   [&](const ErrorDiagnostic &E) {
                     E.log(errs());
                     if (Diags) {
-                      Diags->emplace_back(SM, Pat.getCheckTy(), Loc,
-                                          FileCheckDiag::MatchFoundErrorNote,
-                                          E.getRange(), E.getMessage().str());
+                      Diags->emplace<MatchCustomNoteDiag>(E.getRange(),
+                                                          E.getMessage().str(),
+                                                          /*AddsError=*/true);
                     }
                   });
   return ErrorReported::reportedOrSuccess(HasError);
@@ -2146,20 +2095,18 @@ static Error printMatch(bool ExpectedMatch, const SourceMgr &SM,
 static Error printNoMatch(bool ExpectedMatch, const SourceMgr &SM,
                           StringRef Prefix, SMLoc Loc, const Pattern &Pat,
                           int MatchedCount, StringRef Buffer, Error MatchError,
-                          bool VerboseVerbose,
-                          std::vector<FileCheckDiag> *Diags) {
+                          bool VerboseVerbose, FileCheckDiagList *Diags) {
   // Print any pattern errors, and record them to be added to Diags later.
   bool HasError = ExpectedMatch;
   bool HasPatternError = false;
-  FileCheckDiag::MatchType MatchTy = ExpectedMatch
-                                         ? FileCheckDiag::MatchNoneButExpected
-                                         : FileCheckDiag::MatchNoneAndExcluded;
+  MatchNoneDiag::StatusTy Status =
+      ExpectedMatch ? MatchNoneDiag::Expected : MatchNoneDiag::Success;
   SmallVector<std::string, 4> ErrorMsgs;
   handleAllErrors(
       std::move(MatchError),
       [&](const ErrorDiagnostic &E) {
         HasError = HasPatternError = true;
-        MatchTy = FileCheckDiag::MatchNoneForInvalidPattern;
+        Status = MatchNoneDiag::InvalidPattern;
         E.log(errs());
         if (Diags)
           ErrorMsgs.push_back(E.getMessage().str());
@@ -2185,14 +2132,13 @@ static Error printNoMatch(bool ExpectedMatch, const SourceMgr &SM,
   // errors.  The reason is that we need to attach pattern errors as notes
   // somewhere in the input, and the input search range from the "not found"
   // diagnostic is all we have to anchor them.
-  SMRange SearchRange = ProcessMatchResult(MatchTy, SM, Loc, Pat.getCheckTy(),
-                                           Buffer, 0, Buffer.size(), Diags);
+  SMRange SearchRange = buildSearchRange(Buffer);
   if (Diags) {
-    SMRange NoteRange = SMRange(SearchRange.Start, SearchRange.Start);
+    Diags->emplace<MatchNoneDiag>(Pat.getCheckTy(), Loc, Status, SearchRange);
     for (StringRef ErrorMsg : ErrorMsgs)
-      Diags->emplace_back(SM, Pat.getCheckTy(), Loc, MatchTy, NoteRange,
-                          ErrorMsg);
-    Pat.printSubstitutions(SM, Buffer, SearchRange, MatchTy, Diags);
+      Diags->emplace<MatchCustomNoteDiag>(ErrorMsg);
+    Pat.printSubstitutions(SM, Buffer, SearchRange, Diags);
+    Pat.printVariableDefAttempts(SM, Buffer, Diags);
   }
   if (!PrintDiag) {
     assert(!HasError && "expected to report more diagnostics for error");
@@ -2218,7 +2164,9 @@ static Error printNoMatch(bool ExpectedMatch, const SourceMgr &SM,
 
   // Print additional information, which can be useful even after a pattern
   // error.
-  Pat.printSubstitutions(SM, Buffer, SearchRange, MatchTy, nullptr);
+  Pat.printSubstitutions(SM, Buffer, SearchRange, nullptr);
+  Pat.printVariableDefAttempts(SM, Buffer, nullptr);
+
   if (ExpectedMatch)
     Pat.printFuzzyMatch(SM, Buffer, Diags);
   return ErrorReported::reportedOrSuccess(HasError);
@@ -2231,7 +2179,7 @@ static Error reportMatchResult(bool ExpectedMatch, const SourceMgr &SM,
                                int MatchedCount, StringRef Buffer,
                                Pattern::MatchResult MatchResult,
                                const FileCheckRequest &Req,
-                               std::vector<FileCheckDiag> *Diags) {
+                               FileCheckDiagList *Diags) {
   if (MatchResult.TheMatch)
     return printMatch(ExpectedMatch, SM, Prefix, Loc, Pat, MatchedCount, Buffer,
                       std::move(MatchResult), Req, Diags);
@@ -2266,9 +2214,9 @@ static unsigned CountNumNewlinesBetween(StringRef Range,
 size_t FileCheckString::Check(const SourceMgr &SM, StringRef Buffer,
                               bool IsLabelScanMode, size_t &MatchLen,
                               FileCheckRequest &Req,
-                              std::vector<FileCheckDiag> *Diags) const {
+                              FileCheckDiagList *Diags) const {
   size_t LastPos = 0;
-  std::vector<const Pattern *> NotStrings;
+  std::vector<const DagNotPrefixInfo *> NotStrings;
 
   // IsLabelScanMode is true when we are scanning forward to find CHECK-LABEL
   // bounds; we have not processed variable definitions within the bounded block
@@ -2320,18 +2268,32 @@ size_t FileCheckString::Check(const SourceMgr &SM, StringRef Buffer,
     // If this check is a "CHECK-NEXT", verify that the previous match was on
     // the previous line (i.e. that there is one newline between them).
     if (CheckNext(SM, SkippedRegion)) {
-      ProcessMatchResult(FileCheckDiag::MatchFoundButWrongLine, SM, Loc,
-                         Pat.getCheckTy(), MatchBuffer, MatchPos, MatchLen,
-                         Diags, Req.Verbose);
+      if (Diags) {
+        if (Req.Verbose) {
+          Diags->adjustPrevMatchFoundDiag(MatchFoundDiag::WrongLine);
+        } else {
+          Diags->emplace<MatchFoundDiag>(
+              Pat.getCheckTy(), Loc, MatchFoundDiag::WrongLine,
+              buildMatchRange(MatchBuffer, MatchPos, MatchLen),
+              buildSearchRange(MatchBuffer));
+        }
+      }
       return StringRef::npos;
     }
 
     // If this check is a "CHECK-SAME", verify that the previous match was on
     // the same line (i.e. that there is no newline between them).
     if (CheckSame(SM, SkippedRegion)) {
-      ProcessMatchResult(FileCheckDiag::MatchFoundButWrongLine, SM, Loc,
-                         Pat.getCheckTy(), MatchBuffer, MatchPos, MatchLen,
-                         Diags, Req.Verbose);
+      if (Diags) {
+        if (Req.Verbose) {
+          Diags->adjustPrevMatchFoundDiag(MatchFoundDiag::WrongLine);
+        } else {
+          Diags->emplace<MatchFoundDiag>(
+              Pat.getCheckTy(), Loc, MatchFoundDiag::WrongLine,
+              buildMatchRange(MatchBuffer, MatchPos, MatchLen),
+              buildSearchRange(MatchBuffer));
+        }
+      }
       return StringRef::npos;
     }
 
@@ -2405,17 +2367,19 @@ bool FileCheckString::CheckSame(const SourceMgr &SM, StringRef Buffer) const {
   return false;
 }
 
-bool FileCheckString::CheckNot(const SourceMgr &SM, StringRef Buffer,
-                               const std::vector<const Pattern *> &NotStrings,
-                               const FileCheckRequest &Req,
-                               std::vector<FileCheckDiag> *Diags) const {
+bool FileCheckString::CheckNot(
+    const SourceMgr &SM, StringRef Buffer,
+    const std::vector<const DagNotPrefixInfo *> &NotStrings,
+    const FileCheckRequest &Req, FileCheckDiagList *Diags) const {
   bool DirectiveFail = false;
-  for (const Pattern *Pat : NotStrings) {
-    assert((Pat->getCheckTy() == Check::CheckNot) && "Expect CHECK-NOT!");
-    Pattern::MatchResult MatchResult = Pat->match(Buffer, SM);
-    if (Error Err = reportMatchResult(/*ExpectedMatch=*/false, SM, Prefix,
-                                      Pat->getLoc(), *Pat, 1, Buffer,
-                                      std::move(MatchResult), Req, Diags)) {
+  for (auto NotInfo : NotStrings) {
+    assert((NotInfo->DagNotPat.getCheckTy() == Check::CheckNot) &&
+           "Expect CHECK-NOT!");
+    Pattern::MatchResult MatchResult = NotInfo->DagNotPat.match(Buffer, SM);
+    if (Error Err = reportMatchResult(
+            /*ExpectedMatch=*/false, SM, NotInfo->DagNotPrefix,
+            NotInfo->DagNotPat.getLoc(), NotInfo->DagNotPat, 1, Buffer,
+            std::move(MatchResult), Req, Diags)) {
       cantFail(handleErrors(std::move(Err), [&](const ErrorReported &E) {}));
       DirectiveFail = true;
       continue;
@@ -2424,10 +2388,11 @@ bool FileCheckString::CheckNot(const SourceMgr &SM, StringRef Buffer,
   return DirectiveFail;
 }
 
-size_t FileCheckString::CheckDag(const SourceMgr &SM, StringRef Buffer,
-                                 std::vector<const Pattern *> &NotStrings,
-                                 const FileCheckRequest &Req,
-                                 std::vector<FileCheckDiag> *Diags) const {
+size_t
+FileCheckString::CheckDag(const SourceMgr &SM, StringRef Buffer,
+                          std::vector<const DagNotPrefixInfo *> &NotStrings,
+                          const FileCheckRequest &Req,
+                          FileCheckDiagList *Diags) const {
   if (DagNotStrings.empty())
     return 0;
 
@@ -2447,13 +2412,14 @@ size_t FileCheckString::CheckDag(const SourceMgr &SM, StringRef Buffer,
   // group, so we don't use a range-based for loop here.
   for (auto PatItr = DagNotStrings.begin(), PatEnd = DagNotStrings.end();
        PatItr != PatEnd; ++PatItr) {
-    const Pattern &Pat = *PatItr;
+    const Pattern &Pat = PatItr->DagNotPat;
+    const StringRef DNPrefix = PatItr->DagNotPrefix;
     assert((Pat.getCheckTy() == Check::CheckDAG ||
             Pat.getCheckTy() == Check::CheckNot) &&
            "Invalid CHECK-DAG or CHECK-NOT!");
 
     if (Pat.getCheckTy() == Check::CheckNot) {
-      NotStrings.push_back(&Pat);
+      NotStrings.push_back(&*PatItr);
       continue;
     }
 
@@ -2470,7 +2436,7 @@ size_t FileCheckString::CheckDag(const SourceMgr &SM, StringRef Buffer,
       // With a group of CHECK-DAGs, a single mismatching means the match on
       // that group of CHECK-DAGs fails immediately.
       if (MatchResult.TheError || Req.VerboseVerbose) {
-        if (Error Err = reportMatchResult(/*ExpectedMatch=*/true, SM, Prefix,
+        if (Error Err = reportMatchResult(/*ExpectedMatch=*/true, SM, DNPrefix,
                                           Pat.getLoc(), Pat, 1, MatchBuffer,
                                           std::move(MatchResult), Req, Diags)) {
           cantFail(
@@ -2515,31 +2481,28 @@ size_t FileCheckString::CheckDag(const SourceMgr &SM, StringRef Buffer,
         // Due to their verbosity, we don't print verbose diagnostics here if
         // we're gathering them for a different rendering, but we always print
         // other diagnostics.
-        if (!Diags) {
+        if (Diags) {
+          Diags->adjustPrevMatchFoundDiag(MatchFoundDiag::Discarded);
+        } else {
           SMLoc OldStart = SMLoc::getFromPointer(Buffer.data() + MI->Pos);
           SMLoc OldEnd = SMLoc::getFromPointer(Buffer.data() + MI->End);
           SMRange OldRange(OldStart, OldEnd);
           SM.PrintMessage(OldStart, SourceMgr::DK_Note,
                           "match discarded, overlaps earlier DAG match here",
                           {OldRange});
-        } else {
-          SMLoc CheckLoc = Diags->rbegin()->CheckLoc;
-          for (auto I = Diags->rbegin(), E = Diags->rend();
-               I != E && I->CheckLoc == CheckLoc; ++I)
-            I->MatchTy = FileCheckDiag::MatchFoundButDiscarded;
         }
       }
       MatchPos = MI->End;
     }
     if (!Req.VerboseVerbose)
       cantFail(printMatch(
-          /*ExpectedMatch=*/true, SM, Prefix, Pat.getLoc(), Pat, 1, Buffer,
+          /*ExpectedMatch=*/true, SM, DNPrefix, Pat.getLoc(), Pat, 1, Buffer,
           Pattern::MatchResult(MatchPos, MatchLen, Error::success()), Req,
           Diags));
 
     // Handle the end of a CHECK-DAG group.
     if (std::next(PatItr) == PatEnd ||
-        std::next(PatItr)->getCheckTy() == Check::CheckNot) {
+        std::next(PatItr)->DagNotPat.getCheckTy() == Check::CheckNot) {
       if (!NotStrings.empty()) {
         // If there are CHECK-NOTs between two CHECK-DAGs or from CHECK to
         // CHECK-DAG, verify that there are no 'not' strings occurred in that
@@ -2586,20 +2549,13 @@ static bool ValidatePrefixes(StringRef Kind, StringSet<> &UniquePrefixes,
   return true;
 }
 
-static const char *DefaultCheckPrefixes[] = {"CHECK"};
-static const char *DefaultCommentPrefixes[] = {"COM", "RUN"};
-
 bool FileCheck::ValidateCheckPrefixes() {
   StringSet<> UniquePrefixes;
   // Add default prefixes to catch user-supplied duplicates of them below.
-  if (Req.CheckPrefixes.empty()) {
-    for (const char *Prefix : DefaultCheckPrefixes)
-      UniquePrefixes.insert(Prefix);
-  }
-  if (Req.CommentPrefixes.empty()) {
-    for (const char *Prefix : DefaultCommentPrefixes)
-      UniquePrefixes.insert(Prefix);
-  }
+  if (Req.CheckPrefixes.empty())
+    UniquePrefixes.insert_range(DefaultCheckPrefixes);
+  if (Req.CommentPrefixes.empty())
+    UniquePrefixes.insert_range(DefaultCommentPrefixes);
   // Do not validate the default prefixes, or diagnostics about duplicates might
   // incorrectly indicate that they were supplied by the user.
   if (!ValidatePrefixes("check", UniquePrefixes, Req.CheckPrefixes))
@@ -2607,33 +2563,6 @@ bool FileCheck::ValidateCheckPrefixes() {
   if (!ValidatePrefixes("comment", UniquePrefixes, Req.CommentPrefixes))
     return false;
   return true;
-}
-
-Regex FileCheck::buildCheckPrefixRegex() {
-  if (Req.CheckPrefixes.empty()) {
-    for (const char *Prefix : DefaultCheckPrefixes)
-      Req.CheckPrefixes.push_back(Prefix);
-    Req.IsDefaultCheckPrefix = true;
-  }
-  if (Req.CommentPrefixes.empty()) {
-    for (const char *Prefix : DefaultCommentPrefixes)
-      Req.CommentPrefixes.push_back(Prefix);
-  }
-
-  // We already validated the contents of CheckPrefixes and CommentPrefixes so
-  // just concatenate them as alternatives.
-  SmallString<32> PrefixRegexStr;
-  for (size_t I = 0, E = Req.CheckPrefixes.size(); I != E; ++I) {
-    if (I != 0)
-      PrefixRegexStr.push_back('|');
-    PrefixRegexStr.append(Req.CheckPrefixes[I]);
-  }
-  for (StringRef Prefix : Req.CommentPrefixes) {
-    PrefixRegexStr.push_back('|');
-    PrefixRegexStr.append(Prefix);
-  }
-
-  return Regex(PrefixRegexStr);
 }
 
 Error FileCheckPatternContext::defineCmdlineVariables(
@@ -2715,7 +2644,7 @@ Error FileCheckPatternContext::defineCmdlineVariables(
       // to, since the expression of a command-line variable definition should
       // only use variables defined earlier on the command-line. If not, this
       // is an error and we report it.
-      Expected<ExpressionValue> Value = Expression->getAST()->eval();
+      Expected<APInt> Value = Expression->getAST()->eval();
       if (!Value) {
         Errs = joinErrors(std::move(Errs), Value.takeError());
         continue;
@@ -2753,8 +2682,7 @@ Error FileCheckPatternContext::defineCmdlineVariables(
 
       // Detect collisions between string and numeric variables when the former
       // is created later than the latter.
-      if (GlobalNumericVariableTable.find(Name) !=
-          GlobalNumericVariableTable.end()) {
+      if (GlobalNumericVariableTable.contains(Name)) {
         Errs = joinErrors(std::move(Errs),
                           ErrorDiagnostic::get(SM, Name,
                                                "numeric variable with name '" +
@@ -2800,16 +2728,16 @@ void FileCheckPatternContext::clearLocalVars() {
 }
 
 bool FileCheck::checkInput(SourceMgr &SM, StringRef Buffer,
-                           std::vector<FileCheckDiag> *Diags) {
+                           FileCheckDiagList *Diags) {
   bool ChecksFailed = false;
 
-  unsigned i = 0, j = 0, e = CheckStrings->size();
+  unsigned i = 0, j = 0, e = CheckStrings.size();
   while (true) {
     StringRef CheckRegion;
     if (j == e) {
       CheckRegion = Buffer;
     } else {
-      const FileCheckString &CheckLabelStr = (*CheckStrings)[j];
+      const FileCheckString &CheckLabelStr = CheckStrings[j];
       if (CheckLabelStr.Pat.getCheckTy() != Check::CheckLabel) {
         ++j;
         continue;
@@ -2835,7 +2763,7 @@ bool FileCheck::checkInput(SourceMgr &SM, StringRef Buffer,
       PatternContext->clearLocalVars();
 
     for (; i != j; ++i) {
-      const FileCheckString &CheckStr = (*CheckStrings)[i];
+      const FileCheckString &CheckStr = CheckStrings[i];
 
       // Check each string within the scanned region, including a second check
       // of any final CHECK-LABEL (to verify CHECK-NOT and CHECK-DAG)

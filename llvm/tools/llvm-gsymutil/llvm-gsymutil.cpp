@@ -7,41 +7,52 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Object/MachOUniversal.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Option/ArgList.h"
+#include "llvm/Option/Option.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Driver.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 #include <algorithm>
 #include <cstring>
 #include <inttypes.h>
 #include <iostream>
-#include <map>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
 
+#include "llvm/DebugInfo/GSYM/CallSiteInfo.h"
 #include "llvm/DebugInfo/GSYM/DwarfTransformer.h"
 #include "llvm/DebugInfo/GSYM/FunctionInfo.h"
 #include "llvm/DebugInfo/GSYM/GsymCreator.h"
+#include "llvm/DebugInfo/GSYM/GsymCreatorV1.h"
+#include "llvm/DebugInfo/GSYM/GsymCreatorV2.h"
 #include "llvm/DebugInfo/GSYM/GsymReader.h"
+#include "llvm/DebugInfo/GSYM/Header.h"
+#include "llvm/DebugInfo/GSYM/HeaderV2.h"
 #include "llvm/DebugInfo/GSYM/InlineInfo.h"
 #include "llvm/DebugInfo/GSYM/LookupResult.h"
 #include "llvm/DebugInfo/GSYM/ObjectFileTransformer.h"
-#include <optional>
+#include "llvm/DebugInfo/GSYM/OutputAggregator.h"
 
 using namespace llvm;
 using namespace gsym;
@@ -51,78 +62,222 @@ using namespace object;
 /// Command line options.
 /// @{
 
-namespace {
-using namespace cl;
+using namespace llvm::opt;
+enum ID {
+  OPT_INVALID = 0, // This is not an option ID.
+#define OPTION(...) LLVM_MAKE_OPT_ID(__VA_ARGS__),
+#include "Opts.inc"
+#undef OPTION
+};
 
-OptionCategory GeneralOptions("Options");
-OptionCategory ConversionOptions("Conversion Options");
-OptionCategory LookupOptions("Lookup Options");
+#define OPTTABLE_CODE
+#include "Opts.inc"
 
-static opt<bool> Help("h", desc("Alias for -help"), Hidden,
-                      cat(GeneralOptions));
+class GSYMUtilOptTable : public llvm::opt::OptTable {
+public:
+  GSYMUtilOptTable() : OptTable(optionTables()) {
+    setGroupedShortOptions(true);
+  }
+};
 
-static opt<bool> Verbose("verbose",
-                         desc("Enable verbose logging and encoding details."),
-                         cat(GeneralOptions));
+static bool Verbose;
+static std::vector<std::string> InputFilenames;
+static std::string ConvertFilename;
+static std::string SymtabFilename;
+static std::vector<std::string> ArchFilters;
+static std::string OutputFilename;
+static std::string JsonSummaryFile;
+static bool Verify;
+static bool BenchmarkReader;
+static uint32_t BenchmarkStart;
+static uint32_t BenchmarkStride;
+static unsigned NumThreads;
+static uint64_t SegmentSize;
+static bool Quiet;
+static std::vector<uint64_t> LookupAddresses;
+static bool LookupAddressesFromStdin;
+static bool UseMergedFunctions = false;
+static bool LoadDwarfCallSites = false;
+static std::string CallSiteYamlPath;
+static std::vector<std::string> MergedFunctionsFilters;
+// Default output version. Can be overridden by --output-version.
+static uint32_t OutputVersion = Header::getVersion();
+static bool ShowStatistics;
+static GsymReader::StatisticsFormat StatisticsFormat;
 
-static list<std::string> InputFilenames(Positional, desc("<input GSYM files>"),
-                                        cat(GeneralOptions));
+static void parseArgs(int argc, char **argv) {
+  GSYMUtilOptTable Tbl;
+  llvm::StringRef ToolName = argv[0];
+  llvm::BumpPtrAllocator A;
+  llvm::StringSaver Saver{A};
+  llvm::opt::InputArgList Args =
+      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
+        llvm::errs() << Msg << '\n';
+        std::exit(1);
+      });
+  if (Args.hasArg(OPT_help)) {
+    const char *Overview =
+        "A tool for dumping, searching and creating GSYM files.\n\n"
+        "Specify one or more GSYM paths as arguments to dump all of the "
+        "information in each GSYM file.\n"
+        "Specify a single GSYM file along with one or more --lookup options to "
+        "lookup addresses within that GSYM file.\n"
+        "Use the --convert option to specify a file with option --out-file "
+        "option to convert to GSYM format.\n";
 
-static opt<std::string>
-    ConvertFilename("convert", cl::init(""),
-                    cl::desc("Convert the specified file to the GSYM format.\n"
-                             "Supported files include ELF and mach-o files "
-                             "that will have their debug info (DWARF) and "
-                             "symbol table converted."),
-                    cl::value_desc("path"), cat(ConversionOptions));
+    Tbl.printHelp(llvm::outs(), "llvm-gsymutil [options] <input GSYM files>",
+                  Overview);
+    std::exit(0);
+  }
+  if (Args.hasArg(OPT_version)) {
+    llvm::outs() << ToolName << '\n';
+    cl::PrintVersionMessage();
+    std::exit(0);
+  }
 
-static list<std::string>
-    ArchFilters("arch",
-                desc("Process debug information for the specified CPU "
-                     "architecture only.\nArchitectures may be specified by "
-                     "name or by number.\nThis option can be specified "
-                     "multiple times, once for each desired architecture."),
-                cl::value_desc("arch"), cat(ConversionOptions));
+  Verbose = Args.hasArg(OPT_verbose);
 
-static opt<std::string>
-    OutputFilename("out-file", cl::init(""),
-                   cl::desc("Specify the path where the converted GSYM file "
-                            "will be saved.\nWhen not specified, a '.gsym' "
-                            "extension will be appended to the file name "
-                            "specified in the --convert option."),
-                   cl::value_desc("path"), cat(ConversionOptions));
-static alias OutputFilenameAlias("o", desc("Alias for -out-file."),
-                                 aliasopt(OutputFilename),
-                                 cat(ConversionOptions));
+  for (const llvm::opt::Arg *A : Args.filtered(OPT_INPUT))
+    InputFilenames.emplace_back(A->getValue());
 
-static opt<bool> Verify("verify",
-                        desc("Verify the generated GSYM file against the "
-                             "information in the file that was converted."),
-                        cat(ConversionOptions));
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_convert_EQ))
+    ConvertFilename = A->getValue();
 
-static opt<unsigned>
-    NumThreads("num-threads",
-               desc("Specify the maximum number (n) of simultaneous threads "
-                    "to use when converting files to GSYM.\nDefaults to the "
-                    "number of cores on the current machine."),
-               cl::value_desc("n"), cat(ConversionOptions));
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_symtab_file_EQ))
+    SymtabFilename = A->getValue();
 
-static opt<bool>
-    Quiet("quiet", desc("Do not output warnings about the debug information"),
-          cat(ConversionOptions));
+  for (const llvm::opt::Arg *A : Args.filtered(OPT_arch_EQ))
+    ArchFilters.emplace_back(A->getValue());
 
-static list<uint64_t> LookupAddresses("address",
-                                      desc("Lookup an address in a GSYM file"),
-                                      cl::value_desc("addr"),
-                                      cat(LookupOptions));
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_out_file_EQ))
+    OutputFilename = A->getValue();
 
-static opt<bool> LookupAddressesFromStdin(
-    "addresses-from-stdin",
-    desc("Lookup addresses in a GSYM file that are read from stdin\nEach input "
-         "line is expected to be of the following format: <addr> <gsym-path>"),
-    cat(LookupOptions));
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_json_summary_file_EQ))
+    JsonSummaryFile = A->getValue();
 
-} // namespace
+  Verify = Args.hasArg(OPT_verify);
+  BenchmarkStart = 0;
+  BenchmarkStride = 1;
+  if (Args.hasArg(OPT_benchmark_reader_all)) {
+    BenchmarkReader = true;
+  } else if (const llvm::opt::Arg *A = Args.getLastArg(OPT_benchmark_reader)) {
+    BenchmarkReader = true;
+    StringRef S{A->getValue()};
+    if (!S.empty()) {
+      auto [StartStr, StrideStr] = S.split(',');
+      if (!llvm::to_integer(StartStr, BenchmarkStart, 0)) {
+        llvm::errs() << ToolName
+                     << ": for the --benchmark-reader option: invalid start '"
+                     << StartStr << "'\n";
+        std::exit(1);
+      }
+      if (!StrideStr.empty() &&
+          !llvm::to_integer(StrideStr, BenchmarkStride, 0)) {
+        llvm::errs() << ToolName
+                     << ": for the --benchmark-reader option: invalid stride '"
+                     << StrideStr << "'\n";
+        std::exit(1);
+      }
+      if (BenchmarkStride == 0) {
+        llvm::errs() << ToolName
+                     << ": for the --benchmark-reader option: stride must be "
+                        "positive\n";
+        std::exit(1);
+      }
+    }
+  }
+
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_num_threads_EQ)) {
+    StringRef S{A->getValue()};
+    if (!llvm::to_integer(S, NumThreads, 0)) {
+      llvm::errs() << ToolName << ": for the --num-threads option: '" << S
+                   << "' value invalid for uint argument!\n";
+      std::exit(1);
+    }
+  }
+
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_segment_size_EQ)) {
+    StringRef S{A->getValue()};
+    if (!llvm::to_integer(S, SegmentSize, 0)) {
+      llvm::errs() << ToolName << ": for the --segment-size option: '" << S
+                   << "' value invalid for uint argument!\n";
+      std::exit(1);
+    }
+  }
+
+  Quiet = Args.hasArg(OPT_quiet);
+
+  for (const llvm::opt::Arg *A : Args.filtered(OPT_address_EQ)) {
+    StringRef S{A->getValue()};
+    if (!llvm::to_integer(S, LookupAddresses.emplace_back(), 0)) {
+      llvm::errs() << ToolName << ": for the --address option: '" << S
+                   << "' value invalid for uint argument!\n";
+      std::exit(1);
+    }
+  }
+
+  LookupAddressesFromStdin = Args.hasArg(OPT_addresses_from_stdin);
+  UseMergedFunctions = Args.hasArg(OPT_merged_functions);
+
+  if (Args.hasArg(OPT_callsites_yaml_file_EQ)) {
+    CallSiteYamlPath = Args.getLastArgValue(OPT_callsites_yaml_file_EQ);
+    if (CallSiteYamlPath.empty()) {
+      llvm::errs()
+          << ToolName
+          << ": --callsites-yaml-file option requires a non-empty argument.\n";
+      std::exit(1);
+    }
+  }
+
+  LoadDwarfCallSites = Args.hasArg(OPT_dwarf_callsites);
+
+  ShowStatistics = Args.hasArg(OPT_statistics_EQ);
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_statistics_EQ)) {
+    StringRef Val = A->getValue();
+    if (Val == "" || Val == "text")
+      StatisticsFormat = GsymReader::StatisticsFormat::Text;
+    else if (Val == "json")
+      StatisticsFormat = GsymReader::StatisticsFormat::JSON;
+    else if (Val == "pretty-json")
+      StatisticsFormat = GsymReader::StatisticsFormat::PrettyJSON;
+    else {
+      errs() << "error: unknown statistics format '" << Val
+             << "'. Supported formats: text, json, pretty-json\n";
+      std::exit(1);
+    }
+  }
+
+  for (const llvm::opt::Arg *A :
+       Args.filtered(OPT_merged_functions_filter_EQ)) {
+    MergedFunctionsFilters.push_back(A->getValue());
+    // Validate the filter is only used with correct flags
+    if (LookupAddresses.empty() && !LookupAddressesFromStdin) {
+      llvm::errs() << ToolName
+                   << ": --merged-functions-filter can only be used with "
+                      "--address/--addresses-from-stdin\n";
+      std::exit(1);
+    }
+    if (!UseMergedFunctions) {
+      llvm::errs()
+          << ToolName
+          << ": --merged-functions-filter requires --merged-functions\n";
+      std::exit(1);
+    }
+  }
+
+  if (const llvm::opt::Arg *A = Args.getLastArg(OPT_output_version_EQ)) {
+    StringRef Val = A->getValue();
+    uint32_t Version;
+    if (Val.getAsInteger(10, Version) || (Version != Header::getVersion() &&
+                                          Version != HeaderV2::getVersion())) {
+      llvm::errs() << ToolName << ": for the --output-version option: '" << Val
+                   << "' is invalid. Use '1' or '2'.\n";
+      std::exit(1);
+    }
+    OutputVersion = Version;
+  }
+}
+
 /// @}
 //===----------------------------------------------------------------------===//
 
@@ -155,6 +310,16 @@ static uint32_t getCPUType(MachOObjectFile &MachO) {
     return MachO.getHeader().cputype;
 }
 
+static std::string getArchitectureName(const ObjectFile &Obj) {
+  if (const auto *MachO = dyn_cast<object::MachOObjectFile>(&Obj)) {
+    Triple ObjTriple(MachO->getArchTriple());
+    return ObjTriple.getArchName().str();
+  }
+
+  Triple ObjTriple(Obj.makeTriple());
+  return ObjTriple.getArchName().str();
+}
+
 /// Return true if the object file has not been filtered by an --arch option.
 static bool filterArch(MachOObjectFile &Obj) {
   if (ArchFilters.empty())
@@ -163,14 +328,14 @@ static bool filterArch(MachOObjectFile &Obj) {
   Triple ObjTriple(Obj.getArchTriple());
   StringRef ObjArch = ObjTriple.getArchName();
 
-  for (auto Arch : ArchFilters) {
+  for (StringRef Arch : ArchFilters) {
     // Match name.
     if (Arch == ObjArch)
       return true;
 
     // Match architecture number.
     unsigned Value;
-    if (!StringRef(Arch).getAsInteger(0, Value))
+    if (!Arch.getAsInteger(0, Value))
       if (Value == getCPUType(Obj))
         return true;
   }
@@ -180,7 +345,7 @@ static bool filterArch(MachOObjectFile &Obj) {
 /// Determine the virtual address that is considered the base address of an ELF
 /// object file.
 ///
-/// The base address of an ELF file is the the "p_vaddr" of the first program
+/// The base address of an ELF file is the "p_vaddr" of the first program
 /// header whose "p_type" is PT_LOAD.
 ///
 /// \param ELFFile An ELF object file we will search.
@@ -252,13 +417,64 @@ static std::optional<uint64_t> getImageBaseAddress(object::ObjectFile &Obj) {
   return std::nullopt;
 }
 
-static llvm::Error handleObjectFile(ObjectFile &Obj,
-                                    const std::string &OutFile) {
+static Expected<ObjectFile *>
+resolveSymtabObject(StringRef ArchName, Binary *SymtabBinary,
+                    StringRef SymtabPath,
+                    std::unique_ptr<ObjectFile> &OwnedSymtabObj) {
+  if (!SymtabBinary)
+    return nullptr;
+
+  if (auto *SymtabObj = dyn_cast<ObjectFile>(SymtabBinary)) {
+    std::string SymtabArchName = getArchitectureName(*SymtabObj);
+    if (SymtabArchName != ArchName)
+      return createStringError(std::errc::invalid_argument,
+                               "architecture mismatch: input file is %s but "
+                               "symbol table file '%s' is %s",
+                               ArchName.str().c_str(), SymtabPath.str().c_str(),
+                               SymtabArchName.c_str());
+
+    return SymtabObj;
+  }
+
+  if (auto *SymtabFat = dyn_cast<MachOUniversalBinary>(SymtabBinary)) {
+    auto SymtabObjOrErr = SymtabFat->getMachOObjectForArch(ArchName);
+    if (!SymtabObjOrErr) {
+      consumeError(SymtabObjOrErr.takeError());
+      return createStringError(
+          std::errc::invalid_argument,
+          "symbol table file '%s' does not contain architecture '%s'",
+          SymtabPath.str().c_str(), ArchName.str().c_str());
+    }
+
+    OwnedSymtabObj = std::move(*SymtabObjOrErr);
+    return OwnedSymtabObj.get();
+  }
+
+  return createStringError(std::errc::invalid_argument,
+                           "symbol table file '%s' is not a valid object file",
+                           SymtabPath.str().c_str());
+}
+
+static llvm::Error handleObjectFile(ObjectFile &Obj, ObjectFile *SymtabObj,
+                                    StringRef SymtabPath,
+                                    const std::string &OutFile,
+                                    OutputAggregator &Out) {
   auto ThreadCount =
       NumThreads > 0 ? NumThreads : std::thread::hardware_concurrency();
-  auto &OS = outs();
 
-  GsymCreator Gsym(Quiet);
+  std::unique_ptr<GsymCreator> GsymPtr;
+  switch (OutputVersion) {
+  case Header::getVersion():
+    GsymPtr = std::make_unique<GsymCreatorV1>();
+    break;
+  case HeaderV2::getVersion():
+    GsymPtr = std::make_unique<GsymCreatorV2>();
+    break;
+  default:
+    return createStringError(std::errc::invalid_argument,
+                             "invalid --output-version option");
+  }
+  GsymCreator &Gsym = *GsymPtr;
 
   // See if we can figure out the base address for a given object file, and if
   // we can, then set the base address to use to this value. This will ease
@@ -282,41 +498,74 @@ static llvm::Error handleObjectFile(ObjectFile &Obj,
   }
 
   // Make sure there is DWARF to convert first.
-  std::unique_ptr<DWARFContext> DICtx = DWARFContext::create(Obj);
+  std::unique_ptr<DWARFContext> DICtx = DWARFContext::create(
+      Obj,
+      /*RelocAction=*/DWARFContext::ProcessDebugRelocations::Process,
+      nullptr,
+      /*DWPName=*/"",
+      /*RecoverableErrorHandler=*/WithColor::defaultErrorHandler,
+      /*WarningHandler=*/WithColor::defaultWarningHandler,
+      /*ThreadSafe*/true);
   if (!DICtx)
     return createStringError(std::errc::invalid_argument,
                              "unable to create DWARF context");
 
   // Make a DWARF transformer object and populate the ranges of the code
   // so we don't end up adding invalid functions to GSYM data.
-  DwarfTransformer DT(*DICtx, OS, Gsym);
+  bool IsMachO = dyn_cast<object::MachOObjectFile>(&Obj) != nullptr;
+
+  DwarfTransformer DT(*DICtx, Gsym, LoadDwarfCallSites, IsMachO);
   if (!TextRanges.empty())
     Gsym.SetValidTextRanges(TextRanges);
 
   // Convert all DWARF to GSYM.
-  if (auto Err = DT.convert(ThreadCount))
+  if (auto Err = DT.convert(ThreadCount, Out))
     return Err;
 
+  // If enabled, merge functions with identical address ranges as merged
+  // functions in the first FunctionInfo with that address range. Do this right
+  // after loading the DWARF data so we don't have to deal with functions from
+  // the symbol table.
+  if (UseMergedFunctions)
+    Gsym.prepareMergedFunctions(Out);
+
   // Get the UUID and convert symbol table to GSYM.
-  if (auto Err = ObjectFileTransformer::convert(Obj, OS, Gsym))
+  if (SymtabObj) {
+    Out << "Using symbol table file: " << SymtabPath << "\n";
+    if (auto Err = ObjectFileTransformer::convert(*SymtabObj, Out, Gsym))
+      return Err;
+  } else if (auto Err = ObjectFileTransformer::convert(Obj, Out, Gsym)) {
     return Err;
+  }
+
+  // If any call site YAML files were specified, load them now.
+  if (!CallSiteYamlPath.empty())
+    if (auto Err = Gsym.loadCallSitesFromYAML(CallSiteYamlPath))
+      return Err;
 
   // Finalize the GSYM to make it ready to save to disk. This will remove
   // duplicate FunctionInfo entries where we might have found an entry from
-  // debug info and also a symbol table entry from the object file.
-  if (auto Err = Gsym.finalize(OS))
+  // debug info and also a symbol table entry from the object file. Pass along
+  // the object file that the symbols came from so the size of a trailing
+  // symbol that has no size doesn't extend past the end of its section.
+  if (auto Err = Gsym.finalize(Out, SymtabObj ? SymtabObj : &Obj))
     return Err;
 
   // Save the GSYM file to disk.
-  support::endianness Endian =
-      Obj.makeTriple().isLittleEndian() ? support::little : support::big;
-  if (auto Err = Gsym.save(OutFile, Endian))
+  llvm::endianness Endian = Obj.makeTriple().isLittleEndian()
+                                ? llvm::endianness::little
+                                : llvm::endianness::big;
+
+  std::optional<uint64_t> OptSegmentSize;
+  if (SegmentSize > 0)
+    OptSegmentSize = SegmentSize;
+  if (auto Err = Gsym.save(OutFile, Endian, OptSegmentSize))
     return Err;
 
   // Verify the DWARF if requested. This will ensure all the info in the DWARF
   // can be looked up in the GSYM and that all lookups get matching data.
   if (Verify) {
-    if (auto Err = DT.verify(OutFile))
+    if (auto Err = DT.verify(OutFile, Out))
       return Err;
   }
 
@@ -324,15 +573,23 @@ static llvm::Error handleObjectFile(ObjectFile &Obj,
 }
 
 static llvm::Error handleBuffer(StringRef Filename, MemoryBufferRef Buffer,
-                                const std::string &OutFile) {
+                                Binary *SymtabBinary, StringRef SymtabPath,
+                                const std::string &OutFile,
+                                OutputAggregator &Out) {
   Expected<std::unique_ptr<Binary>> BinOrErr = object::createBinary(Buffer);
   error(Filename, errorToErrorCode(BinOrErr.takeError()));
 
   if (auto *Obj = dyn_cast<ObjectFile>(BinOrErr->get())) {
-    Triple ObjTriple(Obj->makeTriple());
-    auto ArchName = ObjTriple.getArchName();
+    std::string ArchName = getArchitectureName(*Obj);
+    std::unique_ptr<ObjectFile> OwnedSymtabObj;
+    auto SymtabObjOrErr =
+        resolveSymtabObject(ArchName, SymtabBinary, SymtabPath, OwnedSymtabObj);
+    if (!SymtabObjOrErr)
+      return SymtabObjOrErr.takeError();
+
     outs() << "Output file (" << ArchName << "): " << OutFile << "\n";
-    if (auto Err = handleObjectFile(*Obj, OutFile))
+    if (auto Err =
+            handleObjectFile(*Obj, *SymtabObjOrErr, SymtabPath, OutFile, Out))
       return Err;
   } else if (auto *Fat = dyn_cast<MachOUniversalBinary>(BinOrErr->get())) {
     // Iterate over all contained architectures and filter out any that were
@@ -340,33 +597,51 @@ static llvm::Error handleBuffer(StringRef Filename, MemoryBufferRef Buffer,
     // not specified on the command line, we will process all architectures.
     std::vector<std::unique_ptr<MachOObjectFile>> FilterObjs;
     for (auto &ObjForArch : Fat->objects()) {
-      if (auto MachOOrErr = ObjForArch.getAsObjectFile()) {
-        auto &Obj = **MachOOrErr;
-        if (filterArch(Obj))
-          FilterObjs.emplace_back(MachOOrErr->release());
-      } else {
+      auto MachOOrErr = ObjForArch.getAsObjectFile();
+      if (!MachOOrErr) {
         error(Filename, MachOOrErr.takeError());
+        continue;
       }
+
+      std::unique_ptr<MachOObjectFile> Obj = std::move(*MachOOrErr);
+      if (filterArch(*Obj))
+        FilterObjs.emplace_back(std::move(Obj));
     }
     if (FilterObjs.empty())
       error(Filename, createStringError(std::errc::invalid_argument,
                                         "no matching architectures found"));
 
     // Now handle each architecture we need to convert.
+    bool MultipleArchitecturesSelected = FilterObjs.size() > 1;
+    if (MultipleArchitecturesSelected && SymtabBinary &&
+        isa<ObjectFile>(SymtabBinary))
+      return createStringError(
+          std::errc::invalid_argument,
+          "symbol table file '%s' is not a universal binary, but the input "
+          "contains multiple architectures; use --arch to select a single "
+          "architecture",
+          SymtabPath.str().c_str());
+
     for (auto &Obj : FilterObjs) {
-      Triple ObjTriple(Obj->getArchTriple());
-      auto ArchName = ObjTriple.getArchName();
+      std::string ArchName = getArchitectureName(*Obj);
+      std::unique_ptr<ObjectFile> OwnedSymtabObj;
+      auto SymtabObjOrErr = resolveSymtabObject(ArchName, SymtabBinary,
+                                                SymtabPath, OwnedSymtabObj);
+      if (!SymtabObjOrErr)
+        return SymtabObjOrErr.takeError();
+
       std::string ArchOutFile(OutFile);
       // If we are only handling a single architecture, then we will use the
       // normal output file. If we are handling multiple architectures append
       // the architecture name to the end of the out file path so that we
       // don't overwrite the previous architecture's gsym file.
-      if (FilterObjs.size() > 1) {
+      if (MultipleArchitecturesSelected) {
         ArchOutFile.append(1, '.');
-        ArchOutFile.append(ArchName.str());
+        ArchOutFile.append(ArchName);
       }
       outs() << "Output file (" << ArchName << "): " << ArchOutFile << "\n";
-      if (auto Err = handleObjectFile(*Obj, ArchOutFile))
+      if (auto Err = handleObjectFile(*Obj, *SymtabObjOrErr, SymtabPath,
+                                      ArchOutFile, Out))
         return Err;
     }
   }
@@ -374,15 +649,35 @@ static llvm::Error handleBuffer(StringRef Filename, MemoryBufferRef Buffer,
 }
 
 static llvm::Error handleFileConversionToGSYM(StringRef Filename,
-                                              const std::string &OutFile) {
+                                              const std::string &OutFile,
+                                              OutputAggregator &Out) {
   ErrorOr<std::unique_ptr<MemoryBuffer>> BuffOrErr =
-      MemoryBuffer::getFileOrSTDIN(Filename);
+      MemoryBuffer::getFileOrSTDIN(Filename, /*IsText=*/true);
   error(Filename, BuffOrErr.getError());
   std::unique_ptr<MemoryBuffer> Buffer = std::move(BuffOrErr.get());
-  return handleBuffer(Filename, *Buffer, OutFile);
+
+  std::unique_ptr<MemoryBuffer> SymtabBuffer;
+  std::unique_ptr<Binary> SymtabBinary;
+  if (!SymtabFilename.empty()) {
+    auto SymtabBufOrErr =
+        MemoryBuffer::getFile(SymtabFilename, /*IsText=*/true);
+    if (!SymtabBufOrErr)
+      return createStringError(SymtabBufOrErr.getError(),
+                               "failed to open symbol table file '%s'",
+                               SymtabFilename.c_str());
+
+    SymtabBuffer = std::move(*SymtabBufOrErr);
+    auto SymtabBinOrErr = object::createBinary(*SymtabBuffer);
+    if (!SymtabBinOrErr)
+      return SymtabBinOrErr.takeError();
+    SymtabBinary = std::move(*SymtabBinOrErr);
+  }
+
+  return handleBuffer(Filename, *Buffer, SymtabBinary.get(), SymtabFilename,
+                      OutFile, Out);
 }
 
-static llvm::Error convertFileToGSYM(raw_ostream &OS) {
+static llvm::Error convertFileToGSYM(OutputAggregator &Out) {
   // Expand any .dSYM bundles to the individual object files contained therein.
   std::vector<std::string> Objects;
   std::string OutFile = OutputFilename;
@@ -391,7 +686,7 @@ static llvm::Error convertFileToGSYM(raw_ostream &OS) {
     OutFile += ".gsym";
   }
 
-  OS << "Input file: " << ConvertFilename << "\n";
+  Out << "Input file: " << ConvertFilename << "\n";
 
   if (auto DsymObjectsOrErr =
           MachOObjectFile::findDsymObjectMembers(ConvertFilename)) {
@@ -403,35 +698,110 @@ static llvm::Error convertFileToGSYM(raw_ostream &OS) {
     error(DsymObjectsOrErr.takeError());
   }
 
-  for (auto Object : Objects) {
-    if (auto Err = handleFileConversionToGSYM(Object, OutFile))
+  for (StringRef Object : Objects)
+    if (Error Err = handleFileConversionToGSYM(Object, OutFile, Out))
       return Err;
-  }
   return Error::success();
 }
 
 static void doLookup(GsymReader &Gsym, uint64_t Addr, raw_ostream &OS) {
-  if (auto Result = Gsym.lookup(Addr)) {
-    // If verbose is enabled dump the full function info for the address.
-    if (Verbose) {
-      if (auto FI = Gsym.getFunctionInfo(Addr)) {
-        OS << "FunctionInfo for " << HEX64(Addr) << ":\n";
-        Gsym.dump(OS, *FI);
-        OS << "\nLookupResult for " << HEX64(Addr) << ":\n";
+  if (UseMergedFunctions) {
+    if (auto Results = Gsym.lookupAll(Addr)) {
+      // If we have filters, count matching results first
+      size_t NumMatching = Results->size();
+      if (!MergedFunctionsFilters.empty()) {
+        NumMatching = 0;
+        for (const auto &Result : *Results) {
+          bool Matches = false;
+          for (const auto &Filter : MergedFunctionsFilters) {
+            Regex Pattern(Filter);
+            if (Pattern.match(Result.FuncName)) {
+              Matches = true;
+              break;
+            }
+          }
+          if (Matches)
+            NumMatching++;
+        }
       }
+
+      OS << "Found " << NumMatching << " function"
+         << (NumMatching != 1 ? "s" : "") << " at address " << HEX64(Addr)
+         << ":\n";
+
+      for (size_t i = 0; i < Results->size(); ++i) {
+        // Skip if doesn't match any filter
+        if (!MergedFunctionsFilters.empty()) {
+          bool Matches = false;
+          for (const auto &Filter : MergedFunctionsFilters) {
+            Regex Pattern(Filter);
+            if (Pattern.match(Results->at(i).FuncName)) {
+              Matches = true;
+              break;
+            }
+          }
+          if (!Matches)
+            continue;
+        }
+
+        OS << "   " << Results->at(i);
+
+        if (i != Results->size() - 1)
+          OS << "\n";
+      }
+    } else {
+      if (Verbose)
+        OS << "\nLookupResult for " << HEX64(Addr) << ":\n";
+      OS << HEX64(Addr) << ": ";
+      logAllUnhandledErrors(Results.takeError(), OS, "error: ");
     }
-    OS << Result.get();
-  } else {
+  } else { /* UseMergedFunctions == false */
+    if (auto Result = Gsym.lookup(Addr)) {
+      // If verbose is enabled dump the full function info for the address.
+      if (Verbose) {
+        if (auto FI = Gsym.getFunctionInfo(Addr)) {
+          OS << "FunctionInfo for " << HEX64(Addr) << ":\n";
+          Gsym.dump(OS, *FI);
+          OS << "\nLookupResult for " << HEX64(Addr) << ":\n";
+        }
+      }
+      // Don't print call site info if --merged-functions is not specified.
+      Result->CallSiteFuncRegex.clear();
+      OS << Result.get();
+    } else {
+      if (Verbose)
+        OS << "\nLookupResult for " << HEX64(Addr) << ":\n";
+      OS << HEX64(Addr) << ": ";
+      logAllUnhandledErrors(Result.takeError(), OS, "error: ");
+    }
     if (Verbose)
-      OS << "\nLookupResult for " << HEX64(Addr) << ":\n";
-    OS << HEX64(Addr) << ": ";
-    logAllUnhandledErrors(Result.takeError(), OS, "error: ");
+      OS << "\n";
   }
-  if (Verbose)
-    OS << "\n";
 }
 
-int main(int argc, char const *argv[]) {
+static llvm::Error benchmarkReader(StringRef GSYMPath, uint32_t Start,
+                                   uint32_t Stride) {
+  auto Gsym = GsymReader::openFile(GSYMPath);
+  if (!Gsym)
+    return Gsym.takeError();
+  uint32_t N = (*Gsym)->getNumAddresses();
+  uint32_t NumLookups = 0;
+  for (uint32_t I = Start; I < N; I += Stride) {
+    auto Addr = (*Gsym)->getAddress(I);
+    if (!Addr)
+      return createStringError(std::errc::invalid_argument,
+                               "failed to extract address[%u]", I);
+    auto LR = (*Gsym)->lookup(*Addr);
+    if (!LR)
+      return LR.takeError();
+    ++NumLookups;
+  }
+  outs() << "Benchmarked " << NumLookups << " lookups (out of " << N
+         << " addresses) in \"" << GSYMPath << "\"\n";
+  return Error::success();
+}
+
+int llvm_gsymutil_main(int argc, char **argv, const llvm::ToolContext &) {
   // Print a stack trace if we signal out.
   sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
@@ -439,24 +809,18 @@ int main(int argc, char const *argv[]) {
 
   llvm::InitializeAllTargets();
 
-  const char *Overview =
-      "A tool for dumping, searching and creating GSYM files.\n\n"
-      "Specify one or more GSYM paths as arguments to dump all of the "
-      "information in each GSYM file.\n"
-      "Specify a single GSYM file along with one or more --lookup options to "
-      "lookup addresses within that GSYM file.\n"
-      "Use the --convert option to specify a file with option --out-file "
-      "option to convert to GSYM format.\n";
-  HideUnrelatedOptions({&GeneralOptions, &ConversionOptions, &LookupOptions});
-  cl::ParseCommandLineOptions(argc, argv, Overview);
-
-  if (Help) {
-    PrintHelpMessage(/*Hidden =*/false, /*Categorized =*/true);
-    return 0;
-  }
+  parseArgs(argc, argv);
 
   raw_ostream &OS = outs();
 
+  if (BenchmarkReader) {
+    for (const auto &GSYMPath : InputFilenames)
+      if (auto Err = benchmarkReader(GSYMPath, BenchmarkStart, BenchmarkStride))
+        error("Benchmark failed: ", std::move(Err));
+    return EXIT_SUCCESS;
+  }
+
+  OutputAggregator Aggregation(&OS, Quiet);
   if (!ConvertFilename.empty()) {
     // Convert DWARF to GSYM
     if (!InputFilenames.empty()) {
@@ -465,8 +829,36 @@ int main(int argc, char const *argv[]) {
       return 1;
     }
     // Call error() if we have an error and it will exit with a status of 1
-    if (auto Err = convertFileToGSYM(OS))
+    if (auto Err = convertFileToGSYM(Aggregation))
       error("DWARF conversion failed: ", std::move(Err));
+
+    // Report the errors from aggregator:
+    Aggregation.EnumerateResults([&](StringRef category, unsigned count) {
+      OS << category << " occurred " << count << " time(s)\n";
+    });
+    if (!JsonSummaryFile.empty()) {
+      std::error_code EC;
+      raw_fd_ostream JsonStream(JsonSummaryFile, EC, sys::fs::OF_Text);
+      if (EC) {
+        OS << "error opening aggregate error json file '" << JsonSummaryFile
+           << "' for writing: " << EC.message() << '\n';
+        return 1;
+      }
+
+      llvm::json::Object Categories;
+      uint64_t ErrorCount = 0;
+      Aggregation.EnumerateResults([&](StringRef Category, unsigned Count) {
+        llvm::json::Object Val;
+        Val.try_emplace("count", Count);
+        Categories.try_emplace(Category, std::move(Val));
+        ErrorCount += Count;
+      });
+      llvm::json::Object RootNode;
+      RootNode.try_emplace("error-categories", std::move(Categories));
+      RootNode.try_emplace("error-count", ErrorCount);
+
+      JsonStream << llvm::json::Value(std::move(RootNode));
+    }
     return 0;
   }
 
@@ -480,7 +872,7 @@ int main(int argc, char const *argv[]) {
 
     std::string InputLine;
     std::string CurrentGSYMPath;
-    std::optional<Expected<GsymReader>> CurrentGsym;
+    std::unique_ptr<GsymReader> CurrentGsym;
 
     while (std::getline(std::cin, InputLine)) {
       // Strip newline characters.
@@ -493,9 +885,10 @@ int main(int argc, char const *argv[]) {
           llvm::StringRef{StrippedInputLine}.split(' ');
 
       if (GSYMPath != CurrentGSYMPath) {
-        CurrentGsym = GsymReader::openFile(GSYMPath);
-        if (!*CurrentGsym)
-          error(GSYMPath, CurrentGsym->takeError());
+        auto GsymOrErr = GsymReader::openFile(GSYMPath);
+        if (!GsymOrErr)
+          error(GSYMPath, GsymOrErr.takeError());
+        CurrentGsym = std::move(*GsymOrErr);
         CurrentGSYMPath = GSYMPath;
       }
 
@@ -506,7 +899,7 @@ int main(int argc, char const *argv[]) {
         return 1;
       }
 
-      doLookup(**CurrentGsym, Addr, OS);
+      doLookup(*CurrentGsym, Addr, OS);
 
       OS << "\n";
       OS.flush();
@@ -521,15 +914,20 @@ int main(int argc, char const *argv[]) {
     if (!Gsym)
       error(GSYMPath, Gsym.takeError());
 
+    if (ShowStatistics) {
+      (*Gsym)->dumpStatistics(OS, StatisticsFormat, GSYMPath);
+      continue;
+    }
+
     if (LookupAddresses.empty()) {
-      Gsym->dump(outs());
+      (*Gsym)->dump(outs());
       continue;
     }
 
     // Lookup an address in a GSYM file and print any matches.
     OS << "Looking up addresses in \"" << GSYMPath << "\":\n";
     for (auto Addr : LookupAddresses) {
-      doLookup(*Gsym, Addr, OS);
+      doLookup(**Gsym, Addr, OS);
     }
   }
   return EXIT_SUCCESS;

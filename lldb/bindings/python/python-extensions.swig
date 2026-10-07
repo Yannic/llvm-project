@@ -282,6 +282,60 @@ def command(command_name=None, doc=None):
 
     return callable
 
+
+def _add_formatter(cmd: str, type_name: str, options: dict):
+    import shlex
+
+    type_name = shlex.quote(type_name)
+
+    # Convert `option=True` to "--option", all others to "--option value".
+    flag_list = []
+    for key, value in options.items():
+        flag = key.replace("_", "-")
+        if value is True:
+            flag_list.append(f"--{flag}")
+        else:
+            flag_list.extend((f"--{flag}", value))
+
+    def decorator(obj):
+        qualified = f"{obj.__module__}.{obj.__qualname__}"
+        if isinstance(obj, type):
+            flag_list.extend(("--python-class", qualified))
+        elif callable(obj):
+            flag_list.extend(("--python-function", qualified))
+
+        result = SBCommandReturnObject()
+        flags = " ".join(flag_list)
+        interp = debugger.GetCommandInterpreter()
+        interp.HandleCommand(f"{cmd} {flags} {type_name}", result)
+        if not result.Succeeded():
+            raise RuntimeError(result.GetError())
+        return obj
+
+    return decorator
+
+
+def summary(type_name, **kwargs):
+    """A decorator that registers a function as an LLDB type summary provider.
+
+    @lldb.summary("MyType")
+    def MyTypeSummary(valobj, _):
+        return "summary string"
+    """
+    return _add_formatter("type summary add", type_name, kwargs)
+
+
+def synthetic(type_name, **kwargs):
+    """A decorator that registers a class as an LLDB synthetic child provider.
+
+    @lldb.synthetic("MyType")
+    class MyTypeSynthetic:
+        def __init__(self, valobj, _):
+            ...
+    """
+    return _add_formatter("type synthetic add", type_name, kwargs)
+
+
 class declaration(object):
     '''A class that represents a source declaration location with file, line and column.'''
     def __init__(self, file, line, col):
@@ -304,8 +358,15 @@ class value_iter(object):
     def next(self):
         return self.__next__()
 
+    def __eq__(self, other):
+        return not self.__ne__(other)
+
+    def __len__(self):
+        return self.length
+
     def __init__(self,value):
         self.index = 0
+        self.length = 0
         self.sbvalue = value
         if type(self.sbvalue) is value:
             self.sbvalue = self.sbvalue.sbvalue
@@ -327,9 +388,6 @@ class value(object):
         print rectangle_array[5].origin.x'''
     def __init__(self, sbvalue):
         self.sbvalue = sbvalue
-
-    def __nonzero__(self):
-        return self.sbvalue.__nonzero__()
 
     def __bool__(self):
         return self.sbvalue.__bool__()
@@ -392,9 +450,6 @@ class value(object):
 
     def __or__(self, other):
         return int(self) | int(other)
-
-    def __div__(self, other):
-        return int(self) / int(other)
 
     def __truediv__(self, other):
         return int(self) / int(other)
@@ -485,7 +540,10 @@ class value(object):
         return complex (int(self))
 
     def __int__(self):
-        is_num,is_sign = is_numeric_type(self.sbvalue.GetType().GetCanonicalType().GetBasicType())
+        ty = self.sbvalue.GetType().GetCanonicalType()
+        if ty.IsPointerType():
+            return self.sbvalue.GetValueAsUnsigned()
+        is_num,is_sign = is_numeric_type(ty.GetBasicType())
         if is_num and not is_sign: return self.sbvalue.GetValueAsUnsigned()
         return self.sbvalue.GetValueAsSigned()
 
@@ -494,12 +552,6 @@ class value(object):
 
     def __float__(self):
         return float (self.sbvalue.GetValueAsSigned())
-
-    def __oct__(self):
-        return '0%o' % self.sbvalue.GetValueAsUnsigned()
-
-    def __hex__(self):
-        return '0x%x' % self.sbvalue.GetValueAsUnsigned()
 
     def __len__(self):
         return self.sbvalue.GetNumChildren()
@@ -546,6 +598,13 @@ class SBSyntheticValueProvider(object):
     def has_children(self):
         return False
 
+    def __len__(self):
+      return self.num_children()
+
+    def __iter__(self):
+      '''Iterate over all children in a lldb.SBSyntheticValueProvider object.'''
+      for i in range(self.num_children()):
+          yield self.get_child_at_index(i)
 
 %}
 
@@ -581,6 +640,7 @@ def is_numeric_type(basic_type):
     if basic_type == eBasicTypeFloat: return (True,True)
     if basic_type == eBasicTypeDouble: return (True,True)
     if basic_type == eBasicTypeLongDouble: return (True,True)
+    if basic_type == eBasicTypeFloat128: return (True,True)
     if basic_type == eBasicTypeFloatComplex: return (True,True)
     if basic_type == eBasicTypeDoubleComplex: return (True,True)
     if basic_type == eBasicTypeLongDoubleComplex: return (True,True)

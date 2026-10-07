@@ -42,7 +42,6 @@ namespace test2 {
   }
 }
 
-// rdar: // 8382559
 namespace radar8382559 {
   void func(bool& outHasProperty);
 
@@ -102,8 +101,6 @@ namespace test5 {
 }
 
 
-// rdar://16356628
-//
 // Ensure that we can end function bodies while parsing an
 // expression that requires an explicitly-tracked cleanup object
 // (i.e. a block literal).
@@ -165,4 +162,24 @@ void static_data_member() {
       };
     };
   };
+}
+
+namespace test8{
+  class X{
+    __block static int x; // expected-error {{'__block' is not allowed on a C++ static data member}}
+  };
+}
+
+namespace gh189247 {
+  template<void (^)()> struct A; // expected-error {{a non-type template parameter cannot have type 'void (^)()'}}
+}
+
+namespace GH115280 {
+struct s {
+  int i = 0;
+  int j = 0;
+  void m(int i = ^{ static int i = 0; return ++i; }(),  // expected-note {{'i' declared here}}
+         int j = ^{ #line 7                             // expected-error {{expected expression}}
+         static int i = 0; return ++i; }()) { }         // expected-error {{reference to local variable 'i' declared in enclosing function 'GH115280::s::m'}}
+};
 }

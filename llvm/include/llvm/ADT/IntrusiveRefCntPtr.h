@@ -60,6 +60,7 @@
 #ifndef LLVM_ADT_INTRUSIVEREFCNTPTR_H
 #define LLVM_ADT_INTRUSIVEREFCNTPTR_H
 
+#include "llvm/Support/Compiler.h"
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -93,6 +94,8 @@ protected:
 #endif
 
 public:
+  unsigned UseCount() const { return RefCount; }
+
   void Retain() const { ++RefCount; }
 
   void Release() const {
@@ -124,6 +127,8 @@ protected:
 #endif
 
 public:
+  unsigned UseCount() const { return RefCount.load(std::memory_order_relaxed); }
+
   void Retain() const { RefCount.fetch_add(1, std::memory_order_relaxed); }
 
   void Release() const {
@@ -155,6 +160,7 @@ public:
 /// Bar.h could use IntrusiveRefCntPtr<Foo>, although it still couldn't call any
 /// functions on Foo itself, because Foo would be an incomplete type.
 template <typename T> struct IntrusiveRefCntPtrInfo {
+  static unsigned useCount(const T *obj) { return obj->UseCount(); }
   static void retain(T *obj) { obj->Retain(); }
   static void release(T *obj) { obj->Release(); }
 };
@@ -165,7 +171,7 @@ template <typename T> struct IntrusiveRefCntPtrInfo {
 /// This class increments its pointee's reference count when it is created, and
 /// decrements its refcount when it's destroyed (or is changed to point to a
 /// different object).
-template <typename T> class IntrusiveRefCntPtr {
+template <typename T> class LLVM_ATTRIBUTE_WARN_UNUSED IntrusiveRefCntPtr {
   T *Obj = nullptr;
 
 public:
@@ -212,6 +218,10 @@ public:
   }
 
   void resetWithoutRelease() { Obj = nullptr; }
+
+  unsigned useCount() const {
+    return Obj ? IntrusiveRefCntPtrInfo<T>::useCount(Obj) : 0;
+  }
 
 private:
   void retain() {

@@ -216,3 +216,272 @@ cond.end:
   %cond = phi i32 [ %xor, %cond.true ], [ 0, %entry ]
   ret i32 %cond
 }
+
+define i32 @xor_simplify_by_dci(i32 %x, i32 %y, i1 %c) {
+; CHECK-LABEL: @xor_simplify_by_dci(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[CMP:%.*]] = icmp eq i32 [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    br i1 [[CMP]], label [[COND_TRUE:%.*]], label [[COND_END:%.*]]
+; CHECK:       cond.true:
+; CHECK-NEXT:    br i1 [[C:%.*]], label [[XORBB:%.*]], label [[COND_END]]
+; CHECK:       xorbb:
+; CHECK-NEXT:    [[XOR:%.*]] = xor i32 [[X]], [[Y]]
+; CHECK-NEXT:    br label [[COND_END]]
+; CHECK:       cond.end:
+; CHECK-NEXT:    [[COND:%.*]] = phi i32 [ [[XOR]], [[XORBB]] ], [ 0, [[ENTRY:%.*]] ], [ 0, [[COND_TRUE]] ]
+; CHECK-NEXT:    ret i32 [[COND]]
+;
+entry:
+  %cmp = icmp eq i32 %x, %y
+  br i1 %cmp, label %cond.true, label %cond.end
+
+cond.true:
+  br i1 %c, label %xorbb, label %cond.end
+
+xorbb:
+  %xor = xor i32 %x, %y
+  br label %cond.end
+
+cond.end:
+  %cond = phi i32 [ %xor, %xorbb ], [ 0, %entry ], [0, %cond.true]
+  ret i32 %cond
+}
+
+define void @icmp_simplify_by_dci(i32 %a, i32 %b, i1 %x) {
+; CHECK-LABEL: @icmp_simplify_by_dci(
+; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[A:%.*]], [[B:%.*]]
+; CHECK-NEXT:    br i1 [[CMP1]], label [[END:%.*]], label [[TAKEN:%.*]]
+; CHECK:       taken:
+; CHECK-NEXT:    br i1 [[X:%.*]], label [[SELBB:%.*]], label [[END]]
+; CHECK:       selbb:
+; CHECK-NEXT:    [[CMP2:%.*]] = icmp ne i32 [[A]], [[B]]
+; CHECK-NEXT:    [[C:%.*]] = select i1 [[CMP2]], i32 20, i32 0
+; CHECK-NEXT:    call void @foo(i32 [[C]])
+; CHECK-NEXT:    br label [[END]]
+; CHECK:       end:
+; CHECK-NEXT:    ret void
+;
+  %cmp1 = icmp eq i32 %a, %b
+  br i1 %cmp1, label %end, label %taken
+
+taken:
+  br i1 %x, label %selbb, label %end
+
+selbb:
+  %cmp2 = icmp ne i32 %a, %b
+  %c = select i1 %cmp2, i32 20, i32 0
+  call void @foo(i32 %c)
+  br label %end
+
+end:
+  ret void
+}
+
+declare void @foo(i32)
+
+
+define i1 @simplify_fcmp_implied_by_dom_cond_range_true(float %x) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_range_true(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], 0.000000e+00
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    ret i1 true
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, 0.0
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp olt float %x, 1.0
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_in_else_implied_by_dom_cond_range_true(float %x) {
+; CHECK-LABEL: @simplify_fcmp_in_else_implied_by_dom_cond_range_true(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], 1.000000e+00
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    ret i1 true
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 true
+;
+  %cmp = fcmp olt float %x, 1.0
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  ret i1 true
+
+if.else:
+  %cmp2 = fcmp uge float %x, 0.5
+  ret i1 %cmp2
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_range_false(float %x) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_range_false(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], 0.000000e+00
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    ret i1 false
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, 0.0
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp ogt float %x, 1.0
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_pred_true(float %x, float %y) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_pred_true(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    ret i1 true
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, %y
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp ole float %x, %y
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_pred_false(float %x, float %y) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_pred_false(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    ret i1 false
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, %y
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp ogt float %x, %y
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_pred_commuted(float %x, float %y) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_pred_commuted(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    ret i1 true
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, %y
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp oge float %y, %x
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+; Negative tests
+
+define i1 @simplify_fcmp_implied_by_dom_cond_wrong_range(float %x) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_wrong_range(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], 0.000000e+00
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    [[CMP2:%.*]] = fcmp olt float [[X]], -1.000000e+00
+; CHECK-NEXT:    ret i1 [[CMP2]]
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, 0.0
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp olt float %x, -1.0
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_range_mismatched_operand(float %x, float %y) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_range_mismatched_operand(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], 0.000000e+00
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    [[CMP2:%.*]] = fcmp olt float [[Y:%.*]], 1.000000e+00
+; CHECK-NEXT:    ret i1 [[CMP2]]
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, 0.0
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp olt float %y, 1.0
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_wrong_pred(float %x, float %y) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_wrong_pred(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp ole float [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    [[CMP2:%.*]] = fcmp olt float [[X]], [[Y]]
+; CHECK-NEXT:    ret i1 [[CMP2]]
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp ole float %x, %y
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp olt float %x, %y
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}
+
+define i1 @simplify_fcmp_implied_by_dom_cond_pred_mismatched_operand(float %x, float %y, float %z) {
+; CHECK-LABEL: @simplify_fcmp_implied_by_dom_cond_pred_mismatched_operand(
+; CHECK-NEXT:    [[CMP:%.*]] = fcmp olt float [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    br i1 [[CMP]], label [[IF_THEN:%.*]], label [[IF_ELSE:%.*]]
+; CHECK:       if.then:
+; CHECK-NEXT:    [[CMP2:%.*]] = fcmp ole float [[X]], [[Z:%.*]]
+; CHECK-NEXT:    ret i1 [[CMP2]]
+; CHECK:       if.else:
+; CHECK-NEXT:    ret i1 false
+;
+  %cmp = fcmp olt float %x, %y
+  br i1 %cmp, label %if.then, label %if.else
+
+if.then:
+  %cmp2 = fcmp ole float %x, %z
+  ret i1 %cmp2
+
+if.else:
+  ret i1 false
+}

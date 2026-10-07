@@ -1,8 +1,8 @@
-; RUN: opt -mtriple=thumbv8.1m.main-none-none-eabi -hardware-loops %s -S -o - | \
+; RUN: opt -mtriple=thumbv8.1m.main-none-none-eabi -passes=hardware-loops %s -S -o - | \
 ; RUN:     FileCheck %s
 ; RUN: opt -mtriple=thumbv8.1m.main -passes=loop-unroll -unroll-remainder=false -S < %s | \
 ; RUN:     llc -mtriple=thumbv8.1m.main | FileCheck %s --check-prefix=CHECK-UNROLL
-; RUN: opt -mtriple=thumbv8.1m.main-none-none-eabi -hardware-loops \
+; RUN: opt -mtriple=thumbv8.1m.main-none-none-eabi -passes=hardware-loops \
 ; RUN:     -pass-remarks-analysis=hardware-loops  %s -S -o - 2>&1 | \
 ; RUN:     FileCheck %s --check-prefix=CHECK-REMARKS
 
@@ -14,7 +14,7 @@
 ; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: it's not profitable to create a hardware-loop
 ; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: it's not profitable to create a hardware-loop
 ; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: loop is not a candidate
-; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: nested hardware-loops not supported
+; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: loop is not a candidate
 ; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: it's not profitable to create a hardware-loop
 ; CHECK-REMARKS: remark: <unknown>:0:0: hardware-loop not created: it's not profitable to create a hardware-loop
 
@@ -321,10 +321,10 @@ for.inc:                                          ; preds = %sw.bb, %sw.bb1, %fo
 ; CHECK-UNROLL-NOT: dls
 ; CHECK-UNROLL:     [[LOOP:.LBB[0-9_]+]]: @ %for.body
 ; CHECK-UNROLL:     le lr, [[LOOP]]
-; CHECK-UNROLL:     wls lr, r12, [[EXIT:.LBB[0-9_]+]]
+; CHECK-UNROLL:     dls lr, r12
 ; CHECK-UNROLL:     [[EPIL:.LBB[0-9_]+]]:
 ; CHECK-UNROLL:     le lr, [[EPIL]]
-; CHECK-UNROLL-NEXT: [[EXIT]]
+; CHECK-UNROLL-NEXT: {{\.LBB[0-9_]+}}: @ %for.cond.cleanup
 
 define void @unroll_inc_int(ptr nocapture %a, ptr nocapture readonly %b, ptr nocapture readonly %c, i32 %N) {
 entry:
@@ -357,10 +357,10 @@ for.body:
 ; CHECK-UNROLL-NOT: dls
 ; CHECK-UNROLL:     [[LOOP:.LBB[0-9_]+]]: @ %for.body
 ; CHECK-UNROLL:     le lr, [[LOOP]]
-; CHECK-UNROLL:     wls lr, r12, [[EPIL_EXIT:.LBB[0-9_]+]]
+; CHECK-UNROLL:     dls lr, r12
 ; CHECK-UNROLL: [[EPIL:.LBB[0-9_]+]]:
 ; CHECK-UNROLL:     le lr, [[EPIL]]
-; CHECK-UNROLL: [[EPIL_EXIT]]:
+; CHECK-UNROLL:     {{\.LBB[0-9_]+}}: @ %for.cond.cleanup
 ; CHECK-UNROLL:     pop
 define void @unroll_inc_unsigned(ptr nocapture %a, ptr nocapture readonly %b, ptr nocapture readonly %c, i32 %N) {
 entry:

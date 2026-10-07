@@ -40,15 +40,11 @@ void (*h2)(int (*f2)(y, __attribute__(()) x));    // expected-error {{expected i
 void (*h3)(void (*f3)(__attribute__(()) x));   // expected-error {{type specifier missing, defaults to 'int'}}
 void (*h4)(void (*f4)(__attribute__(())));  // expected-error {{expected parameter declarator}}
 
-
-
-// rdar://6131260
 int foo42(void) {
   int x, __attribute__((unused)) y, z;
   return 0;
 }
 
-// rdar://6096491
 void __attribute__((noreturn)) d0(void), __attribute__((noreturn)) d1(void);
 
 void d2(void) __attribute__((noreturn)), d3(void) __attribute__((noreturn));
@@ -120,3 +116,8 @@ __attribute__(()) struct t;
 void f5() {
   __attribute__(()) struct t;
 }
+
+// GH225045: attribute recovery must not parse a C++ direct initializer in C.
+// expected-error@+2 {{expected '(' after 'attribute'}}
+// expected-error@+1 {{expected ';' after top level declarator}}
+int a __attribute__ ) (1, 2);

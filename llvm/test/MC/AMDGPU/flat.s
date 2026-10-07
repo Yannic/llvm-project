@@ -1,9 +1,8 @@
-// RUN: llvm-mc -arch=amdgcn -mcpu=bonaire -show-encoding %s | FileCheck %s --check-prefix=CIVI --check-prefix=CI
-// RUN: not llvm-mc -arch=amdgcn -mcpu=tonga -show-encoding %s | FileCheck %s --check-prefix=CIVI --check-prefix=VI
+// RUN: llvm-mc -triple=amdgpu7.04 -show-encoding %s | FileCheck %s --check-prefix=CIVI --check-prefix=CI
+// RUN: not llvm-mc -triple=amdgpu8.02 -show-encoding %s | FileCheck %s --check-prefix=CIVI --check-prefix=VI
 
-// RUN: not llvm-mc -arch=amdgcn -mcpu=tonga %s 2>&1 | FileCheck %s --check-prefix=NOVI --implicit-check-not=error:
-// RUN: not llvm-mc -arch=amdgcn %s 2>&1 | FileCheck %s --check-prefix=NOSI --implicit-check-not=error:
-// RUN: not llvm-mc -arch=amdgcn -mcpu=tahiti %s 2>&1 | FileCheck %s --check-prefix=NOSI --implicit-check-not=error:
+// RUN: not llvm-mc -triple=amdgpu8.02 %s -filetype=null 2>&1 | FileCheck %s --check-prefix=NOVI --implicit-check-not=error:
+// RUN: not llvm-mc -triple=amdgpu6.00 %s -filetype=null 2>&1 | FileCheck %s --check-prefix=NOSI --implicit-check-not=error:
 
 //===----------------------------------------------------------------------===//
 // Operands

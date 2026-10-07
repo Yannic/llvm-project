@@ -1,330 +1,26 @@
 // RUN: %check_clang_tidy %s modernize-use-emplace %t -- \
 // RUN:   -config="{CheckOptions: \
-// RUN:             [{key: modernize-use-emplace.ContainersWithPushBack, \
-// RUN:               value: '::std::vector; ::std::list; ::std::deque; llvm::LikeASmallVector'}, \
-// RUN:              {key: modernize-use-emplace.TupleTypes, \
-// RUN:               value: '::std::pair; std::tuple; ::test::Single'}, \
-// RUN:              {key: modernize-use-emplace.TupleMakeFunctions, \
-// RUN:               value: '::std::make_pair; ::std::make_tuple; ::test::MakeSingle'}] \
-// RUN:             }"
-
-namespace std {
-template <typename>
-class initializer_list {
-public:
-  initializer_list() noexcept {}
-};
-
-template <typename T1, typename T2>
-class pair {
-public:
-  pair() = default;
-  pair(const pair &) = default;
-  pair(pair &&) = default;
-
-  pair(const T1 &, const T2 &) {}
-  pair(T1 &&, T2 &&) {}
-
-  template <typename U1, typename U2>
-  pair(const pair<U1, U2> &){};
-  template <typename U1, typename U2>
-  pair(pair<U1, U2> &&){};
-};
-
-template <typename T>
-class vector {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  vector() = default;
-  vector(initializer_list<T>) {}
-
-  void push_back(const T &) {}
-  void push_back(T &&) {}
-
-  template <typename... Args>
-  void emplace_back(Args &&... args){};
-  template <typename... Args>
-  iterator emplace(const_iterator pos, Args &&...args){};
-  ~vector();
-};
-
-template <typename T>
-class list {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  void push_front(const T &) {}
-  void push_front(T &&) {}
-
-  void push_back(const T &) {}
-  void push_back(T &&) {}
-
-  template <typename... Args>
-  iterator emplace(const_iterator pos, Args &&...args){};
-  template <typename... Args>
-  void emplace_back(Args &&... args){};
-  template <typename... Args>
-  void emplace_front(Args &&...args){};
-  ~list();
-};
-
-template <typename T>
-class deque {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  void push_back(const T &) {}
-  void push_back(T &&) {}
-
-  void push_front(const T &) {}
-  void push_front(T &&) {}
-
-  template <typename... Args>
-  iterator emplace(const_iterator pos, Args &&...args){};
-  template <typename... Args>
-  void emplace_back(Args &&... args){};
-  template <typename... Args>
-  void emplace_front(Args &&...args){};
-  ~deque();
-};
-
-template <typename T>
-class forward_list {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  void push_front(const T &) {}
-  void push_front(T &&) {}
-
-  template <typename... Args>
-  void emplace_front(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_after(const_iterator pos, Args &&...args){};
-};
-
-template <typename T>
-class set {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename Key, typename T>
-class map {
-public:
-  using value_type = std::pair<Key, T>;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename T>
-class multiset {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename Key, typename T>
-class multimap {
-public:
-  using value_type = std::pair<Key, T>;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename T>
-class unordered_set {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename Key, typename T>
-class unordered_map {
-public:
-  using value_type = std::pair<Key, T>;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename T>
-class unordered_multiset {
-public:
-  using value_type = T;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename Key, typename T>
-class unordered_multimap {
-public:
-  using value_type = std::pair<Key, T>;
-
-  class iterator {};
-  class const_iterator {};
-  const_iterator begin() { return const_iterator{}; }
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-  template <typename... Args>
-  iterator emplace_hint(const_iterator pos, Args &&...args){};
-};
-
-template <typename T>
-class stack {
-public:
-  using value_type = T;
-
-  void push(const T &) {}
-  void push(T &&) {}
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-};
-
-template <typename T>
-class queue {
-public:
-  using value_type = T;
-
-  void push(const T &) {}
-  void push(T &&) {}
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-};
-
-template <typename T>
-class priority_queue {
-public:
-  using value_type = T;
-
-  void push(const T &) {}
-  void push(T &&) {}
-
-  template <typename... Args>
-  void emplace(Args &&...args){};
-};
-
-template <typename T>
-struct remove_reference { using type = T; };
-template <typename T>
-struct remove_reference<T &> { using type = T; };
-template <typename T>
-struct remove_reference<T &&> { using type = T; };
-
-template <typename T1, typename T2>
-pair<typename remove_reference<T1>::type, typename remove_reference<T2>::type>
-make_pair(T1 &&, T2 &&) {
-  return {};
-};
-
-template <typename... Ts>
-class tuple {
-public:
-  tuple() = default;
-  tuple(const tuple &) = default;
-  tuple(tuple &&) = default;
-
-  tuple(const Ts &...) {}
-  tuple(Ts &&...) {}
-
-  template <typename... Us>
-  tuple(const tuple<Us...> &){};
-  template <typename... Us>
-  tuple(tuple<Us...> &&) {}
-
-  template <typename U1, typename U2>
-  tuple(const pair<U1, U2> &) {
-    static_assert(sizeof...(Ts) == 2, "Wrong tuple size");
-  };
-  template <typename U1, typename U2>
-  tuple(pair<U1, U2> &&) {
-    static_assert(sizeof...(Ts) == 2, "Wrong tuple size");
-  };
-};
-
-template <typename... Ts>
-tuple<typename remove_reference<Ts>::type...> make_tuple(Ts &&...) {
-  return {};
-}
-
-template <typename T>
-class unique_ptr {
-public:
-  explicit unique_ptr(T *) {}
-  ~unique_ptr();
-};
-} // namespace std
+// RUN:             {modernize-use-emplace.ContainersWithPushBack: \
+// RUN:                '::std::vector; ::std::list; ::std::deque; llvm::LikeASmallVector', \
+// RUN:              modernize-use-emplace.TupleTypes: \
+// RUN:                '::std::pair; std::tuple; ::test::Single', \
+// RUN:              modernize-use-emplace.TupleMakeFunctions: \
+// RUN:                '::std::make_pair; ::std::make_tuple; ::test::MakeSingle'}}"
+
+#include <tuple>
+#include <deque>
+#include <forward_list>
+#include <list>
+#include <map>
+#include <queue>
+#include <set>
+#include <stack>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <memory>
+#include <vector>
 
 namespace llvm {
 template <typename T>
@@ -1169,4 +865,268 @@ void testPossibleFalsePositives() {
     operator char() const { return 0; }
   };
   v.emplace_back(std::make_pair<D, int>(Something(), 2));
+}
+
+struct InnerType {
+  InnerType();
+  InnerType(char const*);
+};
+
+struct NonTrivialNoCtor {
+  InnerType it;
+};
+
+struct NonTrivialWithVector {
+  std::vector<int> it;
+};
+
+struct NonTrivialWithIntAndVector {
+  int x;
+  std::vector<int> it;
+};
+
+struct NonTrivialWithCtor {
+  NonTrivialWithCtor();
+  NonTrivialWithCtor(std::vector<int> const&);
+};
+
+void testBracedInitTemporaries() {
+  std::vector<NonTrivialNoCtor> v1;
+
+  v1.push_back(NonTrivialNoCtor());
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back(NonTrivialNoCtor{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back({});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back(NonTrivialNoCtor{InnerType{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back({InnerType{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back(NonTrivialNoCtor{InnerType()});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back({InnerType()});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.push_back({{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+
+  v1.emplace_back(NonTrivialNoCtor());
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.emplace_back(NonTrivialNoCtor{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.emplace_back(NonTrivialNoCtor{InnerType{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+  v1.emplace_back(NonTrivialNoCtor{{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v1.emplace_back();
+
+  // These should not be noticed or fixed; after the correction, the code won't
+  // compile.
+  v1.push_back(NonTrivialNoCtor{""});
+  v1.push_back({""});
+  v1.push_back(NonTrivialNoCtor{InnerType{""}});
+  v1.push_back({InnerType{""}});
+  v1.emplace_back(NonTrivialNoCtor{""});
+
+  std::vector<NonTrivialWithVector> v2;
+
+  v2.push_back(NonTrivialWithVector());
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back(NonTrivialWithVector{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back({});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back(NonTrivialWithVector{std::vector<int>{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back({std::vector<int>{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back(NonTrivialWithVector{std::vector<int>()});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back({std::vector<int>()});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.push_back({{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+
+  v2.emplace_back(NonTrivialWithVector());
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.emplace_back(NonTrivialWithVector{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.emplace_back(NonTrivialWithVector{std::vector<int>{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+  v2.emplace_back(NonTrivialWithVector{{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v2.emplace_back();
+
+
+  // These should not be noticed or fixed; after the correction, the code won't
+  // compile.
+  v2.push_back(NonTrivialWithVector{{0}});
+  v2.push_back({{0}});
+  v2.push_back(NonTrivialWithVector{std::vector<int>{0}});
+  v2.push_back({std::vector<int>{0}});
+  v2.emplace_back(NonTrivialWithVector{std::vector<int>{0}});
+
+  std::vector<NonTrivialWithCtor> v3;
+
+  v3.push_back(NonTrivialWithCtor());
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back();
+  v3.push_back(NonTrivialWithCtor{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back();
+  v3.push_back({});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back();
+  v3.push_back(NonTrivialWithCtor{std::vector<int>()});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>());
+  v3.push_back(NonTrivialWithCtor{std::vector<int>{0}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>{0});
+  v3.push_back(NonTrivialWithCtor{std::vector<int>{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>{});
+  v3.push_back({std::vector<int>{0}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>{0});
+  v3.push_back({std::vector<int>{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:6: warning: use emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>{});
+
+  v3.emplace_back(NonTrivialWithCtor());
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v3.emplace_back();
+  v3.emplace_back(NonTrivialWithCtor{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v3.emplace_back();
+  v3.emplace_back(NonTrivialWithCtor{std::vector<int>{}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>{});
+  v3.emplace_back(NonTrivialWithCtor{std::vector<int>{0}});
+  // CHECK-MESSAGES: :[[@LINE-1]]:19: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: v3.emplace_back(std::vector<int>{0});
+
+  // These should not be noticed or fixed; after the correction, the code won't
+  // compile.
+  v3.push_back(NonTrivialWithCtor{{0}});
+  v3.push_back(NonTrivialWithCtor{{}});
+  v3.push_back({{0}});
+  v3.push_back({{}});
+
+  std::vector<NonTrivialWithIntAndVector> v4;
+
+  // These should not be noticed or fixed; after the correction, the code won't
+  // compile.
+  v4.push_back(NonTrivialWithIntAndVector{1, {}});
+  v4.push_back(NonTrivialWithIntAndVector{});
+  v4.push_back({});
+}
+
+void testWithPointerTypes() {
+  std::list<Something> l;
+  std::list<Something>* lp = &l;
+  std::stack<Something> s;
+  std::stack<Something>* sp;
+
+  lp->push_back(Something(1, 2));
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_back instead of push_back [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_back(1, 2);
+  lp->push_front(Something(1, 2));
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_front instead of push_front [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_front(1, 2);
+  sp->push(Something(1, 2));
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace instead of push [modernize-use-emplace]
+  // CHECK-FIXES: sp->emplace(1, 2);
+
+  lp->push_back(Something{1, 2});
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_back instead of push_back [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_back(1, 2);
+  lp->push_front(Something{1, 2});
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_front instead of push_front [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_front(1, 2);
+  sp->push(Something{1, 2});
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace instead of push [modernize-use-emplace]
+  // CHECK-FIXES: sp->emplace(1, 2);
+
+  lp->push_back(Something());
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_back instead of push_back [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_back();
+  lp->push_front(Something());
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_front instead of push_front [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_front();
+  sp->push(Something());
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace instead of push [modernize-use-emplace]
+  // CHECK-FIXES: sp->emplace();
+
+  lp->push_back(Something{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_back instead of push_back [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_back();
+  lp->push_front(Something{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace_front instead of push_front [modernize-use-emplace]
+  // CHECK-FIXES: lp->emplace_front();
+  sp->push(Something{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:7: warning: use emplace instead of push [modernize-use-emplace]
+  // CHECK-FIXES: sp->emplace();
+
+  lp->emplace_back(Something(1, 2));
+  // CHECK-MESSAGES: :[[@LINE-1]]:20: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: lp->emplace_back(1, 2);
+  lp->emplace_front(Something(1, 2));
+  // CHECK-MESSAGES: :[[@LINE-1]]:21: warning: unnecessary temporary object created while calling emplace_front
+  // CHECK-FIXES: lp->emplace_front(1, 2);
+  sp->emplace(Something(1, 2));
+  // CHECK-MESSAGES: :[[@LINE-1]]:15: warning: unnecessary temporary object created while calling emplace
+  // CHECK-FIXES: sp->emplace(1, 2);
+
+  lp->emplace_back(Something{1, 2});
+  // CHECK-MESSAGES: :[[@LINE-1]]:20: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: lp->emplace_back(1, 2);
+  lp->emplace_front(Something{1, 2});
+  // CHECK-MESSAGES: :[[@LINE-1]]:21: warning: unnecessary temporary object created while calling emplace_front
+  // CHECK-FIXES: lp->emplace_front(1, 2);
+  sp->emplace(Something{1, 2});
+  // CHECK-MESSAGES: :[[@LINE-1]]:15: warning: unnecessary temporary object created while calling emplace
+  // CHECK-FIXES: sp->emplace(1, 2);
+
+  lp->emplace_back(Something());
+  // CHECK-MESSAGES: :[[@LINE-1]]:20: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: lp->emplace_back();
+  lp->emplace_front(Something());
+  // CHECK-MESSAGES: :[[@LINE-1]]:21: warning: unnecessary temporary object created while calling emplace_front
+  // CHECK-FIXES: lp->emplace_front();
+  sp->emplace(Something());
+  // CHECK-MESSAGES: :[[@LINE-1]]:15: warning: unnecessary temporary object created while calling emplace
+  // CHECK-FIXES: sp->emplace();
+
+  lp->emplace_back(Something{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:20: warning: unnecessary temporary object created while calling emplace_back
+  // CHECK-FIXES: lp->emplace_back();
+  lp->emplace_front(Something{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:21: warning: unnecessary temporary object created while calling emplace_front
+  // CHECK-FIXES: lp->emplace_front();
+  sp->emplace(Something{});
+  // CHECK-MESSAGES: :[[@LINE-1]]:15: warning: unnecessary temporary object created while calling emplace
+  // CHECK-FIXES: sp->emplace();
 }

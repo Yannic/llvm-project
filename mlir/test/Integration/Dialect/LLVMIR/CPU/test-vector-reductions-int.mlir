@@ -1,5 +1,5 @@
-// RUN: mlir-cpu-runner %s -e entry -entry-point-result=void  \
-// RUN: -shared-libs=%mlir_lib_dir/libmlir_c_runner_utils%shlibext | \
+// RUN: mlir-runner %s -e entry -entry-point-result=void  \
+// RUN: -shared-libs=%mlir_c_runner_utils | \
 // RUN: FileCheck %s
 
 // End-to-end test of all int reduction intrinsics (not exhaustive unit tests).
@@ -13,7 +13,7 @@ module {
     %2 = llvm.mlir.constant(3 : i64) : i64
     %3 = llvm.mlir.constant(4 : i64) : i64
     %4 = llvm.mlir.undef : vector<4xi64>
-    %5 = llvm.mlir.constant(0 : index) : i64
+    %5 = llvm.mlir.constant(0 : i64) : i64
     %6 = llvm.insertelement %0, %4[%5 : i64] : vector<4xi64>
     %7 = llvm.shufflevector %6, %4 [0, 0, 0, 0] : vector<4xi64>
     %8 = llvm.mlir.constant(1 : i64) : i64

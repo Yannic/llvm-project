@@ -59,39 +59,29 @@ int main(int argc, char *argv[]) {
 
   // Create an LLJIT instance and use a custom object linking layer creator to
   // register the GDBRegistrationListener with our RTDyldObjectLinkingLayer.
-  auto J =
-      ExitOnErr(LLJITBuilder()
-                    .setJITTargetMachineBuilder(std::move(JTMB))
-                    .setObjectLinkingLayerCreator([&](ExecutionSession &ES,
-                                                      const Triple &TT) {
-                      auto GetMemMgr = []() {
-                        return std::make_unique<SectionMemoryManager>();
-                      };
-                      auto ObjLinkingLayer =
-                          std::make_unique<RTDyldObjectLinkingLayer>(
-                              ES, std::move(GetMemMgr));
+  auto J = ExitOnErr(
+      LLJITBuilder()
+          .setJITTargetMachineBuilder(std::move(JTMB))
+          .setObjectLinkingLayerCreator(
+              [&](ExecutionSession &ES,
+                  jitlink::JITLinkMemoryManager &IgnoredMemMgr) {
+                auto GetMemMgr = [](const MemoryBuffer &) {
+                  return std::make_unique<SectionMemoryManager>();
+                };
+                auto ObjLinkingLayer =
+                    std::make_unique<RTDyldObjectLinkingLayer>(
+                        ES, std::move(GetMemMgr));
 
-                      // Register the event listener.
-                      ObjLinkingLayer->registerJITEventListener(
-                          *JITEventListener::createGDBRegistrationListener());
+                // Register the event listener.
+                ObjLinkingLayer->registerJITEventListener(
+                    *JITEventListener::createGDBRegistrationListener());
 
-                      // Make sure the debug info sections aren't stripped.
-                      ObjLinkingLayer->setProcessAllSections(true);
+                // Make sure the debug info sections aren't stripped.
+                ObjLinkingLayer->setProcessAllSections(true);
 
-                      return ObjLinkingLayer;
-                    })
-                    .create());
-
-  // Make sure that our process symbols are visible to JIT'd code.
-  {
-    MangleAndInterner Mangle(J->getExecutionSession(), J->getDataLayout());
-    J->getMainJITDylib().addGenerator(
-        ExitOnErr(orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-            J->getDataLayout().getGlobalPrefix(),
-            [MainName = Mangle("main")](const orc::SymbolStringPtr &Name) {
-              return Name != MainName;
-            })));
-  }
+                return ObjLinkingLayer;
+              })
+          .create());
 
   // Load the input modules.
   for (auto &InputFile : InputFiles) {

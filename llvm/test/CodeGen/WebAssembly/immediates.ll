@@ -1,11 +1,5 @@
 ; RUN: llc < %s -asm-verbose=false -disable-wasm-fallthrough-return-opt -wasm-keep-registers | FileCheck %s
 
-; Usually MIPS hosts uses a legacy (non IEEE 754-2008) encoding for NaNs.
-; Tests like `nan_f32` failed in attempt to compare hard-coded IEEE 754-2008
-; NaN value and a legacy NaN value provided by a system.
-; FIXME: This should be based on host not target, but there's no "system-mips" feature.
-; XFAIL: target={{(mips|mipsel|mips64|mips64el)-.*}}
-
 ; Test that basic immediates assemble as expected.
 
 target triple = "wasm32-unknown-unknown"
@@ -111,7 +105,7 @@ define float @two_f32() {
 ; CHECK-NEXT: f32.const $push[[NUM:[0-9]+]]=, nan{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define float @nan_f32() {
-  ret float 0x7FF8000000000000
+  ret float +qnan
 }
 
 ; CHECK-LABEL: negnan_f32:
@@ -119,7 +113,7 @@ define float @nan_f32() {
 ; CHECK-NEXT: f32.const $push[[NUM:[0-9]+]]=, -nan{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define float @negnan_f32() {
-  ret float 0xFFF8000000000000
+  ret float -qnan
 }
 
 ; CHECK-LABEL: inf_f32:
@@ -127,7 +121,7 @@ define float @negnan_f32() {
 ; CHECK-NEXT: f32.const $push[[NUM:[0-9]+]]=, infinity{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define float @inf_f32() {
-  ret float 0x7FF0000000000000
+  ret float +inf
 }
 
 ; CHECK-LABEL: neginf_f32:
@@ -135,7 +129,7 @@ define float @inf_f32() {
 ; CHECK-NEXT: f32.const $push[[NUM:[0-9]+]]=, -infinity{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define float @neginf_f32() {
-  ret float 0xFFF0000000000000
+  ret float -inf
 }
 
 ; CHECK-LABEL: custom_nan_f32:
@@ -191,7 +185,7 @@ define double @two_f64() {
 ; CHECK-NEXT: f64.const $push[[NUM:[0-9]+]]=, nan{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define double @nan_f64() {
-  ret double 0x7FF8000000000000
+  ret double +qnan
 }
 
 ; CHECK-LABEL: negnan_f64:
@@ -199,7 +193,7 @@ define double @nan_f64() {
 ; CHECK-NEXT: f64.const $push[[NUM:[0-9]+]]=, -nan{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define double @negnan_f64() {
-  ret double 0xFFF8000000000000
+  ret double -qnan
 }
 
 ; CHECK-LABEL: inf_f64:
@@ -207,7 +201,7 @@ define double @negnan_f64() {
 ; CHECK-NEXT: f64.const $push[[NUM:[0-9]+]]=, infinity{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define double @inf_f64() {
-  ret double 0x7FF0000000000000
+  ret double +inf
 }
 
 ; CHECK-LABEL: neginf_f64:
@@ -215,7 +209,7 @@ define double @inf_f64() {
 ; CHECK-NEXT: f64.const $push[[NUM:[0-9]+]]=, -infinity{{$}}
 ; CHECK-NEXT: return $pop[[NUM]]{{$}}
 define double @neginf_f64() {
-  ret double 0xFFF0000000000000
+  ret double -inf
 }
 
 ;; Custom NaN playloads are currently not always preserved because of the use of

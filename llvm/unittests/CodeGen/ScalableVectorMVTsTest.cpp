@@ -7,9 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/Support/MachineValueType.h"
 #include "llvm/Support/TypeSize.h"
 #include "gtest/gtest.h"
 
@@ -26,6 +26,9 @@ TEST(ScalableVectorMVTsTest, IntegerMVTs) {
     ASSERT_TRUE(VecTy.getScalarType().isValid());
 
     ASSERT_FALSE(VecTy.isFloatingPoint());
+    ASSERT_EQ(MVT::getVectorVT(VecTy.getVectorElementType(),
+                               VecTy.getVectorElementCount()),
+              VecTy);
   }
 }
 
@@ -38,6 +41,9 @@ TEST(ScalableVectorMVTsTest, FloatMVTs) {
     ASSERT_TRUE(VecTy.getScalarType().isValid());
 
     ASSERT_FALSE(VecTy.isInteger());
+    ASSERT_EQ(MVT::getVectorVT(VecTy.getVectorElementType(),
+                               VecTy.getVectorElementCount()),
+              VecTy);
   }
 }
 
@@ -134,6 +140,16 @@ TEST(ScalableVectorMVTsTest, SizeQueries) {
   EVT v2i32 = EVT::getVectorVT(Ctx, MVT::i32, 2);
   EVT v2i64 = EVT::getVectorVT(Ctx, MVT::i64, 2);
   EVT v2f64 = EVT::getVectorVT(Ctx, MVT::f64, 2);
+
+  EVT nxv5i32 = EVT::getVectorVT(Ctx, MVT::i32, 5, /*Scalable=*/true);
+  ASSERT_FALSE(nxv5i32.is16BitVector());
+  ASSERT_FALSE(nxv5i32.is32BitVector());
+  ASSERT_FALSE(nxv5i32.is64BitVector());
+  ASSERT_FALSE(nxv5i32.is128BitVector());
+  ASSERT_FALSE(nxv5i32.is256BitVector());
+  ASSERT_FALSE(nxv5i32.is512BitVector());
+  ASSERT_FALSE(nxv5i32.is1024BitVector());
+  ASSERT_FALSE(nxv5i32.is2048BitVector());
 
   // Check equivalence and ordering on scalable types.
   EXPECT_EQ(nxv4i32.getSizeInBits(), nxv2i64.getSizeInBits());
